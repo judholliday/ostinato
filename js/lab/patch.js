@@ -4,7 +4,7 @@
 //
 // A patch file (data/instruments/<name>.json):
 //   { format: 'mkxl-inst', version: 1, name, voices, volume,
-//     modules: [{ id, type, params: {...} }],          // in the order they're shown
+//     modules: [{ id, type, params: {...}, off? }],    // off: bypassed (kept, but not heard)
 //     audio: [{ from, to }],                            // module id -> module id, or to 'out'
 //     mod: [{ from, to: '<id>.<target>', amount }],     // from an env/lfo id, or 'vel' / 'wheel'
 //     cc: { <controller number>: '<id>.<param>' } }     // knobs learned from a MIDI controller
@@ -142,6 +142,13 @@ export const SOURCES = { vel: { label: 'Velocity', scope: 'voice' }, wheel: { la
 
 export const paramOf = (type, key) => MODULES[type]?.params.find(p => p.key === key) || null;
 
+// The setting a modulation dropped on a module most likely means (marked in the patch diagram).
+const DEFAULT_TARGET = { osc: 'pitch', noise: 'level', filter: 'cutoff', amp: 'level', lfo: 'depth', fmop: 'fm', ring: 'mix', space: 'x' };
+export const defaultTarget = type => (MODULES[type]?.targets[DEFAULT_TARGET[type]] ? DEFAULT_TARGET[type] : Object.keys(MODULES[type]?.targets || {})[0] || null);
+// What a bypassed module does: effects and shapers pass the sound through; sources and
+// modulators go quiet.
+export const isSource = type => ['osc', 'noise', 'fmop', 'drums'].includes(type);
+
 function cleanValue(spec, v) {
   if (spec.kind === 'choice') return spec.choices.includes(String(v)) ? String(v) : spec.def;
   const n = Number(v);
@@ -173,7 +180,7 @@ export function normalizePatch(raw) {
     if (!id || id === 'out' || SOURCES[id] || modules.some(x => x.id === id)) id = newId({ modules }, m.type);
     const params = {};
     for (const p of spec.params) params[p.key] = cleanValue(p, m.params?.[p.key] ?? p.def);
-    modules.push({ id, type: m.type, params });
+    modules.push({ id, type: m.type, params, ...(m.off ? { off: true } : {}) });
     if (modules.length >= MAX_MODULES) break;
   }
   const byId = new Map(modules.map(m => [m.id, m]));
@@ -226,6 +233,15 @@ export function normalizePatch(raw) {
 
 export const cleanPatch = raw => normalizePatch(raw).patch;
 export const copyPatch = p => JSON.parse(JSON.stringify(p));
+
+// A modulation amount as text ("+1.0 oct", "+25 c", "+0.30"), for a target of a module type.
+export function formatAmount(type, key, v) {
+  const t = MODULES[type]?.targets[key];
+  if (t?.unit === 'cents') return Math.abs(v) >= 1200 ? `${v > 0 ? '+' : ''}${(v / 1200).toFixed(1)} oct` : `${v > 0 ? '+' : ''}${Math.round(v)} c`;
+  if (t?.unit === 'Hz') return `${v > 0 ? '+' : ''}${v.toFixed(1)} Hz`;
+  if (t?.unit === 'm') return `${v > 0 ? '+' : ''}${v.toFixed(1)} m`;
+  return `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
+}
 
 // A setting's value as text, for the controls.
 export function formatValue(spec, v) {

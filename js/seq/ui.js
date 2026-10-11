@@ -48,6 +48,9 @@ const savePrefs = () => store.set('prefs', prefs);
 let views = []; // per track: { pat (pattern shown), page, collapsed, kbdLow, lastNote }
 let sel = { t: 0, i: 0, open: true };
 let clipboard = null;
+// The armed track (or null): only it takes notes from the keyboard (steps when stopped, the note
+// pool when latched). Not saved: every session starts unarmed, so playing never overwrites by accident.
+let armed = null;
 const live = { pos: [], pattern: [], silent: [], poolNote: [], section: 0, bar: 0, bars: 0, barAt: 0 };
 let midi = null;
 let sysexOk = false; // SysEx is needed to send XL sounds
@@ -116,6 +119,7 @@ function load(raw, file, isDirty = false) {
   snapshot = JSON.stringify(song);
   undoStack.length = redoStack.length = 0;
   liveSound = null;
+  armed = null;
   saveWorking();
   renderAll();
 }
@@ -428,14 +432,14 @@ function keyDown(key, vel, at) {
   const ti = sel.t, t = song.tracks[ti], v = views[ti];
   if (prefs.thru && !(t.mode === 'pool' && engine.playing)) { thru.get(key)?.(); thru.set(key, noteNow(ti, n, vel)); }
   if (t.mode === 'pool') {
-    if (t.pool.latch) {
+    if (t.pool.latch && armed === ti) {
       t.pool.notes = fresh ? [n] : [...t.pool.notes.filter(x => x !== n), n];
       changed({ coalesce: !fresh });
     }
     renderTrack(ti);
   } else if (rec.on && engine.playing) {
     recordDown(key, n, vel, at);
-  } else if (!engine.playing && sel.open) {
+  } else if (!engine.playing && sel.open && armed === ti) {
     const pat = viewPattern(ti), s = M.stepAt(pat, sel.i);
     const notes = fresh || !s ? [n] : [...new Set([...s.notes, n])].sort((a, b) => a - b);
     M.putStep(pat, sel.i, { notes, vel });
@@ -792,6 +796,7 @@ function headHTML(ti) {
     </span>
     <span class="spacer"></span>
     <span class="ms">
+      <button data-act="arm" class="${armed === ti ? 'arm-on' : ''}" title="${armed === ti ? 'Armed: notes you play go into this track. Click to disarm.' : 'Arm: notes you play on your keyboard go into this track (steps when stopped, the note pool when latched). Double-click the track header to arm too.'}">✎</button>
       <button data-act="mute" class="${t.mute ? 'm-on' : ''}" title="Mute: silence this track">M</button>
       <button data-act="solo" class="${t.solo ? 's-on' : ''}" title="Solo: hear only soloed tracks">S</button>
     </span>`;
@@ -1085,7 +1090,7 @@ function editorHTML(ti) {
       <label class="field" title="How much of its last step the note sounds for">Gate <input type="range" data-act="e-gate" min="1" max="100" value="${s.gate}"> <span class="e-gate">${s.gate}%</span></label>
       <label class="field" title="How often this step plays: below 100%, it's left out at random">Chance <select data-act="e-prob">${options(M.PROBS.map(p => [p, `${p}%`]), s.prob || 100)}</select></label>
       <label class="field" title="Repeat the note this many times across its length (a roll or stutter)">Ratchet <select data-act="e-rat">${options([[1, 'off'], [2, '×2'], [3, '×3'], [4, '×4']], s.rat || 1)}</select></label>`
-    : `<span class="hint">Empty step. ${pool ? 'Tick On to make it fire.' : isDrums(t) ? 'Click a drum below, or hit a pad.' : 'Click a key below or play one to add a note.'}</span>`}
+    : `<span class="hint">Empty step. ${pool ? 'Tick On to make it fire.' : isDrums(t) ? 'Click a drum below, or hit a pad.' : armed === ti ? 'Click a key below or play one to add a note.' : 'Click a key below to add a note, or arm the track (✎) to play notes in.'}</span>`}
     <button class="ghost small x" data-act="e-close" title="Hide the editor (Esc)">✕</button>
     ${pool ? keyboardHTML(ti, n => t.pool.notes.includes(n), 'pool-key')
       : isDrums(t) ? kitHTML(ti, n => !!s && s.notes.includes(n))
@@ -1707,6 +1712,7 @@ $('#tracks').addEventListener('click', e => {
     case 'clear': edit(ti, () => { pat.steps = []; }); break;
     case 'mode': if (t.mode !== el.dataset.m) edit(ti, () => { t.mode = el.dataset.m; }); break;
     case 'mute': edit(ti, () => { t.mute = !t.mute; }); break;
+    case 'arm': toggleArm(ti); break;
     case 'solo': t.solo = !t.solo; changed(); renderTracks(); break;
     case 'del-track':
       if (song.tracks.length <= 1) { toast('A song needs at least one track.'); break; }
@@ -1714,6 +1720,7 @@ $('#tracks').addEventListener('click', e => {
       M.removeTrack(song, ti);
       views.splice(ti, 1);
       liveSound = null;
+      armed = armed === ti ? null : armed > ti ? armed - 1 : armed;
       if (sel.t >= ti && sel.t > 0) sel.t--;
       changed();
       renderSong(); renderTracks();
@@ -1833,7 +1840,19 @@ $('#tracks').addEventListener('keydown', e => {
   }
 });
 
+function toggleArm(ti) {
+  const prev = armed;
+  armed = armed === ti ? null : ti;
+  if (armed !== null && sel.t !== ti) select(ti, 0, true);
+  else { if (armed !== null) sel.open = true; renderTrack(ti); }
+  if (prev !== null && prev !== ti && song.tracks[prev]) renderTrack(prev);
+  if (armed !== null) toast(`${song.tracks[ti].name} is armed: notes you play go into it.`);
+}
+
 $('#tracks').addEventListener('dblclick', e => {
+  // Double-clicking the header (not a control in it) arms or disarms the track.
+  const head = e.target.closest('.track-head');
+  if (head && !e.target.closest('button, input, select, label, .pats')) { toggleArm(+trackEl(e).dataset.t); return; }
   const el = e.target.closest('[data-act="cell"], [data-act="blk"]'), tEl = trackEl(e);
   if (!el || !tEl || e.target.classList.contains('handle') || el.classList.contains('lane-num')) return;
   const ti = +tEl.dataset.t, i = +el.dataset.s;

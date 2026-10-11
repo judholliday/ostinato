@@ -75,3 +75,29 @@
 .view-pop .val { font: 11px var(--mono); min-width: 54px; }
 .card.flash { animation: flash 1.2s ease-out; }
 @keyframes flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 0 transparent; } }
+
+/* connection points (patch diagram) */
+.patch-svg .in-port { fill: var(--bg); stroke: var(--muted); stroke-width: 2; }
+.patch-svg .tdot { fill: var(--bg); stroke: #6aa9ff; stroke-width: 1.5; cursor: pointer; }
+.patch-svg .tdot.used { fill: #6aa9ff; }
+.patch-svg .tdot.default { stroke-width: 3; }
+.patch-svg .tlabel { fill: var(--muted); font: 9px var(--mono); pointer-events: none; }
+.patch-svg .clabel.amt { fill: #6aa9ff; }
+/* while dragging: what it can connect to */
+.patch-svg.dragging-audio .in-port.valid, .patch-svg.dragging-mod .tdot.valid { stroke: var(--ok); stroke-width: 3; r: 8; fill: color-mix(in srgb, var(--ok) 30%, var(--bg)); }
+.patch-svg.dragging-audio .box:not(:has(.in-port.valid)) rect, .patch-svg.dragging-mod .box:not(:has(.tdot.valid)) rect { opacity: .45; }
+/* bypass */
+.patch-svg .power circle { fill: transparent; stroke: none; }
+.patch-svg .power text { fill: var(--ok); font-size: 12px; pointer-events: none; }
+.patch-svg .power:hover circle { fill: var(--panel); stroke: var(--line); }
+.patch-svg .power { cursor: pointer; }
+.patch-svg .power.is-off text { fill: var(--muted); }
+.patch-svg .box.is-off rect { stroke-dasharray: 4 3; opacity: .55; }
+.patch-svg .box.is-off .bname, .patch-svg .box.is-off .bid { opacity: .5; }
+.patch-svg .cable.audio.off .line { opacity: .3; }
+.power-btn { border: 0; background: transparent; padding: 0 4px; color: var(--ok); font-size: 14px; line-height: 1; }
+.power-btn.is-off { color: var(--muted); }
+.card.is-off .prms, .card.is-off .route { opacity: .45; }
+/* card groups */
+.group-h { grid-column: 1 / -1; margin: 6px 0 -2px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.group-h .hint { text-transform: none; letter-spacing: 0; }

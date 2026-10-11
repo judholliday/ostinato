@@ -5,7 +5,7 @@
 //   const synth = new LabSynth(audioContext, destinationNode);
 //   synth.setPatch(patch);
 //   synth.play(60, 100, synth.atTime(performance.now()), 0.5);   // or noteOn / noteOff
-import { MODULES } from './patch.js';
+import { MODULES, isSource } from './patch.js';
 
 const OSC_TYPES = { saw: 'sawtooth', square: 'square', triangle: 'triangle', sine: 'sine' };
 const LFO_TYPES = { sine: 'sine', triangle: 'triangle', square: 'square', saw: 'sawtooth' };
@@ -152,7 +152,7 @@ export class LabSynth {
   setPatch(input) {
     const patch = JSON.parse(JSON.stringify(input)); // our own copy; change it with setParam / setMod
     // Settings marked `rebuild` (an oscillator's wave, a filter's slope...) change which nodes a note uses.
-    const shape = p => JSON.stringify([p.modules.map(m => [m.id, m.type, ...MODULES[m.type].params.filter(x => x.rebuild).map(x => m.params[x.key])]), p.audio, p.mod.map(m => [m.from, m.to])]);
+    const shape = p => JSON.stringify([p.modules.map(m => [m.id, m.type, !!m.off, ...MODULES[m.type].params.filter(x => x.rebuild).map(x => m.params[x.key])]), p.audio, p.mod.map(m => [m.from, m.to])]);
     const old = this.patch;
     this.patch = patch;
     if (old && shape(old) === shape(patch)) {
@@ -198,6 +198,11 @@ export class LabSynth {
     for (const m of this.patch.modules) {
       if (MODULES[m.type].scope !== 'global') continue;
       const p = m.params, input = ac.createGain(), output = ac.createGain(), dry = ac.createGain(), wet = ac.createGain();
+      if (m.off) { // bypassed: straight through
+        input.connect(output);
+        this.globals.set(m.id, { input, output, nodes: [input, output], set: {} });
+        continue;
+      }
       input.connect(dry).connect(output);
       wet.connect(output);
       const g = { input, output, nodes: [input, output, dry, wet], set: {} };
@@ -292,6 +297,15 @@ export class LabSynth {
     for (const m of patch.modules) {
       const p = m.params;
       if (MODULES[m.type].scope !== 'voice') continue;
+      if (m.off) {
+        // Bypassed: a shaper (filter, drive, amp, ring, space) passes the sound straight through;
+        // a source or a modulator is simply left out, so whatever it fed gets nothing from it.
+        if (!isSource(m.type) && MODULES[m.type].audioIn && MODULES[m.type].audioOut) {
+          const g = keep(ac.createGain());
+          nodes[m.id] = { in: g, out: g, targets: {} };
+        }
+        continue;
+      }
       if (m.type === 'osc') {
         const out = keep(ac.createGain());
         out.gain.value = p.level;

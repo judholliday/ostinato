@@ -237,3 +237,4 @@ h2.section-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px
 .lanes ~ .cc-lanes .cc-row { gap: 2px; }
 .snd-item.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
 .snd-panel .lib-list:focus { outline: none; }
+.ms button.arm-on { background: var(--err); border-color: var(--err); color: #fff; }

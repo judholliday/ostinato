@@ -1,8 +1,8 @@
 // The Lab page: build and play instruments made of modules (see patch.js), save them to
 // data/instruments/, and share them with the sequencer. No framework.
-import { MODULES, SOURCES, STARTERS, normalizePatch, copyPatch, defaultParams, newId, paramOf, formatValue, toSlider, fromSlider } from './patch.js';
+import { MODULES, SOURCES, STARTERS, normalizePatch, copyPatch, defaultParams, newId, paramOf, formatValue, toSlider, fromSlider, defaultTarget } from './patch.js';
 import { LabSynth } from './engine.js';
-import { patchSVG } from './patchview.js';
+import { patchSVG, layout } from './patchview.js';
 import { portLabel } from '../core/midiports.js';
 import { storage, placeOf, stemOf } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
@@ -209,15 +209,24 @@ function routesHTML(from) {
 }
 
 function renderModules() {
-  const cards = patch.modules.map(m => {
+  // Cards follow the sound: left to right through the patch diagram, top to bottom within a
+  // column; then the modulators.
+  const { pos } = layout(patch);
+  const at = id => pos.get(id) || { x: 1e9, y: 1e9 };
+  const sound = patch.modules.filter(m => !MODULES[m.type].modOut).sort((a, b) => at(a.id).x - at(b.id).x || at(a.id).y - at(b.id).y);
+  const movement = patch.modules.filter(m => MODULES[m.type].modOut);
+  const card = m => {
     const spec = MODULES[m.type];
-    return `<section class="card mod-${m.type}${spec.scope === 'global' ? ' global' : ''}" data-mod="${m.id}">
-      <header title="${esc(spec.help)}"><b>${spec.label}</b> <span class="mid">${m.id}</span>${spec.scope === 'global' ? '<span class="tag">effect</span>' : ''}
+    return `<section class="card mod-${m.type}${spec.scope === 'global' ? ' global' : ''}${m.off ? ' is-off' : ''}" data-mod="${m.id}">
+      <header title="${esc(spec.help)}"><button class="power-btn${m.off ? ' is-off' : ''}" data-act="power" data-id="${m.id}" title="${m.off ? 'Bypassed: click to switch it back on' : 'Bypass: switch it off without deleting, to hear the difference'}">⏻</button>
+        <b>${spec.label}</b> <span class="mid">${m.id}</span>${spec.scope === 'global' ? '<span class="tag">effect</span>' : ''}${m.off ? '<span class="tag">off</span>' : ''}
         <span class="spacer"></span><button class="ghost small x" data-act="del" data-id="${m.id}" title="Remove this module">✕</button></header>
       <div class="prms">${spec.params.filter(p => !(m.type === 'osc' && p.key === 'pw' && m.params.wave !== 'pulse')).map(p => paramHTML(m, p)).join('')}</div>
       ${routesHTML(m.id)}
     </section>`;
-  });
+  };
+  const cards = [`<h3 class="group-h">Sound <span class="hint">in the order it flows, to the output</span></h3>`, ...sound.map(card),
+    `<h3 class="group-h">Movement <span class="hint">envelopes, LFOs, how you play</span></h3>`, ...movement.map(card)];
   cards.push(`<section class="card sources"><header title="Modulation from how you play"><b>Velocity &amp; mod wheel</b></header>
     <div class="src-h">Velocity</div>${routesHTML('vel')}<div class="src-h">Mod wheel <span class="hint">(CC 1; the MPK mini's joystick pushed up)</span></div>${routesHTML('wheel')}</section>`);
   $('#modules').innerHTML = cards.join('');
@@ -237,7 +246,7 @@ function renderView() {
   $('#view-col').textContent = prefs.viewOpen ? '▾' : '▸';
   if (!prefs.viewOpen) return;
   if (viewSel && !(viewSel.kind === 'audio' ? patch.audio : patch.mod).some(c => c.from === viewSel.from && c.to === viewSel.to)) viewSel = null;
-  el.innerHTML = patchSVG(patch, { selected: viewSel }).svg + selOverlay();
+  el.innerHTML = patchSVG(patch, { selected: viewSel }) + selOverlay();
   if (viewSel) placeOverlay();
 }
 
@@ -273,6 +282,14 @@ function deleteSelected() {
   changed({ rebuild: true });
   renderModules();
 }
+function togglePower(id) {
+  const m = modOf(id);
+  if (!m) return;
+  if (m.off) delete m.off; else m.off = true;
+  changed({ rebuild: true });
+  renderModules();
+}
+
 // Connects `from` (a module or a modulation source) to the module `to`. A modulation source
 // with several possible targets on that module asks which one.
 function connect(from, to, at) {
@@ -315,21 +332,37 @@ $('#patch-view').addEventListener('pointerdown', e => {
   const svg = port.ownerSVGElement, line = svg.querySelector('.drag-line'), from = port.dataset.port;
   const toSvg = (x, y) => new DOMPoint(x, y).matrixTransform(svg.getScreenCTM().inverse());
   const c = port.getBoundingClientRect(), start = toSvg(c.left + c.width / 2, c.top + c.height / 2);
+  // Light up everywhere this can connect: audio ins for audio, setting dots for modulation.
+  const isMod = port.classList.contains('mod');
+  const valid = new Set(isMod ? modTargets(from) : audioDestinations(from));
+  svg.classList.add(isMod ? 'dragging-mod' : 'dragging-audio');
+  svg.querySelectorAll(isMod ? '.tdot' : '.in-port').forEach(d => d.classList.toggle('valid', valid.has(d.dataset.target || d.dataset.in)));
   const move = ev => { const p = toSvg(ev.clientX, ev.clientY); line.setAttribute('d', `M${start.x},${start.y} L${p.x},${p.y}`); };
   const up = ev => {
     removeEventListener('pointermove', move);
     removeEventListener('pointerup', up);
     line.setAttribute('d', '');
+    svg.classList.remove('dragging-mod', 'dragging-audio');
+    svg.querySelectorAll('.valid').forEach(d => d.classList.remove('valid'));
     justDragged = true;
     setTimeout(() => { justDragged = false; }, 0);
-    const target = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('[data-box]');
-    connect(from, target?.dataset.box, { x: ev.clientX, y: ev.clientY });
+    const under = document.elementFromPoint(ev.clientX, ev.clientY);
+    const dot = under?.closest('.tdot'), inPort = under?.closest('.in-port');
+    if (isMod && dot) { if (valid.has(dot.dataset.target)) addMod(from, dot.dataset.target); else toast('Already connected there.'); return; }
+    if (!isMod && inPort) { connect(from, inPort.dataset.in); return; }
+    const box = under?.closest('[data-box]')?.dataset.box;
+    // Dropped on a box: modulation goes to its default setting (the ringed dot) if that's free.
+    const def = isMod && modOf(box) && `${box}.${defaultTarget(modOf(box).type)}`;
+    if (def && valid.has(def)) { addMod(from, def); return; }
+    connect(from, box, { x: ev.clientX, y: ev.clientY });
   };
   addEventListener('pointermove', move);
   addEventListener('pointerup', up);
 });
 $('#patch-view').addEventListener('click', e => {
   if (justDragged) return;
+  const power = e.target.closest('[data-power]');
+  if (power) { togglePower(power.dataset.power); return; }
   const act = e.target.closest('[data-act]')?.dataset.act;
   if (act === 'v-del') { deleteSelected(); return; }
   if (e.target.closest('.view-pop, .view-menu, .port')) return;
@@ -394,6 +427,7 @@ $('#modules').addEventListener('click', e => {
       renderModules();
       break;
     }
+    case 'power': togglePower(el.dataset.id); break;
     case 'del': {
       const id = el.dataset.id;
       patch.modules = patch.modules.filter(m => m.id !== id);
