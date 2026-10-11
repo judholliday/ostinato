@@ -692,8 +692,13 @@ document.addEventListener('keydown', e => {
 
 // The computer keyboard (core/qwerty.js): A–K and the row above, Z / X for octaves. Played here,
 // or in the Recorder panel over the Lab; the Recorder captures it too.
-const qwertyNote = d => { if ((d[0] & 0xf0) === 0x90 && d[2] > 0) noteOn(d[1], d[2]); else noteOff(d[1]); };
-attachQwerty({ active: onScreen, onMessage: qwertyNote, channel, from: 'lab', onOctave: renderKbd });
+const qwertyNote = d => {
+  const type = d[0] & 0xf0;
+  if (type === 0xb0) onCC(d[1], d[2]); // Caps Lock = the sustain pedal
+  else if (type === 0x90 && d[2] > 0) noteOn(d[1], d[2]);
+  else noteOff(d[1]);
+};
+attachQwerty({ active: onScreen, onMessage: qwertyNote, channel, from: 'lab', onOctave: renderKbd, onMode: text => toast(text) });
 channel?.addEventListener('message', e => { if (e.data?.type === 'qwerty' && e.data.from === 'recorder' && onScreen()) qwertyNote(e.data.data); });
 
 // The host page switches views; nothing reloads.

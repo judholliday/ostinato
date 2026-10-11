@@ -8,7 +8,7 @@ const VOICES = {
   Keys:  { wave: 'triangle', cut: 4000, env: 0,    q: 1, a: .005, d: .40, s: .35, r: .30 },
 };
 
-let ac = null, master = null;
+let ac = null, master = null, out = null, clickOut = null;
 const live = new Set(); // { gain, oscs, release }
 
 // Browsers only allow audio to start after a click or key press, so call this from one.
@@ -26,6 +26,10 @@ export function wake() {
     limiter.attack.value = 0.002;
     limiter.release.value = 0.1;
     master.connect(limiter).connect(ac.destination);
+    out = limiter;
+    // The metronome goes straight out, so it isn't in recordings of the mix.
+    clickOut = ac.createGain();
+    clickOut.connect(ac.destination);
   }
   if (ac.state === 'suspended') ac.resume();
   return ac;
@@ -33,6 +37,8 @@ export function wake() {
 
 // The master input (after wake), for other instruments to play through the same limiter.
 export function output() { wake(); return master; }
+// Everything this page plays, after the limiter (not the metronome): for recording the mix.
+export function mixOutput() { wake(); return out; }
 
 // Starts a voice at audio time t0; returns a function that releases it at audio time t.
 function start(voice, midi, vel, t0, gain = 1) {
@@ -79,7 +85,7 @@ function noiseBuffer(a) {
 }
 
 // One decaying sound: a source (noise or a tone), an optional filter, and an envelope.
-function hit(a, t0, { tone, type = 'sine', from, filter, freq, q = 1, level, decay, delay = 0 }) {
+function hit(a, t0, { tone, type = 'sine', from, filter, freq, q = 1, level, decay, delay = 0, dest = master }) {
   const g = a.createGain();
   const t = t0 + delay;
   g.gain.setValueAtTime(0, t);
@@ -101,7 +107,7 @@ function hit(a, t0, { tone, type = 'sine', from, filter, freq, q = 1, level, dec
     f.type = filter; f.frequency.value = freq; f.Q.value = q;
     node = node.connect(f);
   }
-  node.connect(g).connect(master);
+  node.connect(g).connect(dest);
   src.start(t);
   src.stop(t + decay + 0.05);
   src.onended = () => g.disconnect();
@@ -142,7 +148,7 @@ export function click(atMs, accent, level = 0.6) {
   const a = wake();
   const t0 = Math.max(a.currentTime, a.currentTime + (atMs - performance.now()) / 1000);
   const tone = accent ? 2000 : 1400;
-  hit(a, t0, { tone, type: 'square', filter: 'bandpass', freq: tone, q: 6, level: level * (accent ? 0.9 : 0.6), decay: 0.04 });
+  hit(a, t0, { tone, type: 'square', filter: 'bandpass', freq: tone, q: 6, level: level * (accent ? 0.9 : 0.6), decay: 0.04, dest: clickOut });
 }
 
 // Plays a note at a performance.now() time (as the engine uses), for durMs. `gain` is the

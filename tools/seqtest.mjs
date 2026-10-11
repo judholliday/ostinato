@@ -320,6 +320,16 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
   assert.equal(stops, 1, 'stop after halt still stops');
 }
 
+// ---- computer keyboard chords ----
+{
+  const { chordOn } = await import('../js/core/qwerty.js');
+  assert.deepEqual(chordOn(48, null), [48, 52, 55], 'no scale: major');
+  assert.deepEqual(chordOn(50, { root: 0, type: 'major' }), [50, 53, 57], 'D minor in C major');
+  assert.deepEqual(chordOn(59, { root: 0, type: 'major' }), [59, 62, 65], 'B diminished, wrapping the octave');
+  assert.deepEqual(chordOn(51, { root: 0, type: 'minor' }), [51, 55, 58], 'Eb major in C minor');
+  assert.deepEqual(chordOn(49, { root: 0, type: 'major' }), [49, 53, 56], 'not in the scale: major');
+}
+
 // ---- MIDI files ----
 {
   const bytes = writeMidi({ name: 'Test', bpm: 125, tracks: [

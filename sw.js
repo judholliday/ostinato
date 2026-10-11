@@ -1,7 +1,7 @@
 // Offline support for the travel version (registered by index.html only away from this Mac's
 // server). Network first, so changes arrive whenever you're online; when offline, the copy saved
 // on the last visit. Page addresses carry ?v=<time>, so they're matched without the query.
-const CACHE = 'mkxl-travel-v3';
+const CACHE = 'mkxl-travel-v4';
 
 // Everything the travel version uses, saved when this is installed so the first visit is enough.
 // (tools/selftest.mjs checks this list against the files: add new pages, styles and scripts here.)

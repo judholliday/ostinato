@@ -72,7 +72,16 @@ Keys: Space play/stop, R record, ← → move between steps, ↑ ↓ transpose (
 
 ## Computer keyboard
 
-No MIDI keyboard? **MIDI in** (Sequencer, Recorder) offers **Computer keyboard (A–K)**, and picks it by itself when there's no MIDI device. **A–K** are white keys, **W E T Y U O P** black keys, **Z / X** move an octave (shared by every page; the Lab's keys work the same way). It does everything a MIDI keyboard does: it plays the selected track's sound (with **Thru**), fills steps, records with **● Rec**, and the Recorder captures it, including while you type with the Recorder panel in front. To play over a sequence and keep it: **Recorder → Record with the sequencer**, then play.
+No MIDI keyboard? **MIDI in** (Sequencer, Recorder) offers **Computer keyboard (A–K)**, and picks it by itself when there's no MIDI device (the Lab's keys work the same way):
+
+| Keys | Do |
+|---|---|
+| **A S D F G H J K L ; '** | White keys (C up to F, an octave and a half) |
+| **W E T Y U O P ]** | Black keys |
+| **Z / X** | Octave down / up (shared by every page) |
+| **Caps Lock** | Sustain pedal, following the Caps Lock light: on = notes keep sounding after you let go |
+| **Tab** | Chord mode on/off: **A W S E D F T G** (C to G) each play a chord an octave lower, in the song's **Scale** (major chords if none is set); the keys to their right stay single notes, for a melody over the chords |
+ It does everything a MIDI keyboard does: it plays the selected track's sound (with **Thru**), fills steps, records with **● Rec**, and the Recorder captures it, including while you type with the Recorder panel in front. To play over a sequence and keep it: **Recorder → Record with the sequencer**, then play.
 
 ## Travel version (no server, works offline)
 
@@ -89,6 +98,7 @@ The same app runs as a plain website (e.g. on GitHub Pages) in Chrome or Edge, w
 
 - **Takes:** everything you play is kept for an hour, in any view, whether or not anything is recording. Playing is split into takes wherever you stopped for 4 seconds. Each take shows a little piano roll; **▶** plays it on the sequencer's selected track, **→ Track A** puts it into the selected track's shown pattern (quantized to the track's steps; Undo in the sequencer brings back what was there), **.mid** downloads it as you played it. A take played along with the sequencer lands on the bars it was played in; one played freely starts on its first note at a guessed tempo (change **BPM** if the bars look wrong; **Song to …** sets the song to it). Longer takes get a **From bar** choice. Takes are kept in this browser only: put the good ones into a track or a .mid file.
 - **Audio:** choose your interface under **Audio in** (the first time, pick *Allow audio input…* and let Chrome use the microphone; it then picks the Scarlett) and the **Input** the XL is on (2 by default). The meter shows the level; keep it out of the red (turn the Scarlett's gain down if it says *too loud*). Recordings are 24-bit WAV files in `data/audio/`, listed under **Recordings** to play, download (⬇, or drag into Ableton) or remove. They're kept out of git and the GitHub backup, because audio is too big for it.
+  - **Ostinato (what it plays)** records the app's own sound directly, with no microphone: the sequencer's tracks, Lab instruments, and what you play through them (not the metronome). It's the choice in the travel version. With it, **● Record audio** and **Record audio too** save that sound (a performance's file starts at bar 1).
   - **Any input macOS sees works:** the Mac's built-in microphone, a headset mic in a MacBook's headphone jack (the jack is otherwise output only, so it's no line input for the XL), AirPods or a USB mic. One-channel inputs record that channel; wear headphones so the mic doesn't pick up what the Mac plays. The Input choice and the measured delay are remembered per device.
   - **● Record audio** records until you press it again.
   - **Record audio too** (next to Record with the sequencer) saves the performance's audio as well, starting exactly at bar 1.

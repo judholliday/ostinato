@@ -29,6 +29,69 @@ class Tap extends AudioWorkletProcessor {
 }
 registerProcessor('mkxl-tap', Tap);`;
 
+// Recording by time, not by arrival: blocks reach the page some time after they're played (a
+// busy page can lag by seconds), so a recording keeps the blocks whose frames fall between its
+// start and end, and finishing waits (up to 3 s) for the last of them to arrive.
+function startRecording(src) {
+  src.recording = { chunks: [], start: src.frameAt(performance.now()), end: Infinity };
+}
+function addChunk(src, frame, chans) {
+  const len = chans[0].length, r = src.recording;
+  src.latest = Math.max(src.latest || 0, frame + len);
+  if (r && frame + len > r.start && frame < r.end) r.chunks.push({ frame, chans });
+}
+async function finishRecording(src) {
+  const r = src.recording;
+  if (!r) return null;
+  r.end = src.frameAt(performance.now());
+  for (let k = 0; k < 150 && (src.latest || 0) < r.end; k++) await new Promise(res => setTimeout(res, 20));
+  src.recording = null;
+  if (!r.chunks.length) return null;
+  const nch = r.chunks[0].chans.length, total = r.end - r.start;
+  const chans = Array.from({ length: nch }, () => new Float32Array(total));
+  for (const c of r.chunks) {
+    const at = c.frame - r.start, from = Math.max(0, -at), to = Math.min(c.chans[0].length, total - at);
+    if (to > from) chans.forEach((a, k) => a.set((c.chans[k] || c.chans[0]).subarray(from, to), at + from));
+  }
+  return { frame: r.start, chans };
+}
+
+// The tap's worklet, added to an AudioContext once.
+const added = new WeakMap();
+function addWorklet(ac) {
+  if (!added.has(ac)) added.set(ac, ac.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }))));
+  return added.get(ac);
+}
+
+// Records whatever comes out of `node` (e.g. a page's own mix), in stereo, the same way AudioIn
+// records an input: record(), then finish() → { frame, chans }. onLevel(peak) on every block.
+export class Tap {
+  constructor(ac, node, { onLevel } = {}) {
+    Object.assign(this, { ac, node, onLevel: onLevel || (() => {}), recording: null, ready: null });
+  }
+  start() {
+    this.ready ||= addWorklet(this.ac).then(() => {
+      this.tap = new AudioWorkletNode(this.ac, 'mkxl-tap', { numberOfOutputs: 1, channelCountMode: 'explicit', channelCount: 2 });
+      const mute = this.ac.createGain();
+      mute.gain.value = 0;
+      this.node.connect(this.tap).connect(mute).connect(this.ac.destination);
+      this.tap.port.onmessage = e => {
+        const { frame, chans } = e.data, use = chans.length > 1 ? chans.slice(0, 2) : chans;
+        let peak = 0;
+        for (const c of use) for (let i = 0; i < c.length; i++) { const v = Math.abs(c[i]); if (v > peak) peak = v; }
+        this.onLevel(peak);
+        addChunk(this, frame, use);
+      };
+    });
+    return this.ready;
+  }
+  record() { startRecording(this); }
+  finish() { return finishRecording(this); } // async: { frame, chans } or null
+  perfAt(frame) { return AudioIn.prototype.perfAt.call(this, frame); }
+  frameAt(ms) { return AudioIn.prototype.frameAt.call(this, ms); }
+  get sampleRate() { return this.ac.sampleRate; }
+}
+
 export class AudioIn {
   constructor({ onLevel } = {}) {
     this.onLevel = onLevel || (() => {});
@@ -53,7 +116,7 @@ export class AudioIn {
       echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
     if (!this.ac) {
       this.ac = new AudioContext({ latencyHint: 'interactive' });
-      await this.ac.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' })));
+      await addWorklet(this.ac);
     }
     await this.ac.resume();
     this.src = this.ac.createMediaStreamSource(this.stream);
@@ -78,7 +141,7 @@ export class AudioIn {
     let peak = 0;
     for (const c of use) for (let i = 0; i < c.length; i++) { const v = Math.abs(c[i]); if (v > peak) peak = v; }
     this.onLevel(peak);
-    this.recording?.chunks.push({ frame, chans: use });
+    addChunk(this, frame, use);
   }
   // The chosen input: one channel (mono), or both.
   pick(chans) {
@@ -96,18 +159,9 @@ export class AudioIn {
     return Math.round((ts.contextTime + (perfMs - ts.performanceTime) / 1000) * this.ac.sampleRate);
   }
 
-  record() { this.recording = { chunks: [] }; }
-  // Stops recording; returns { frame (of the first sample), chans: [Float32Array] }.
-  finish() {
-    const r = this.recording;
-    this.recording = null;
-    if (!r?.chunks.length) return null;
-    const total = r.chunks.reduce((n, c) => n + c.chans[0].length, 0), nch = r.chunks[0].chans.length;
-    const chans = Array.from({ length: nch }, () => new Float32Array(total));
-    let o = 0;
-    for (const c of r.chunks) { chans.forEach((a, k) => a.set(c.chans[k] || c.chans[0], o)); o += c.chans[0].length; }
-    return { frame: r.chunks[0].frame, chans };
-  }
+  record() { startRecording(this); }
+  // Stops recording; resolves to { frame (of the first sample), chans: [Float32Array] }, or null.
+  finish() { return finishRecording(this); }
 }
 
 // Cuts a recording to [fromFrame, fromFrame + length) (absolute frames), padding with silence.

@@ -12,8 +12,9 @@ import { portLabel, looksLikeSynthIn } from '../core/midiports.js';
 import { deviceForOut } from '../core/devices.js';
 import { storage, placeOf, stemOf } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
-import { QWERTY, QWERTY_LABEL, attachQwerty, qwertyRange } from '../core/qwerty.js';
+import { QWERTY, QWERTY_LABEL, attachQwerty, qwertyRange, setQwertyScale } from '../core/qwerty.js';
 import { LabSynth } from '../lab/engine.js';
+import { Tap, cut, encodeWav } from '../rec/audio.js';
 
 const $ = sel => document.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -340,7 +341,19 @@ function stop() {
   engine.stop();
   ticker.postMessage(0);
   stopAudition();
-  if (perf) { clearTimeout(perf.timer); soundChannel?.postMessage({ type: 'performance', state: 'end', wall: perf.endWall ?? Date.now() }); perf = null; }
+  if (perf) {
+    clearTimeout(perf.timer);
+    soundChannel?.postMessage({ type: 'performance', state: 'end', wall: perf.endWall ?? Date.now() });
+    if (perf.own && ownTap?.recording) {
+      // The file starts exactly at bar 1 (the count-in isn't in it).
+      const t0 = perf.t0, name = `Performance ${stamp(Date.now())} (Ostinato)`;
+      ownTap.finish().then(r => {
+        const from = ownTap.frameAt(t0);
+        if (r) saveOwn(cut(r, from, r.frame + r.chans[0].length - from), name); else saveOwn(null);
+      });
+    }
+    perf = null;
+  }
   if (stem) { clearTimeout(stem.timer); stem.restore(); soundChannel?.postMessage({ type: 'stem', state: 'end' }); stem = null; }
   postTransport();
   $('#play').classList.remove('playing');
@@ -385,14 +398,30 @@ const held = []; // notes held on the keyboard (snapped to the scale), in the or
 const thru = new Map(); // key -> function that stops it
 let entered = false; // notes were entered into a step since all keys were last released
 
+// The sustain pedal (CC 64, or Caps Lock on the computer keyboard): released keys keep sounding
+// (and recording) until it comes up.
+let sustain = false;
+const sustained = new Set();
+function setSustain(on, at) {
+  sustain = on;
+  if (!on) { for (const key of sustained) releaseKey(key, at); sustained.clear(); }
+}
+function releaseKey(key, at) {
+  thru.get(key)?.();
+  thru.delete(key);
+  if (rec.down.has(key)) recordUp(key, at);
+}
+
 function onKeys(data, at = performance.now()) {
   const type = data[0] & 0xf0;
+  if (type === 0xb0 && data[1] === 64) { setSustain(data[2] >= 64, at); return; }
   if (type === 0xb0) { onCC(data[1], data[2], at); return; }
   if (type === 0x90 && data[2] > 0) keyDown(data[1], data[2], at);
   else if (type === 0x80 || type === 0x90) keyUp(data[1], at);
 }
 
 function keyDown(key, vel, at) {
+  if (sustained.delete(key)) releaseKey(key, at); // the same key again while sustained
   const n = M.snapToScale(key, song.scale);
   const fresh = held.length === 0;
   if (!held.includes(n)) held.push(n);
@@ -421,9 +450,7 @@ function keyUp(key, at) {
   const n = M.snapToScale(key, song.scale);
   const k = held.indexOf(n);
   if (k >= 0) held.splice(k, 1);
-  thru.get(key)?.();
-  thru.delete(key);
-  if (rec.down.has(key)) recordUp(key, at);
+  if (sustain) sustained.add(key); else releaseKey(key, at);
   if (held.length) return;
   const t = song.tracks[sel.t];
   if (entered) {
@@ -547,7 +574,7 @@ const onScreen = () => !window.frameElement || !window.frameElement.hidden;
 const qwertyIn = { name: QWERTY };
 const onQwerty = (d, ts) => { if ((d[0] & 0xf0) === 0x90) noteSeen(qwertyIn, d[1]); onKeys(d, ts); };
 attachQwerty({ active: () => prefs.keysIn === QWERTY && onScreen(), onMessage: onQwerty, channel: soundChannel, from: 'sequencer',
-  onOctave: () => { renderPorts(); toast(`Computer keyboard: ${qwertyRange()}`); } });
+  onOctave: () => { renderPorts(); toast(`Computer keyboard: ${qwertyRange()}`); }, onMode: text => toast(text) });
 
 // The light next to MIDI in: green for notes on the chosen port; amber when notes arrive on a
 // different port (so it's clear which one to choose).
@@ -609,6 +636,7 @@ function renderAll() {
 
 function renderTop() {
   postSeqState();
+  setQwertyScale(song.scale); // chord mode builds chords in the song's scale
   const setVal = (el, v) => { if (document.activeElement !== el) el.value = v; };
   setVal($('#bpm'), song.bpm);
   setVal($('#swing'), song.swing);
@@ -1511,17 +1539,48 @@ function takeToTrack({ items, fromBar, bpm, synced }) {
   reply(`Put ${bars} bar${bars > 1 ? 's' : ''} into ${t.name} pattern ${v.pat}.` + (!synced && bpm !== song.bpm ? ` You played it at ${bpm} BPM; the song is at ${song.bpm}.` : ''), true);
 }
 
+// ---- Recording our own sound: the Recorder's Audio in "Ostinato (what it plays)" ----
+// Everything this page plays (tracks, Lab instruments, keys played through), after the limiter;
+// the metronome isn't in it. Saved as WAV like the Recorder's other recordings.
+let ownTap = null, ownMonitor = false, ownPeak = 0, ownLevelAt = 0;
+function ownAudio() {
+  ownTap ||= new Tap(synth.wake(), synth.mixOutput(), { onLevel: p => {
+    ownPeak = Math.max(ownPeak, p);
+    const now = performance.now();
+    if (ownMonitor && now - ownLevelAt > 80) { soundChannel?.postMessage({ type: 'own-level', peak: ownPeak }); ownPeak = 0; ownLevelAt = now; }
+  } });
+  return ownTap.start().then(() => ownTap);
+}
+const stamp = ms => { const d = new Date(ms), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}`; };
+async function saveOwn(chans, name) {
+  const reply = (text, ok) => soundChannel?.postMessage({ type: 'take-result', text, ok });
+  if (!chans?.[0]?.length) { reply('Nothing was recorded.'); return; }
+  try {
+    const file = await storage.save('audio', encodeWav(chans, ownTap.sampleRate), name);
+    soundChannel?.postMessage({ type: 'recordings-changed' });
+    reply(`Saved ${placeOf('audio', file)}`, true);
+  } catch (err) { reply(`Couldn't save the recording: ${err.message}`); }
+}
+async function onOwnAudio(m) {
+  if (m.cmd === 'monitor') { ownMonitor = !!m.on; if (ownMonitor) ownAudio(); }
+  else if (m.cmd === 'start') { (await ownAudio()).record(); }
+  else if (m.cmd === 'stop' && ownTap?.recording) { const name = `Recording ${stamp(Date.now())} (Ostinato)`; saveOwn((await ownTap.finish())?.chans, name); }
+}
+
 // A performance: count in, play, and stop after `bars` (or the song; null = until stopped).
-function recordPerformance({ bars, countIn }) {
+// With ownAudio, our own sound is recorded too, from bar 1 to the end of the last notes.
+async function recordPerformance({ bars, countIn, ownAudio: own }) {
   if (engine.playing) stop();
+  if (own) (await ownAudio()).record();
   if (bars === 'song') {
     prefs.mode = 'song'; savePrefs(); engine.setMode('song'); renderTop(); paintSong();
     bars = song.song.reduce((n, x) => n + x.bars, 0);
   }
-  perf = { timer: null };
+  perf = { timer: null, own: !!own };
   const started = play({ countIn });
   if (!started) return;
   const { t0, countIn: ci } = started;
+  perf.t0 = t0;
   soundChannel?.postMessage({ type: 'performance', state: 'start', wall: performance.timeOrigin + t0 - ci - 250 });
   if (bars) perf.timer = setTimeout(() => endRun(perf, 1500), t0 - performance.now() + bars * 4 * 60000 / song.bpm + 30);
 }
@@ -1560,6 +1619,7 @@ function onRecorderMessage(m) {
     case 'record-performance': recordPerformance(m); return true;
     case 'stop-sequencer': stop(); return true;
     case 'print-stem': printStem(m); return true;
+    case 'own-audio': onOwnAudio(m); return true;
     case 'library-changed': refreshOpenList(); loadMine(); return true; // after an import
   }
   return false;

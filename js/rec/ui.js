@@ -58,6 +58,8 @@ channel.onmessage = e => {
     if (perfAudio && !perfAudio.t0 && m.playing && m.anchor) perfAudio.t0 = m.anchor.wall - m.anchor.tick * 60000 / (m.anchor.bpm * TICKS_PER_BEAT);
     renderPerf();
   } else if (m.type === 'stem') onStem(m);
+  else if (m.type === 'own-level') { if (isOwn()) showLevel(m.peak); }
+  else if (m.type === 'recordings-changed') refreshRecordings();
   else if (m.type === 'seq-state') { seq = m; renderPerf(); renderTakes(); }
   else if (m.type === 'performance') {
     if (m.state === 'start') { perf = { start: m.wall, end: Infinity }; cap.ranges.push({ ...perf, kind: 'performance' }); }
@@ -256,12 +258,12 @@ $('#perf-go').onclick = () => {
   if (perf) { channel.postMessage({ type: 'stop-sequencer' }); return; }
   if (!prefs.midiIn) { toast('Choose your keyboard under MIDI in first.'); return; }
   const bars = prefs.perfLen === 'song' ? 'song' : prefs.perfLen === 'open' ? null : +prefs.perfLen;
-  if (prefs.perfAudio) {
-    if (!audio.open) { toast('Choose an audio input first (Audio in), or untick Record audio too.'); return; }
+  if (prefs.perfAudio && !audioReady()) { toast('Choose an audio input first (Audio in), or untick Record audio too.'); return; }
+  if (prefs.perfAudio && !isOwn()) {
     audio.record();
     perfAudio = { t0: null };
   }
-  channel.postMessage({ type: 'record-performance', bars, countIn: prefs.countIn });
+  channel.postMessage({ type: 'record-performance', bars, countIn: prefs.countIn, ownAudio: prefs.perfAudio && isOwn() });
 };
 
 // The panel's own buttons: ask the host page (index.html).
@@ -322,6 +324,10 @@ $('#midi-in').onchange = e => { prefs.midiIn = e.target.value || null; savePrefs
 // data/audio/ through serve.py.
 
 const audio = new AudioIn({ onLevel: showLevel });
+// "Ostinato (what it plays)": the sequencer records its own mix (no microphone); we just steer it.
+const OWN = '__own';
+const isOwn = () => prefs.audioIn === OWN;
+const audioReady = () => audio.open || isOwn();
 let freeRec = null, perfAudio = null, stems = null, stemWait = null;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const wallToPerf = wall => wall - performance.timeOrigin;
@@ -348,16 +354,26 @@ async function fillDevices() {
   try { list = await AudioIn.devices(); } catch { /* no media devices */ }
   const named = list.some(d => d.label);
   const sel = $('#audio-in');
-  sel.innerHTML = `<option value="">— off —</option>` + (named
+  sel.innerHTML = `<option value="">— off —</option><option value="${OWN}">Ostinato (what it plays)</option>` + (named
     ? list.map(d => `<option value="${esc(d.deviceId)}">${esc(d.label || 'Audio input')}</option>`).join('')
     : `<option value="ask">Allow audio input…</option>`);
-  sel.value = prefs.audioIn && list.some(d => d.deviceId === prefs.audioIn) ? prefs.audioIn : '';
+  sel.value = isOwn() ? OWN : prefs.audioIn && list.some(d => d.deviceId === prefs.audioIn) ? prefs.audioIn : '';
   showChannel();
   return list;
 }
 
 async function useAudio(id) {
+  if (isOwn() && id !== OWN) channel.postMessage({ type: 'own-audio', cmd: 'monitor', on: false });
   if (!id) { audio.stop(); prefs.audioIn = null; savePrefs(); showLevel(0); renderAudio(); return; }
+  if (id === OWN) {
+    audio.stop();
+    prefs.audioIn = OWN;
+    savePrefs();
+    channel.postMessage({ type: 'own-audio', cmd: 'monitor', on: true });
+    await fillDevices();
+    renderAudio();
+    return;
+  }
   try {
     if (id === 'ask') {
       // First time: ask for permission, then pick the Scarlett if there is one.
@@ -399,21 +415,23 @@ function showChannel() {
   sel.innerHTML = monoDevice ? '<option value="0">1 (mono)</option>'
     : '<option value="1">2 (right)</option><option value="0">1 (left)</option><option value="both">1 + 2 (stereo)</option>';
   sel.value = monoDevice ? '0' : (prefs.audioIn && dev().ch) || '1';
-  sel.disabled = !prefs.audioIn || monoDevice;
+  sel.disabled = !prefs.audioIn || monoDevice || isOwn();
 }
 
 function renderAudio() {
-  const on = audio.open;
+  const on = audioReady();
   $('#audio-rec').disabled = !on || !!stems;
   $('#audio-rec').textContent = freeRec ? '■ Stop' : '● Record audio';
   $('#audio-rec').classList.toggle('on', !!freeRec);
-  $('#measure').disabled = !on || !!freeRec || !!stems;
-  $('#stems').disabled = !on || !!freeRec;
+  // Delay and stems are about the XL coming back in through an interface.
+  $('#measure').disabled = !audio.open || !!freeRec || !!stems;
+  $('#stems').disabled = !audio.open || !!freeRec;
   $('#stems').textContent = stems ? '■ Stop printing' : 'Print stems';
   const l = prefs.audioIn ? dev().latency : undefined;
   $('#latency').textContent = l === undefined ? 'delay not measured yet' : `delay ${l.toFixed(1)} ms`;
   showChannel();
   if (!on) $('#meter-db').textContent = 'off';
+  else if (isOwn()) $('#meter-db').textContent = 'plays when Ostinato does';
 }
 
 async function saveWav(chans, name) {
@@ -429,17 +447,18 @@ async function saveWav(chans, name) {
 }
 
 // Free recording: from ● to ■.
-$('#audio-rec').onclick = () => {
+$('#audio-rec').onclick = async () => {
   if (freeRec) {
     clearInterval(freeRec.timer);
-    const r = audio.finish();
     freeRec = null;
     $('#audio-time').textContent = '';
     renderAudio();
-    if (r) saveWav(r.chans, `Recording ${stamp(Date.now())}`);
+    if (isOwn()) { channel.postMessage({ type: 'own-audio', cmd: 'stop' }); return; } // the sequencer saves it
+    const name = `Recording ${stamp(Date.now())}`, r = await audio.finish();
+    if (r) saveWav(r.chans, name);
     return;
   }
-  audio.record();
+  if (isOwn()) channel.postMessage({ type: 'own-audio', cmd: 'start' }); else audio.record();
   const start = performance.now();
   freeRec = { timer: setInterval(() => { $('#audio-time').textContent = `recording ${clock(performance.now() - start)}`; }, 250) };
   renderAudio();
@@ -451,8 +470,8 @@ function finishPerfAudio(endWall) {
   if (!perfAudio) return;
   const p = perfAudio;
   perfAudio = null;
-  setTimeout(() => {
-    const r = audio.finish();
+  setTimeout(async () => {
+    const r = await audio.finish();
     if (!r || !p.t0) return;
     const sr = audio.sampleRate, from = audio.frameAt(wallToPerf(p.t0) + latency());
     saveWav(cut(r, from, Math.round((endWall - p.t0 + 1500) / 1000 * sr)), `Performance ${stamp(p.t0)}`);
@@ -470,7 +489,7 @@ $('#measure').onclick = async () => {
   out.send([0x90 | ch, 60, 120], at);
   out.send([0x80 | ch, 60, 0], at + 250);
   await sleep(1300);
-  const r = audio.finish();
+  const r = await audio.finish();
   const onset = r ? findOnset(r.chans, audio.frameAt(at) - r.frame - Math.round(audio.sampleRate * 0.002)) : -1;
   const ms = onset < 0 ? NaN : audio.perfAt(r.frame + onset) - at;
   if (!(ms > 0 && ms < 300)) {
@@ -497,7 +516,7 @@ $('#stems').onclick = async () => {
     $('#stems-status').textContent = `Recording ${tr.name} (${k + 1} of ${tracks.length})…`;
     audio.record();
     const res = await new Promise(resolve => { stemWait = { resolve }; channel.postMessage({ type: 'print-stem', ti: tr.ti, tail: 2 }); });
-    const r = audio.finish();
+    const r = await audio.finish();
     if (stems.cancel || !r || !res.start) break;
     const sr = audio.sampleRate, from = audio.frameAt(wallToPerf(res.start) + latency());
     await saveWav(cut(r, from, Math.round((res.ms + 2000) / 1000 * sr)), `${song} - ${tr.name}`);
@@ -538,7 +557,7 @@ $('#recordings').addEventListener('click', async e => {
 });
 
 // Typing notes while the panel has the focus: captured here, and played by the page underneath.
-attachQwerty({ active: () => prefs.midiIn === QWERTY, from: 'recorder', channel,
+attachQwerty({ active: () => prefs.midiIn === QWERTY, from: 'recorder', channel, onMode: text => toast(text),
   onMessage: (d, ts) => { captureEvent(d, ts); if ((d[0] & 0xf0) === 0x90 && d[2] > 0) { $('#led').className = 'keys-led ok'; clearTimeout(ledTimer); ledTimer = setTimeout(() => { $('#led').className = 'keys-led'; }, 300); } } });
 
 // Keeps "2 min ago" current.
@@ -548,6 +567,6 @@ if (STATIC) document.querySelector('#audio-sec .sub .hint').textContent = '· ke
 renderTakes();
 renderPerf();
 initMidi();
-fillDevices().then(() => { if (prefs.audioIn) useAudio(prefs.audioIn); else renderAudio(); });
+fillDevices().then(() => { if (prefs.audioIn) useAudio(prefs.audioIn); else if (STATIC) useAudio(OWN); else renderAudio(); });
 refreshRecordings();
 channel.postMessage({ type: 'get-seq-state' });
