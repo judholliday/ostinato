@@ -189,7 +189,7 @@ function routesHTML(from) {
     const dests = audioDestinations(from);
     html += `<div class="route"><span class="route-h">Audio to</span>${outs.map(c =>
       `<span class="chip">${c.to === 'out' ? 'Output' : esc(c.to)}<button class="x" data-act="a-del" data-from="${from}" data-to="${c.to}" title="Disconnect">✕</button></span>`).join('')}
-      ${dests.length ? `<select data-act="a-add" data-from="${from}"><option value="">+</option>${dests.map(d => `<option value="${d}">${d === 'out' ? 'Output' : d}</option>`).join('')}</select>` : ''}
+      ${dests.length ? `<select data-act="a-add" data-from="${from}"><option value="">+ connect to…</option>${dests.map(d => `<option value="${d}">${d === 'out' ? 'Output' : d}</option>`).join('')}</select>` : ''}
       ${!outs.length ? '<span class="warn-text">not connected</span>' : ''}</div>`;
   }
   if (spec.modOut || SOURCES[from]) {
@@ -237,7 +237,7 @@ function renderModules() {
 
 // ---- the patch diagram ----
 
-let viewSel = null; // the selected cable: { kind: 'audio' | 'mod', from, to }
+let viewSel = null; // what's selected: a cable { kind: 'audio' | 'mod', from, to }, or { kind: 'module', id }
 let justDragged = false; // a drag ends with a click; ignore that one
 
 function renderView() {
@@ -245,7 +245,8 @@ function renderView() {
   el.hidden = !prefs.viewOpen;
   $('#view-col').textContent = prefs.viewOpen ? '▾' : '▸';
   if (!prefs.viewOpen) return;
-  if (viewSel && !(viewSel.kind === 'audio' ? patch.audio : patch.mod).some(c => c.from === viewSel.from && c.to === viewSel.to)) viewSel = null;
+  if (viewSel?.kind === 'module' ? !(viewSel.id === 'out' || SOURCES[viewSel.id] || modOf(viewSel.id))
+    : viewSel && !(viewSel.kind === 'audio' ? patch.audio : patch.mod).some(c => c.from === viewSel.from && c.to === viewSel.to)) viewSel = null;
   el.innerHTML = patchSVG(patch, { selected: viewSel }) + selOverlay();
   if (viewSel) placeOverlay();
 }
@@ -254,6 +255,7 @@ function renderView() {
 function selOverlay() {
   if (!viewSel) return '';
   const name = id => (id === 'out' ? 'Output' : SOURCES[id]?.label || id);
+  if (viewSel.kind === 'module') return modulePanel(viewSel.id);
   if (viewSel.kind === 'audio') {
     const fm = modOf(viewSel.to)?.type === 'fmop';
     return `<div class="view-pop"><span>${esc(name(viewSel.from))} → ${esc(name(viewSel.to))}${fm ? ' (FM)' : ''}</span>
@@ -265,17 +267,49 @@ function selOverlay() {
     <input type="range" min="0" max="1000" value="${Math.round((c.amount - t.min) / (t.max - t.min) * 1000)}" data-act="v-amt" data-i="${i}">
     <span class="val">${amountText(c.to, c.amount)}</span><button class="small" data-act="v-del">✕</button></div>`;
 }
-// Puts the overlay next to the middle of the selected cable.
+// A module's panel: everything connected to it (each with ✕), menus to connect it to more, bypass,
+// its settings, remove.
+function modulePanel(id) {
+  const m = modOf(id), title = id === 'out' ? 'Output' : SOURCES[id]?.label || MODULES[m.type].label;
+  const from = patch.audio.filter(c => c.to === id);
+  const by = patch.mod.map((c, i) => [c, i]).filter(([c]) => c.to.startsWith(`${id}.`));
+  const incoming = (from.length ? `<div class="route"><span class="route-h">${m?.type === 'fmop' ? 'FM from' : 'Audio from'}</span>${from.map(c =>
+    `<span class="chip">${esc(c.from)}<button class="x" data-act="a-del" data-from="${c.from}" data-to="${c.to}" title="Disconnect">✕</button></span>`).join('')}</div>` : '')
+    + (by.length ? `<div class="route mods"><span class="route-h">Modulated by</span>${by.map(([c, i]) =>
+      `<div class="mrow"><span class="mto">${esc(c.from)} → ${esc(targetLabel(c.to))}</span><span></span><span class="val">${amountText(c.to, c.amount)}</span>
+        <button class="x" data-act="m-del" data-i="${i}" title="Remove">✕</button></div>`).join('')}</div>` : '');
+  return `<div class="view-pop mod-pop">
+    <div class="mod-pop-h"><b>${esc(title)}</b>${m ? ` <span class="mid">${esc(id)}</span>` : ''}<span class="spacer"></span>
+      ${m ? `<button class="small ${m.off ? '' : 'ghost'}" data-act="power" data-id="${id}">${m.off ? '⏻ Turn on' : '⏻ Bypass'}</button>
+        <button class="ghost small" data-act="goto" data-id="${id}" title="Show its settings">Settings ↓</button>
+        <button class="ghost small" data-act="del" data-id="${id}" title="Remove this module">Remove</button>` : ''}
+      <button class="ghost small" data-act="close" title="Close (Esc)">✕</button></div>
+    ${incoming}${id === 'out' ? '' : routesHTML(id)}
+    ${!incoming && id !== 'out' && !patch.audio.some(c => c.from === id) && !patch.mod.some(c => c.from === id) ? '<p class="hint">Not connected yet: choose where it goes below, or drag from its dot in the diagram.</p>' : ''}
+  </div>`;
+}
+
+// Puts the overlay next to the selected cable (its middle) or module (below it).
 function placeOverlay() {
-  const path = document.querySelector('#patch-view .cable.sel .line'), pop = document.querySelector('#patch-view .view-pop');
-  if (!path || !pop) return;
-  const svg = path.ownerSVGElement, mid = path.getPointAtLength(path.getTotalLength() / 2);
-  const p = new DOMPoint(mid.x, mid.y).matrixTransform(svg.getScreenCTM()), box = $('#patch-view').getBoundingClientRect();
-  pop.style.left = `${Math.max(4, p.x - box.left + $('#patch-view').scrollLeft - 80)}px`;
-  pop.style.top = `${p.y - box.top + $('#patch-view').scrollTop + 10}px`;
+  const pop = document.querySelector('#patch-view .view-pop'), view = $('#patch-view');
+  if (!pop) return;
+  const box = view.getBoundingClientRect();
+  let x, y;
+  if (viewSel.kind === 'module') {
+    const b = view.querySelector(`[data-box="${viewSel.id}"] rect`)?.getBoundingClientRect();
+    if (!b) return;
+    x = b.left; y = b.bottom + 14;
+  } else {
+    const path = view.querySelector('.cable.sel .line');
+    if (!path) return;
+    const mid = path.getPointAtLength(path.getTotalLength() / 2), p = new DOMPoint(mid.x, mid.y).matrixTransform(path.ownerSVGElement.getScreenCTM());
+    x = p.x - 80; y = p.y + 10;
+  }
+  pop.style.left = `${Math.max(4, Math.min(x - box.left + view.scrollLeft, view.scrollWidth - pop.offsetWidth - 4))}px`;
+  pop.style.top = `${y - box.top + view.scrollTop}px`;
 }
 function deleteSelected() {
-  if (!viewSel) return;
+  if (!viewSel || viewSel.kind === 'module') return; // cables only (a module has its own Remove)
   const list = viewSel.kind === 'audio' ? 'audio' : 'mod';
   patch[list] = patch[list].filter(c => !(c.from === viewSel.from && c.to === viewSel.to));
   viewSel = null;
@@ -363,18 +397,26 @@ $('#patch-view').addEventListener('click', e => {
   if (justDragged) return;
   const power = e.target.closest('[data-power]');
   if (power) { togglePower(power.dataset.power); return; }
-  const act = e.target.closest('[data-act]')?.dataset.act;
+  const actEl = e.target.closest('[data-act]'), act = actEl?.dataset.act;
   if (act === 'v-del') { deleteSelected(); return; }
+  if (act === 'close') { viewSel = null; renderView(); return; }
+  if (act === 'goto') {
+    const card = document.querySelector(`[data-mod="${actEl.dataset.id}"]`);
+    if (card) { card.scrollIntoView({ block: 'center', behavior: 'smooth' }); card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash'); }
+    return;
+  }
+  if (actEl && e.target.closest('.mod-pop') && routeClick(actEl)) return;
   if (e.target.closest('.view-pop, .view-menu, .port')) return;
   const cable = e.target.closest('.cable');
   if (cable) { viewSel = { kind: cable.dataset.kind, from: cable.dataset.from, to: cable.dataset.to }; renderView(); return; }
-  const box = e.target.closest('[data-box]');
-  viewSel = null;
+  // A module (or the Output, velocity, the wheel): open its panel; clicking it again closes it.
+  const box = e.target.closest('[data-box]')?.dataset.box;
+  viewSel = box && !(viewSel?.kind === 'module' && viewSel.id === box) ? { kind: 'module', id: box } : null;
   renderView();
-  const card = box && (document.querySelector(`[data-mod="${box.dataset.box}"]`) || (SOURCES[box.dataset.box] && document.querySelector('.card.sources')));
-  if (card) { card.scrollIntoView({ block: 'center', behavior: 'smooth' }); card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash'); }
 });
+$('#patch-view').addEventListener('change', e => { if (e.target.closest('.mod-pop')) routeChange(e.target); });
 $('#patch-view').addEventListener('input', e => {
+  if (e.target.closest('.mod-pop') && routeInput(e.target)) return;
   if (e.target.dataset.act !== 'v-amt') return;
   const i = +e.target.dataset.i, c = patch.mod[i], [id, key] = c.to.split('.'), t = MODULES[modOf(id).type].targets[key];
   let v = t.min + +e.target.value / 1000 * (t.max - t.min);
@@ -391,21 +433,72 @@ $('#patch-view').addEventListener('input', e => {
 // ---------------------------------------------------------------------------------------------
 // Editing
 
+// Connection controls, in the cards and in the diagram's module panel.
+function routeInput(el) {
+  if (el.dataset.act !== 'm-amt') return false;
+  const i = +el.dataset.i, c = patch.mod[i], [id, key] = c.to.split('.'), t = MODULES[modOf(id).type].targets[key];
+  let v = t.min + +el.value / 1000 * (t.max - t.min);
+  if (Math.abs(v) < (t.max - t.min) * 0.01) v = 0; // snap to none in the middle
+  c.amount = t.unit === 'cents' ? Math.round(v) : Math.round(v * 100) / 100;
+  synth.setMod(i, c.amount);
+  el.parentElement.querySelector('.val').textContent = amountText(c.to, c.amount);
+  changed({ coalesce: true });
+  return true;
+}
+function routeClick(el) {
+  switch (el.dataset.act) {
+    case 'power': togglePower(el.dataset.id); return true;
+    case 'del': {
+      const id = el.dataset.id;
+      patch.modules = patch.modules.filter(m => m.id !== id);
+      patch.audio = patch.audio.filter(c => c.from !== id && c.to !== id);
+      patch.mod = patch.mod.filter(c => c.from !== id && !c.to.startsWith(`${id}.`));
+      for (const [k, t] of Object.entries(patch.cc)) if (t.startsWith(`${id}.`)) delete patch.cc[k];
+      if (viewSel?.id === id) viewSel = null;
+      changed({ rebuild: true });
+      renderModules();
+      return true;
+    }
+    case 'a-del':
+      patch.audio = patch.audio.filter(c => !(c.from === el.dataset.from && c.to === el.dataset.to));
+      changed({ rebuild: true });
+      renderModules();
+      return true;
+    case 'm-del':
+      patch.mod.splice(+el.dataset.i, 1);
+      changed({ rebuild: true });
+      renderModules();
+      return true;
+  }
+  return false;
+}
+function routeChange(el) {
+  if (el.dataset.act === 'a-add' && el.value) {
+    patch.audio.push({ from: el.dataset.from, to: el.value });
+    changed({ rebuild: true });
+    renderModules();
+    return true;
+  }
+  if (el.dataset.act === 'm-add' && el.value) {
+    const [id, key] = el.value.split('.'), t = MODULES[modOf(id).type].targets[key];
+    // A gentle starting amount: a quarter of the way up.
+    const amount = t.unit === 'cents' ? (key === 'pitch' ? 50 : 1200) : Math.round(t.max * 25) / 100;
+    patch.mod.push({ from: el.dataset.from, to: el.value, amount });
+    changed({ rebuild: true });
+    renderModules();
+    return true;
+  }
+  return false;
+}
+
 $('#modules').addEventListener('input', e => {
   const el = e.target;
+  if (routeInput(el)) return;
   if (el.dataset.act === 'num') {
     const m = modOf(el.dataset.id), spec = paramOf(m.type, el.dataset.key), v = fromSlider(spec, +el.value / 1000);
     m.params[spec.key] = v;
     synth.setParam(m.id, spec.key, v);
     el.parentElement.querySelector('.val').textContent = formatValue(spec, v);
-    changed({ coalesce: true });
-  } else if (el.dataset.act === 'm-amt') {
-    const i = +el.dataset.i, c = patch.mod[i], [id, key] = c.to.split('.'), t = MODULES[modOf(id).type].targets[key];
-    let v = t.min + +el.value / 1000 * (t.max - t.min);
-    if (Math.abs(v) < (t.max - t.min) * 0.01) v = 0; // snap to none in the middle
-    c.amount = t.unit === 'cents' ? Math.round(v) : Math.round(v * 100) / 100;
-    synth.setMod(i, c.amount);
-    el.parentElement.querySelector('.val').textContent = amountText(c.to, c.amount);
     changed({ coalesce: true });
   }
 });
@@ -415,7 +508,7 @@ $('#modules').addEventListener('click', e => {
   // Learning: clicking a setting picks it as the target for the next knob turned.
   const row = e.target.closest('.prm[data-target]');
   if (learn && row && el?.dataset.act !== 'unlearn') { learnTarget = row.dataset.target; renderModules(); return; }
-  if (!el) return;
+  if (!el || routeClick(el)) return;
   switch (el.dataset.act) {
     case 'choice': {
       const m = modOf(el.dataset.id);
@@ -427,27 +520,6 @@ $('#modules').addEventListener('click', e => {
       renderModules();
       break;
     }
-    case 'power': togglePower(el.dataset.id); break;
-    case 'del': {
-      const id = el.dataset.id;
-      patch.modules = patch.modules.filter(m => m.id !== id);
-      patch.audio = patch.audio.filter(c => c.from !== id && c.to !== id);
-      patch.mod = patch.mod.filter(c => c.from !== id && !c.to.startsWith(`${id}.`));
-      for (const [k, t] of Object.entries(patch.cc)) if (t.startsWith(`${id}.`)) delete patch.cc[k];
-      changed({ rebuild: true });
-      renderModules();
-      break;
-    }
-    case 'a-del':
-      patch.audio = patch.audio.filter(c => !(c.from === el.dataset.from && c.to === el.dataset.to));
-      changed({ rebuild: true });
-      renderModules();
-      break;
-    case 'm-del':
-      patch.mod.splice(+el.dataset.i, 1);
-      changed({ rebuild: true });
-      renderModules();
-      break;
     case 'unlearn':
       delete patch.cc[el.dataset.cc];
       changed();
@@ -456,68 +528,22 @@ $('#modules').addEventListener('click', e => {
   }
 });
 
-$('#modules').addEventListener('change', e => {
-  const el = e.target;
-  if (el.dataset.act === 'a-add' && el.value) {
-    patch.audio.push({ from: el.dataset.from, to: el.value });
-    changed({ rebuild: true });
-    renderModules();
-  } else if (el.dataset.act === 'm-add' && el.value) {
-    const [id, key] = el.value.split('.'), t = MODULES[modOf(id).type].targets[key];
-    // A gentle starting amount: a quarter of the way up.
-    const amount = t.unit === 'cents' ? (key === 'pitch' ? 50 : 1200) : Math.round(t.max * 25) / 100;
-    patch.mod.push({ from: el.dataset.from, to: el.value, amount });
-    changed({ rebuild: true });
-    renderModules();
-  }
-});
+$('#modules').addEventListener('change', e => routeChange(e.target));
 
-// A new module goes before the Amp (or at the end), wired into the obvious place.
+// A new module starts unconnected, with its panel open in the patch diagram: connect it there
+// (or drag from its output dot).
 $('#add-module').addEventListener('change', e => {
   const type = e.target.value;
   e.target.value = '';
   if (!type) return;
-  const id = newId(patch, type), spec = MODULES[type];
+  const id = newId(patch, type);
   patch.modules.push({ id, type, params: defaultParams(type) });
-  const amp = patch.modules.find(m => m.type === 'amp'), filter = patch.modules.find(m => m.type === 'filter');
-  const carrier = patch.modules.find(m => m.type === 'fmop' && m.id !== id && patch.audio.some(c => c.from === m.id && !modOf(c.to)?.type.startsWith('fm')));
-  // Reroutes connections into `dest` (or, without one, to the effects/output) through the new module.
-  const insertBefore = dest => {
-    const into = patch.audio.filter(c => (dest ? c.to === dest : c.to === 'out' || MODULES[modOf(c.to)?.type]?.scope === 'global')
-      && c.from !== id && MODULES[modOf(c.from)?.type]?.scope === 'voice');
-    if (!into.length) { patch.audio.push({ from: id, to: 'out' }); return; }
-    const targets = [...new Set(into.map(c => c.to))];
-    into.forEach(c => { c.to = id; });
-    targets.forEach(to => patch.audio.push({ from: id, to }));
-  };
-  if (type === 'osc' || type === 'noise') {
-    const to = filter?.id || amp?.id || 'out';
-    patch.audio.push({ from: id, to });
-  } else if (type === 'fmop') {
-    // A second operator modulates the first; the first one goes where an oscillator would.
-    if (carrier) patch.audio.push({ from: id, to: carrier.id });
-    else patch.audio.push({ from: id, to: filter?.id || amp?.id || 'out' });
-  } else if (type === 'drums') {
-    patch.audio.push({ from: id, to: 'out' });
-  } else if (type === 'ring') {
-    insertBefore(filter?.id || amp?.id);
-  } else if (type === 'space') {
-    insertBefore(null);
-  } else if (spec.scope === 'global') {
-    // Insert the effect at the end of the chain: whatever went to the output now goes through it.
-    const last = patch.audio.filter(c => c.to === 'out');
-    last.forEach(c => { c.to = id; });
-    patch.audio.push({ from: id, to: 'out' });
-  } else if (type === 'env') {
-    if (filter) patch.mod.push({ from: id, to: `${filter.id}.cutoff`, amount: 2400 });
-  } else if (type === 'lfo') {
-    const osc = patch.modules.find(m => m.type === 'osc');
-    if (osc) patch.mod.push({ from: id, to: `${osc.id}.pitch`, amount: 20 });
-  }
-  patch = normalizePatch(patch).patch;
+  viewSel = { kind: 'module', id };
   changed({ rebuild: true });
   renderModules();
-  document.querySelector(`[data-mod="${id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  if (!prefs.viewOpen) { prefs.viewOpen = true; savePrefs(); renderView(); }
+  $('#patch-view').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  toast(`Added ${id}. Connect it in the panel beside it, or drag from its dot.`);
 });
 
 $('#inst-name').addEventListener('change', e => { patch.name = e.target.value.trim().slice(0, 40) || 'Untitled'; changed(); });

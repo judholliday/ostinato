@@ -123,7 +123,8 @@ export function patchSVG(patch, { selected = null } = {}) {
           <title>${esc(name)}${k === def ? ' (where modulation dropped on this module goes)' : ''}${ins || '\nnothing connected: drag an envelope, LFO, velocity or the wheel here'}</title></circle>`);
       });
     }
-    return `<g class="box ${kind}${m?.off ? ' is-off' : ''}" data-box="${id}" transform="translate(${p.x},${p.y})">${parts.join('')}</g>`;
+    const picked = selected?.kind === 'module' && selected.id === id;
+    return `<g class="box ${kind}${m?.off ? ' is-off' : ''}${picked ? ' is-selected' : ''}" data-box="${id}" transform="translate(${p.x},${p.y})">${parts.join('')}</g>`;
   }).join('');
   return `<svg class="patch-svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Patch diagram">
     <g class="cables">${cables.join('')}</g>${boxes}<path class="drag-line" d=""/></svg>`;

@@ -38,7 +38,7 @@
 
 .add-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 12px 0; }
 .add-row select { max-width: 420px; }
-.lab-keys { position: sticky; bottom: 0; background: var(--bg); padding: 8px 0; border-top: 1px solid var(--line); margin-top: 8px; }
+.lab-keys { background: var(--bg); padding: 8px 0; border-top: 1px solid var(--line); margin-top: 8px; }
 .lab-keys .kbd { height: 70px; }
 .lab-keys .kbd .w { width: 22px; height: 70px; }
 .lab-keys .kbd .b { width: 14px; height: 42px; }
@@ -101,3 +101,11 @@
 /* card groups */
 .group-h { grid-column: 1 / -1; margin: 6px 0 -2px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .group-h .hint { text-transform: none; letter-spacing: 0; }
+
+/* a module's panel in the diagram */
+.view-pop.mod-pop { display: block; width: 380px; max-width: calc(100vw - 40px); white-space: normal; padding: 8px 10px; }
+.mod-pop-h { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.mod-pop-h .spacer { flex: 1; }
+.mod-pop .route { border-top: 1px dashed var(--line); padding-top: 6px; margin-top: 6px; }
+.mod-pop .hint { margin: 6px 0 0; }
+.patch-svg .box.is-selected rect { stroke-width: 3; stroke: var(--text); }
