@@ -14,6 +14,7 @@ import { portLabel, looksLikeSynthOut } from '../core/midiports.js';
 import { AudioIn, cut, encodeWav, findOnset } from './audio.js';
 import { storage, placeOf } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
+import { QWERTY, QWERTY_LABEL, attachQwerty } from '../core/qwerty.js';
 
 const $ = sel => document.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -49,6 +50,8 @@ function tickAt(wall) {
 
 channel.onmessage = e => {
   const m = e.data || {};
+  // The computer keyboard played on another page (or here, below): captured like a MIDI keyboard.
+  if (m.type === 'qwerty') { if (prefs.midiIn === QWERTY) captureEvent(m.data, m.wall - performance.timeOrigin); return; }
   if (m.type === 'transport') {
     transport = m;
     // Bar 1 of a performance being recorded with audio: where its audio file starts.
@@ -146,7 +149,7 @@ function renderTakes() {
   const takes = allTakes();
   const input = inputs().find(p => p.name === prefs.midiIn);
   $('#takes-sum').textContent = !prefs.midiIn ? '· choose a MIDI in to capture what you play'
-    : `· everything played on ${input ? portLabel(input) : prefs.midiIn} is kept for an hour`;
+    : `· everything played on ${prefs.midiIn === QWERTY ? 'the computer keyboard' : input ? portLabel(input) : prefs.midiIn} is kept for an hour`;
   if (el.contains(document.activeElement) && document.activeElement.matches('input, select')) return;
   if (!takes.length) {
     el.innerHTML = '<div class="hint">Nothing yet. Play anything, in any view, with or without the sequencer, and it shows up here as a take.</div>';
@@ -286,23 +289,27 @@ function onMidi(e) {
 }
 function wireMidi() {
   const ins = inputs();
-  if (!prefs.midiIn || !ins.some(p => p.name === prefs.midiIn)) {
-    // Use what the sequencer listens to, else a controller keyboard (the MPK mini), else the first.
+  if (prefs.midiIn !== QWERTY && (!prefs.midiIn || !ins.some(p => p.name === prefs.midiIn))) {
+    // Use what the sequencer listens to, else a controller keyboard (the MPK mini), else the
+    // first; with no MIDI keyboard at all, the computer keyboard.
     const seqIn = (() => { try { return JSON.parse(localStorage.getItem('mkxl.seq.prefs'))?.keysIn; } catch { return null; } })();
-    const guess = ins.find(p => p.name === seqIn) || ins.find(p => /mpk|akai/i.test(p.name)) || ins[0];
-    if (guess) { prefs.midiIn = guess.name; savePrefs(); }
+    const guess = seqIn === QWERTY ? null : ins.find(p => p.name === seqIn) || ins.find(p => /mpk|akai/i.test(p.name)) || ins[0];
+    prefs.midiIn = guess ? guess.name : QWERTY;
+    savePrefs();
   }
   for (const p of ins) { p.onmidimessage = p.name === prefs.midiIn ? onMidi : null; if (p.name === prefs.midiIn) p.open?.().catch(() => {}); }
-  $('#midi-in').innerHTML = `<option value="">— none —</option>${ins.map(p => `<option value="${esc(p.name)}">${esc(portLabel(p))}</option>`).join('')}`;
+  $('#midi-in').innerHTML = `<option value="">— none —</option>${ins.map(p => `<option value="${esc(p.name)}">${esc(portLabel(p))}</option>`).join('')}`
+    + `<option value="${QWERTY}">${QWERTY_LABEL}</option>`;
   $('#midi-in').value = prefs.midiIn || '';
   renderTakes();
   renderPerf();
 }
 async function initMidi() {
   if (new URLSearchParams(location.search).has('sim')) await import('../../tools/fakesynth.js');
-  if (!navigator.requestMIDIAccess) { $('#midi-in').innerHTML = '<option>No Web MIDI (use Chrome)</option>'; return; }
+  // Without Web MIDI (or with it blocked), the computer keyboard still works.
+  if (!navigator.requestMIDIAccess) { wireMidi(); return; }
   try { midi = await navigator.requestMIDIAccess({ sysex: true }); } catch {
-    try { midi = await navigator.requestMIDIAccess(); } catch { $('#midi-in').innerHTML = '<option>MIDI blocked</option>'; return; }
+    try { midi = await navigator.requestMIDIAccess(); } catch { wireMidi(); return; }
   }
   midi.onstatechange = wireMidi;
   wireMidi();
@@ -529,6 +536,10 @@ $('#recordings').addEventListener('click', async e => {
   await storage.remove('audio', file);
   refreshRecordings();
 });
+
+// Typing notes while the panel has the focus: captured here, and played by the page underneath.
+attachQwerty({ active: () => prefs.midiIn === QWERTY, from: 'recorder', channel,
+  onMessage: (d, ts) => { captureEvent(d, ts); if ((d[0] & 0xf0) === 0x90 && d[2] > 0) { $('#led').className = 'keys-led ok'; clearTimeout(ledTimer); ledTimer = setTimeout(() => { $('#led').className = 'keys-led'; }, 300); } } });
 
 // Keeps "2 min ago" current.
 setInterval(() => { if (!document.hidden) renderTakes(); }, 15000);

@@ -70,6 +70,10 @@ Switch between **microKORG XL**, **Sequencer** and **Lab** at the top of any pag
 
 Keys: Space play/stop, R record, ← → move between steps, ↑ ↓ transpose (⇧ for an octave), Enter add a note, ⌫ delete, Esc close the step editor.
 
+## Computer keyboard
+
+No MIDI keyboard? **MIDI in** (Sequencer, Recorder) offers **Computer keyboard (A–K)**, and picks it by itself when there's no MIDI device. **A–K** are white keys, **W E T Y U O P** black keys, **Z / X** move an octave (shared by every page; the Lab's keys work the same way). It does everything a MIDI keyboard does: it plays the selected track's sound (with **Thru**), fills steps, records with **● Rec**, and the Recorder captures it, including while you type with the Recorder panel in front. To play over a sequence and keep it: **Recorder → Record with the sequencer**, then play.
+
 ## Travel version (no server, works offline)
 
 The same app runs as a plain website (e.g. on GitHub Pages) in Chrome or Edge, with nothing to install: the **Sequencer**, the **Lab** and the **Recorder** (takes and audio, e.g. from the laptop's microphone). It's what you get anywhere but this Mac's own server; at home, add `?static` to the address to try it. Without the server:

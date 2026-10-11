@@ -1,14 +1,14 @@
 // Offline support for the travel version (registered by index.html only away from this Mac's
 // server). Network first, so changes arrive whenever you're online; when offline, the copy saved
 // on the last visit. Page addresses carry ?v=<time>, so they're matched without the query.
-const CACHE = 'mkxl-travel-v2';
+const CACHE = 'mkxl-travel-v3';
 
 // Everything the travel version uses, saved when this is installed so the first visit is enough.
 // (tools/selftest.mjs checks this list against the files: add new pages, styles and scripts here.)
 const ASSETS = [
   './', 'index.html', 'sequencer.html', 'lab.html', 'recorder.html',
   'style.css', 'sequencer.css', 'lab.css', 'recorder.css',
-  'js/core/devices.js', 'js/core/midiports.js', 'js/core/mode.js', 'js/core/storage.js', 'js/core/topbar.js', 'js/core/transfer.js',
+  'js/core/devices.js', 'js/core/midiports.js', 'js/core/mode.js', 'js/core/qwerty.js', 'js/core/storage.js', 'js/core/topbar.js', 'js/core/transfer.js',
   'js/lab/engine.js', 'js/lab/patch.js', 'js/lab/patchview.js', 'js/lab/ui.js',
   'js/rec/audio.js', 'js/rec/ui.js',
   'js/seq/capture.js', 'js/seq/demo.js', 'js/seq/engine.js', 'js/seq/generate.js', 'js/seq/midifile.js', 'js/seq/model.js',

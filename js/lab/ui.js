@@ -6,6 +6,7 @@ import { patchSVG } from './patchview.js';
 import { portLabel } from '../core/midiports.js';
 import { storage, placeOf, stemOf } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
+import { attachQwerty, qwertyBase, setQwertyBase } from '../core/qwerty.js';
 
 const $ = sel => document.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -659,7 +660,8 @@ $('#keys-in').onchange = e => { prefs.keysIn = e.target.value || null; savePrefs
 function renderKbd() {
   const keys = [];
   let white = 0;
-  for (let n = prefs.base; n <= prefs.base + 24; n++) {
+  const base = qwertyBase();
+  for (let n = base; n <= base + 24; n++) {
     const black = [1, 3, 6, 8, 10].includes(n % 12);
     if (black) keys.push(`<div class="b" data-n="${n}" style="left:${white * 22 - 7}px"></div>`);
     else { keys.push(`<div class="w" data-n="${n}">${n % 12 === 0 ? `<span class="lbl">${noteName(n)}</span>` : ''}</div>`); white++; }
@@ -674,12 +676,10 @@ $('#kbd').addEventListener('pointerdown', e => {
   const up = () => { noteOff(n); removeEventListener('pointerup', up); };
   addEventListener('pointerup', up);
 });
-$('#oct-up').onclick = () => { prefs.base = Math.min(96, prefs.base + 12); savePrefs(); renderKbd(); };
-$('#oct-down').onclick = () => { prefs.base = Math.max(12, prefs.base - 12); savePrefs(); renderKbd(); };
+$('#oct-up').onclick = () => { setQwertyBase(Math.min(96, qwertyBase() + 12)); renderKbd(); };
+$('#oct-down').onclick = () => { setQwertyBase(Math.max(12, qwertyBase() - 12)); renderKbd(); };
 
-// Computer keyboard: the home row as white keys, the row above as black keys.
-const KEYMAP = { a: 0, w: 1, s: 2, e: 3, d: 4, f: 5, t: 6, g: 7, y: 8, h: 9, u: 10, j: 11, k: 12, o: 13, l: 14, p: 15, ';': 16 };
-const typed = new Map();
+// Shortcuts. (Note keys are the computer keyboard, below: they never reach these.)
 document.addEventListener('keydown', e => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
@@ -688,15 +688,13 @@ document.addEventListener('keydown', e => {
   if (mod || e.altKey || e.repeat) return;
   if ((e.key === 'Delete' || e.key === 'Backspace') && viewSel) { e.preventDefault(); deleteSelected(); return; }
   if (e.key === 'Escape' && viewSel) { viewSel = null; renderView(); return; }
-  const k = e.key.toLowerCase();
-  if (k === 'z' || k === 'x') { (k === 'z' ? $('#oct-down') : $('#oct-up')).click(); return; }
-  if (k in KEYMAP && !typed.has(k)) { const n = prefs.base + KEYMAP[k]; typed.set(k, n); noteOn(n, 100); }
 });
-document.addEventListener('keyup', e => {
-  const k = e.key.toLowerCase();
-  if (typed.has(k)) { noteOff(typed.get(k)); typed.delete(k); }
-});
-addEventListener('blur', () => { for (const n of typed.values()) noteOff(n); typed.clear(); });
+
+// The computer keyboard (core/qwerty.js): A–K and the row above, Z / X for octaves. Played here,
+// or in the Recorder panel over the Lab; the Recorder captures it too.
+const qwertyNote = d => { if ((d[0] & 0xf0) === 0x90 && d[2] > 0) noteOn(d[1], d[2]); else noteOff(d[1]); };
+attachQwerty({ active: onScreen, onMessage: qwertyNote, channel, from: 'lab', onOctave: renderKbd });
+channel?.addEventListener('message', e => { if (e.data?.type === 'qwerty' && e.data.from === 'recorder' && onScreen()) qwertyNote(e.data.data); });
 
 // The host page switches views; nothing reloads.
 document.querySelectorAll('.app-nav a[data-view]').forEach(a => a.addEventListener('click', e => {

@@ -12,6 +12,7 @@ import { portLabel, looksLikeSynthIn } from '../core/midiports.js';
 import { deviceForOut } from '../core/devices.js';
 import { storage, placeOf, stemOf } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
+import { QWERTY, QWERTY_LABEL, attachQwerty, qwertyRange } from '../core/qwerty.js';
 import { LabSynth } from '../lab/engine.js';
 
 const $ = sel => document.querySelector(sel);
@@ -246,6 +247,10 @@ let liveSound = null; // the track whose sound is on the XL now: edits in the ed
 const sameSound = (a, b) => !!a && !!b && a.data.length === b.data.length && a.data.every((x, i) => x === b.data[i]);
 
 if (soundChannel) soundChannel.onmessage = e => {
+  if (e.data?.type === 'qwerty') {
+    if (e.data.from === 'recorder' && prefs.keysIn === QWERTY && onScreen()) onQwerty(e.data.data, e.data.wall - performance.timeOrigin);
+    return;
+  }
   if (onRecorderMessage(e.data || {})) return;
   if (e.data?.type === 'instruments-changed') { refreshInstruments(); return; }
   if (e.data?.type === 'instrument') {
@@ -499,7 +504,7 @@ function poolNotes(ti) {
 
 async function initMidi() {
   if (new URLSearchParams(location.search).has('sim')) await import('../../tools/fakesynth.js');
-  if (!navigator.requestMIDIAccess) { status('No Web MIDI · computer sound only', 'warn'); return; }
+  if (!navigator.requestMIDIAccess) { status('No Web MIDI · computer sound only', 'warn'); renderPorts(); return; }
   try {
     midi = await navigator.requestMIDIAccess({ sysex: true });
     sysexOk = true;
@@ -507,6 +512,7 @@ async function initMidi() {
     try { midi = await navigator.requestMIDIAccess(); } catch { /* blocked entirely */ }
     if (!midi) {
       status('MIDI blocked · computer sound only', 'err');
+      renderPorts();
       toast('MIDI access was blocked. Allow MIDI for this page in Chrome\'s site settings and reload. The computer test sound still works.', 'err');
       return;
     }
@@ -537,6 +543,12 @@ function wireInputs() {
 
 const onScreen = () => !window.frameElement || !window.frameElement.hidden;
 
+// The computer keyboard as MIDI in (core/qwerty.js): typed here, or in the Recorder panel over us.
+const qwertyIn = { name: QWERTY };
+const onQwerty = (d, ts) => { if ((d[0] & 0xf0) === 0x90) noteSeen(qwertyIn, d[1]); onKeys(d, ts); };
+attachQwerty({ active: () => prefs.keysIn === QWERTY && onScreen(), onMessage: onQwerty, channel: soundChannel, from: 'sequencer',
+  onOctave: () => { renderPorts(); toast(`Computer keyboard: ${qwertyRange()}`); } });
+
 // The light next to MIDI in: green for notes on the chosen port; amber when notes arrive on a
 // different port (so it's clear which one to choose).
 let ledTimer = null, lastOther = null;
@@ -546,8 +558,9 @@ function noteSeen(input, note) {
   $('#keys-last').classList.toggle('fix', !chosen);
   led.className = `keys-led ${chosen ? 'ok' : 'other'}`;
   $('#keys-last').textContent = chosen ? M.noteName(note) : `${M.noteName(note)} from ${input.name}?`;
-  led.title = chosen ? `Last note ${M.noteName(note)} from ${portLabel(input)}`
-    : `A note arrived from ${portLabel(input)}, which isn't the MIDI in port. Click to use it.`;
+  const label = input.name === QWERTY ? QWERTY_LABEL : portLabel(input);
+  led.title = chosen ? `Last note ${M.noteName(note)} from ${label}`
+    : `A note arrived from ${label}, which isn't the MIDI in port. Click to use it.`;
   clearTimeout(ledTimer);
   ledTimer = setTimeout(() => { led.className = 'keys-led'; }, 400);
 }
@@ -562,13 +575,17 @@ function renderPorts() {
   const ins = inputs(), outs = outputs();
   // If the saved port isn't connected (unplugged, or a name saved from the simulator), use the
   // XL's keyboard, or else the first input.
-  if (!prefs.keysIn || !ins.some(p => p.name === prefs.keysIn)) {
+  // With no MIDI keyboard at all, the computer keyboard plays.
+  if (prefs.keysIn !== QWERTY && (!prefs.keysIn || !ins.some(p => p.name === prefs.keysIn))) {
     const guess = ins.find(looksLikeSynthIn) || ins[0];
-    if (guess) { prefs.keysIn = guess.name; savePrefs(); }
+    prefs.keysIn = guess ? guess.name : QWERTY;
+    savePrefs();
   }
   const keys = $('#keys-in');
   keys.innerHTML = `<option value="">— none —</option>` + ins.map(p => `<option value="${esc(p.name)}">${esc(portLabel(p))}</option>`).join('')
-    + (prefs.keysIn && !ins.some(p => p.name === prefs.keysIn) ? `<option value="${esc(prefs.keysIn)}">${esc(prefs.keysIn)} (not connected)</option>` : '');
+    + `<option value="${QWERTY}">${QWERTY_LABEL}</option>`
+    + (prefs.keysIn && prefs.keysIn !== QWERTY && !ins.some(p => p.name === prefs.keysIn) ? `<option value="${esc(prefs.keysIn)}">${esc(prefs.keysIn)} (not connected)</option>` : '');
+  keys.title = prefs.keysIn === QWERTY ? `A–K and W E T Y U O P play ${qwertyRange()}; Z / X change octave` : '';
   keys.value = prefs.keysIn || '';
   $('#clock-list').innerHTML = outs.length
     ? outs.map(p => `<label><input type="checkbox" value="${esc(p.name)}" ${prefs.clockOut.includes(p.name) ? 'checked' : ''}> ${esc(portLabel(p))}</label>`).join('')
