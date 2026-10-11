@@ -9,7 +9,10 @@
 // SVG text; the page (ui.js) handles clicks and drags through the data- attributes.
 import { MODULES, SOURCES, defaultTarget, formatAmount, paramOf } from './patch.js';
 
-export const BOX_W = 140, BOX_H = 58;
+export const BOX_W = 140, BOX_H = 84;
+// The trace area inside a box: the live waveform of a module's output (drawn by the page), or the
+// shape of an envelope or LFO.
+export const WAVE = { x: 10, y: 39, w: BOX_W - 20, h: 26 };
 const COL_W = BOX_W + 72, ROW_H = BOX_H + 34, PAD = 20;
 const SHORT = { resonance: 'res', keytrack: 'key' };
 
@@ -39,14 +42,14 @@ export function layout(patch) {
     pos.set(id, { x: PAD + col * COL_W, y: PAD + row * ROW_H });
   };
   for (const m of audio) place(m.id, dist.get(m.id) < 0 ? 0 : maxD - dist.get(m.id)); // unconnected ones on the left
-  place('out', maxD + 1);
+  place('out', maxD);
   const rows = Math.max(...colRows.values());
   // Modulation sources in a band underneath, in the order they appear.
   const sources = [...patch.modules.filter(m => MODULES[m.type].modOut).map(m => m.id),
     ...Object.keys(SOURCES).filter(s => patch.mod.some(c => c.from === s))];
   const modY = PAD + rows * ROW_H + 30;
   sources.forEach((id, k) => pos.set(id, { x: PAD + k * (BOX_W + 20), y: modY }));
-  const width = Math.max(PAD * 2 + (maxD + 2) * COL_W - 72, PAD * 2 + sources.length * (BOX_W + 20));
+  const width = Math.max(PAD * 2 + (maxD + 1) * COL_W - 72, PAD * 2 + sources.length * (BOX_W + 20));
   const height = sources.length ? modY + BOX_H + PAD + 40 : PAD + rows * ROW_H + PAD;
   // Where each modulation target's dot is.
   const dots = new Map();
@@ -55,6 +58,28 @@ export function layout(patch) {
     if (p) keys.forEach((k, i) => dots.set(`${m.id}.${k}`, { x: p.x + BOX_W * (i + 1) / (keys.length + 1), y: p.y + BOX_H }));
   }
   return { pos, width, height, byId, dots, sources: new Set(sources) };
+}
+
+// The shape of an envelope (attack, decay, sustain, release; times on a squashed scale so short
+// and long ones both show) or two cycles of an LFO, as a path in the trace area.
+export function shapePath(m) {
+  const { x, y, w, h } = WAVE, p = m.params, pts = [];
+  if (m.type === 'env') {
+    const len = t => Math.log10(1 + t * 40);
+    const a = len(p.attack), d = len(p.decay), r = len(p.release), hold = (a + d + r) * 0.35 + 0.2, k = w / (a + d + hold + r);
+    let t = x;
+    const Y = v => y + h - v * h;
+    pts.push([t, Y(0)], [t += a * k, Y(1)], [t += d * k, Y(p.sustain)], [t += hold * k, Y(p.sustain)], [t + r * k, Y(0)]);
+  } else if (m.type === 'lfo') {
+    const steps = [0.3, -0.8, 0.9, -0.2, 0.6, -0.5, 0.1, -0.9];
+    const wave = ph => ({ sine: Math.sin(2 * Math.PI * ph), triangle: 1 - 4 * Math.abs(((ph + 0.25) % 1) - 0.5), square: ph % 1 < 0.5 ? 1 : -1,
+      saw: 1 - 2 * (ph % 1), random: steps[Math.floor(ph * 4) % steps.length] }[p.wave] ?? 0);
+    for (let i = 0; i <= 120; i++) {
+      const ph = i / 60, fade = p.delay > 0 ? Math.min(1, ph / Math.min(2, p.delay * 2)) : 1;
+      pts.push([x + (i / 120) * w, y + h / 2 - wave(ph) * fade * p.depth * (h / 2)]);
+    }
+  } else return '';
+  return pts.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`).join('');
 }
 
 // Selected: { kind: 'audio' | 'mod', from, to } or null.
@@ -98,6 +123,10 @@ export function patchSVG(patch, { selected = null } = {}) {
     const kind = id === 'out' ? 'out' : SOURCES[id] || spec?.modOut ? 'src' : spec.scope === 'global' ? 'fx' : 'voice';
     const parts = [`<rect width="${BOX_W}" height="${BOX_H}" rx="8"/>`,
       `<text x="10" y="19" class="bname">${esc(label(id))}</text>`];
+    // The trace area: a live waveform for anything that makes or passes sound, a shape for env/LFO.
+    if (id === 'out' || spec?.audioOut) {
+      parts.push(`<line class="wave-zero" x1="${WAVE.x}" x2="${WAVE.x + WAVE.w}" y1="${WAVE.y + WAVE.h / 2}" y2="${WAVE.y + WAVE.h / 2}"/><path class="wave" data-wave="${id}" d=""/>`);
+    } else if (m && spec.modOut) parts.push(`<path class="shape" d="${shapePath(m)}"/>`);
     if (m) {
       parts.push(`<text x="10" y="33" class="bid">${esc(id)}</text>`);
       parts.push(`<g class="power${m.off ? ' is-off' : ''}" data-power="${id}"><circle cx="${BOX_W - 14}" cy="14" r="9"/><text x="${BOX_W - 14}" y="18" text-anchor="middle">⏻</text>

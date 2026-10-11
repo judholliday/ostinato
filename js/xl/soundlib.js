@@ -30,8 +30,9 @@ function programsOf(bytes) {
 }
 
 let cache = null;
-// [{ key, bank, name, type, data }], loaded once per page.
-export function loadSounds() {
+// [{ key, bank, name, type, data }], loaded once per page (again with reload, e.g. after My Sounds changed).
+export function loadSounds({ reload = false } = {}) {
+  if (reload) cache = null;
   cache ||= (async () => {
     const get = (url, as = 'json') => fetch(url).then(r => (r.ok ? r[as]() : Promise.reject(new Error(`${url}: ${r.status}`))));
     const userTypes = await get('api/types').catch(() => ({}));

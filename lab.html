@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lab · Ostinato</title>
+  <title>Sound Lab · Ostinato</title>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="sequencer.css">
   <link rel="stylesheet" href="lab.css">
@@ -15,11 +15,7 @@
     <div class="brand">
       <span class="brand-mark">O</span>
       <span class="brand-name">Ostinato</span>
-      <nav class="app-nav" aria-label="Switch view">
-        <a href="index.html#editor" data-view="editor">microKORG XL</a>
-        <a href="index.html#sequencer" data-view="sequencer">Sequencer</a>
-        <a href="index.html#lab" data-view="lab" aria-current="page">Lab</a>
-      </nav>
+      <nav class="app-nav" aria-label="Switch view" data-page="lab"></nav>
     </div>
     <span class="spacer"></span>
     <label class="field" title="The keyboard or controller that plays the Lab instrument (e.g. your MPK mini)">MIDI in <select id="keys-in"></select>
@@ -29,12 +25,30 @@
     <span id="audio-status" class="status-pill warn" title="Browsers only start sound after a click">Click to enable sound</span>
   </header>
 
+  <div class="lab-layout" id="lab-layout">
+  <aside id="library" class="library" aria-label="Sound library">
+    <div id="link-bar" class="link-bar" hidden></div>
+    <div class="lib-head">
+      <b>Sounds</b><span id="lib-count" class="hint"></span><span class="spacer"></span>
+      <button class="small" id="new-sound" title="Start a new sound from Init">+ New</button>
+      <button class="ghost small" id="lib-hide" title="Hide the library">⟨</button>
+    </div>
+    <div class="lib-types lib-inst" id="lib-inst"></div>
+    <input id="lib-search" type="search" placeholder="Search sounds" autocomplete="off" spellcheck="false" aria-label="Search sounds">
+    <div class="seg-btn lib-bank" id="lib-bank"></div>
+    <div class="lib-types" id="lib-types"></div>
+    <div class="lib-list" id="lib-list" tabindex="0" aria-label="Sounds"></div>
+    <label class="lib-audition hint" title="Play a short note each time you pick a sound"><input type="checkbox" id="lib-audition"> Play a note when I pick one (↑ ↓ to step through)</label>
+  </aside>
+  <div class="lab-main">
   <section class="filebar">
+    <button class="ghost small" id="lib-show" title="Show the sound library">☰ Sounds</button>
     <input id="inst-name" maxlength="40" spellcheck="false" autocomplete="off" aria-label="Instrument name">
+    <label class="field" title="The kind of sound: the library groups sounds by it">Type <select id="inst-type"></select></label>
+    <span id="origin" class="hint"></span>
     <span id="dirty" class="dirty" hidden>unsaved</span>
-    <button id="save" class="accent" title="Save to data/instruments/ (⌘S)">Save</button>
-    <select id="open" title="Open a saved instrument, or start from one of the starting points"></select>
-    <button id="delete" class="ghost" title="Move this instrument to data/instruments/deleted/">Delete</button>
+    <button id="save" class="accent" title="Save to My Sounds (data/instruments/, ⌘S)">Save</button>
+    <button id="delete" class="ghost" title="Remove it from My Sounds (moved to data/instruments/deleted/)">Delete</button>
     <span class="spacer"></span>
     <label class="field" title="How many notes can sound at once">Voices <input type="number" id="voices" min="1" max="16"></label>
     <label class="field">Volume <input type="range" id="volume" min="0" max="1" step="0.01"></label>
@@ -45,12 +59,17 @@
   <main class="wrap">
     <div id="notes" class="lab-notes" hidden></div>
     <h2 class="section-head"><button class="ghost collapse" id="view-col" title="Show or hide the patch diagram">▾</button> Patch
+      <button class="small add-btn" data-picker title="Add a module">+ Add module</button>
       <span class="hint plain">Drag from a module's dot to another module to connect them. Click a cable to change or remove it, or a module to find its settings.</span></h2>
     <div id="patch-view" class="patch-view"></div>
+    <div id="scope" class="scope">
+      <div class="scope-pane"><span class="scope-h">Output wave</span><canvas id="scope-wave"></canvas></div>
+      <div class="scope-pane"><span class="scope-h">Spectrum <span class="hint">bass to treble</span></span><canvas id="scope-spec"></canvas></div>
+    </div>
     <h2 class="section-head">Modules</h2>
     <div id="modules" class="modules"></div>
     <div class="add-row">
-      <select id="add-module"></select>
+      <button class="small add-btn" data-picker title="Add a module">+ Add module</button>
       <span class="hint">Audio flows from each module to the ones listed under <b>Audio to</b>, and finally to the output. Envelopes, LFOs, velocity and the mod wheel move other settings through <b>Modulates</b>.</span>
     </div>
 
@@ -65,6 +84,9 @@
     <p class="help">Instruments you save here appear in the Sequencer: set a track's Out to <b>Computer</b> and pick the instrument as its Sound. Changes you make here are heard there straight away.</p>
   </main>
 
+  </div>
+  </div>
+  <div id="add-picker" class="add-picker" role="dialog" aria-label="Add a module" hidden></div>
   <div id="toasts" class="toasts"></div>
   <script type="module" src="js/lab/ui.js"></script>
   <script type="module" src="js/core/topbar.js"></script>

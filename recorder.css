@@ -1,10 +1,16 @@
-/* The Recorder panel (recorder.html), shown by index.html over the right side of the window. */
-body { padding-bottom: 24px; border-left: 0; }
-.rec-head { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.rec-title { font-size: 15px; }
-.rec-title, .rec-go:not(.on) { color: var(--err); }
-.rec-head .spacer { flex: 1; }
-.rec-head select { max-width: 170px; }
+/* The Capture tab (recorder.html): the take editor across the top, then takes and clips beside
+   recording and audio (one column when narrow). */
+body { padding-bottom: 24px; }
+.bar select#midi-in { max-width: 220px; }
+.rec-go:not(.on) { color: var(--err); }
+.capture-page { max-width: 1500px; margin: 0 auto; padding: 0; }
+.capture-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 400px); align-items: start; }
+.capture-main { grid-column: 1; grid-row: 1; min-width: 0; }
+.capture-side { grid-column: 2; grid-row: 1; border-left: 1px solid var(--line); min-width: 0; }
+@media (max-width: 820px) {
+  .capture-cols { grid-template-columns: minmax(0, 1fr); }
+  .capture-side { grid-row: 2; grid-column: 1; border-left: 0; }
+}
 .rec-section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
 .rec-section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 4px 0 8px; }
 .rec-section h2 .hint { text-transform: none; letter-spacing: 0; }
@@ -37,3 +43,35 @@ body { padding-bottom: 24px; border-left: 0; }
 .recording .rname { font-weight: 600; flex: 1; min-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recording audio { width: 100%; height: 32px; }
 .recording a { color: var(--text); }
+
+.take-sound { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.roll-open { flex: 1 1 0; min-width: 0; display: flex; cursor: pointer; border-radius: 4px; }
+.roll-open:hover { background: var(--panel-2); }
+.takes .roll-open .roll { flex: 1 1 0; }
+
+/* the take editor (editor.js) */
+.rec-editor { background: var(--panel-2); scroll-margin-top: 8px; }
+.ed-head, .ed-tools, .ed-actions, .ed-put { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 6px 0; }
+.ed-head .spacer, .ed-tools .spacer { flex: 1; }
+#ed-name { font-size: 15px; font-weight: 600; min-width: 160px; max-width: 280px; }
+#ed-sound { max-width: 260px; }
+#ed-bpm { width: 60px; }
+.rec-play { min-width: 130px; font-weight: 600; }
+.rec-play.on { background: var(--ok); border-color: var(--ok); color: #111; }
+.zoom { display: inline-flex; gap: 2px; }
+.ed-roll { overflow-x: auto; overflow-y: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); user-select: none; }
+.ed-roll svg { display: block; cursor: text; }
+.ed-roll .blackkey { fill: var(--panel); }
+.ed-roll .cline { stroke: var(--line); stroke-width: 1; }
+.ed-roll .barline { stroke: var(--muted); stroke-width: 1; opacity: .7; }
+.ed-roll .beatline { stroke: var(--line); stroke-width: 1; }
+.ed-roll .sixline { stroke: var(--line); stroke-width: 1; opacity: .45; }
+.ed-roll .barnum { fill: var(--muted); font: 11px var(--mono); pointer-events: none; }
+.ed-roll .cname { fill: var(--muted); font: 9px var(--mono); pointer-events: none; }
+.ed-roll .selection { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; pointer-events: none; }
+.ed-roll .nt { fill: var(--accent); cursor: pointer; }
+.ed-roll .nt.out { fill: var(--muted); }
+.ed-roll .nt.picked { fill: var(--ok); stroke: var(--text); stroke-width: 1; opacity: 1 !important; }
+.ed-roll .head { stroke: var(--text); stroke-width: 1.5; pointer-events: none; }
+.ed-status { margin: 6px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ed-put { padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); }

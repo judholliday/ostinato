@@ -1,14 +1,15 @@
-// Saving and loading the user's files: songs, Lab instruments, saved patterns and audio
-// recordings. At home they go through serve.py into data/; in the travel version (core/mode.js)
+// Saving and loading the user's files: songs, Lab instruments, saved patterns, the Recorder's
+// clips and audio recordings. At home they go through serve.py into data/; in the travel version (core/mode.js)
 // they're kept in this browser (IndexedDB). Same calls either way:
 //
 //   list(kind)                → [{ file, name, modified, ... }]   newest first (instruments: by name)
 //   get(kind, file)           → the saved value (a song, a patch, a pattern; audio: a Blob)
-//   save(kind, value, name?)  → the file name it was saved as     (audio: value = WAV bytes, name)
+//   save(kind, value, name?)  → the file name it was saved as     (audio: value = WAV bytes, name;
+//                                clips: over value.file when given, else a new file)
 //   remove(kind, file)        → moved to deleted/ at home; gone in the browser
 //   audioUrl(file)            → a URL an <audio> element can play
 //
-// kinds: 'sequences', 'instruments', 'patterns', 'audio'.
+// kinds: 'sequences', 'instruments', 'patterns', 'clips', 'audio'.
 import { STATIC } from './mode.js';
 
 // Same rule as serve.py's safe_stem.
@@ -39,7 +40,7 @@ const server = {
       if (!r.ok) throw new Error(j.error || r.statusText);
       return j.file;
     }
-    const key = { sequences: 'song', instruments: 'patch', patterns: 'pattern' }[kind];
+    const key = { sequences: 'song', instruments: 'patch', patterns: 'pattern', clips: 'clip' }[kind];
     return (await call(`api/${kind}`, { [key]: value })).file;
   },
   remove: (kind, file) => call(`api/${kind}/delete`, { file }),
@@ -48,11 +49,11 @@ const server = {
 
 // ---- travel: IndexedDB in this browser ----
 
-const KINDS = ['sequences', 'instruments', 'patterns', 'audio'];
+const KINDS = ['sequences', 'instruments', 'patterns', 'clips', 'audio'];
 let dbp = null;
 function db() {
   dbp ||= new Promise((resolve, reject) => {
-    const req = indexedDB.open('mkxl', 1);
+    const req = indexedDB.open('mkxl', 2); // 2: clips
     req.onupgradeneeded = () => { for (const k of KINDS) if (!req.result.objectStoreNames.contains(k)) req.result.createObjectStore(k, { keyPath: 'file' }); };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -83,6 +84,7 @@ const browser = {
       if (kind === 'audio') return { file: r.file, name: r.name, size: r.size, seconds: r.seconds, modified: r.modified };
       if (kind === 'instruments') return { file: r.file, name: r.name, patch: r.value, modified: r.modified };
       if (kind === 'patterns') return { ...r.value, id: `mine:${r.file}`, file: r.file, source: 'mine' };
+      if (kind === 'clips') return { ...r.value, file: r.file };
       return { file: r.file, name: r.name, modified: r.modified };
     });
     return kind === 'instruments' ? out.sort((a, b) => a.name.localeCompare(b.name))
@@ -106,6 +108,15 @@ const browser = {
       const p = { ...value, name: String(value.name || 'Pattern').slice(0, 60), created: now() };
       const file = await freeName('patterns', stemOf(p.name), '.json');
       await tx('patterns', 'readwrite', st => st.put({ file, name: p.name, modified: p.created, value: p }));
+      return file;
+    }
+    if (kind === 'clips') {
+      const { file: own, ...c } = value;
+      c.name = String(c.name || 'Clip').slice(0, 60);
+      c.modified = now();
+      c.created ||= c.modified;
+      const file = own && (await allOf('clips')).some(r => r.file === own) ? own : await freeName('clips', stemOf(c.name), '.json');
+      await tx('clips', 'readwrite', st => st.put({ file, name: c.name, modified: c.modified, value: c }));
       return file;
     }
     // Songs and instruments replace a file of the same name, as at home.

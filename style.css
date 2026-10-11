@@ -621,9 +621,6 @@ p.set-hint { grid-column: auto; }
 .set-warn { color: var(--warn); font-size: 13px; margin: 0; }
 
 /* ● Recorder button (js/core/topbar.js), in every page's top bar */
-.rec-btn { margin-left: 8px; padding: 4px 10px; font-size: 13px; }
-.rec-btn .dot { color: var(--err); }
-.rec-btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
 .xfer-btn { margin-left: 6px; padding: 4px 10px; font-size: 13px; }
 .xfer-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; max-width: 460px; box-shadow: 0 12px 40px rgba(0, 0, 0, .4); }
 .xfer-dialog::backdrop { background: rgba(0, 0, 0, .45); }
@@ -636,3 +633,31 @@ p.set-hint { grid-column: auto; }
 .xfer-msg { min-height: 1.2em; }
 .xfer-msg.ok { color: var(--ok); }
 .xfer-msg.err { color: var(--err); }
+.nav-badge { display: inline-block; margin-left: 6px; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--err); color: #fff; font-size: 11px; line-height: 16px; text-align: center; }
+.nav-badge[hidden] { display: none; }
+/* The XL editor shown inside the Sound Lab (index.html): the Sound Lab's own bar is above it. */
+body.embedded .topbar .brand { display: none; }
+
+/* The sound picker (core/soundpicker.js) */
+.sound-picker { position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 12px 32px rgba(0, 0, 0, .35); }
+.sp-head { display: flex; align-items: center; gap: 6px; }
+.sp-head .spacer { flex: 1; }
+.sp-search { width: 100%; }
+.sp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.sp-chips .chip { padding: 2px 8px; font-size: 11px; border-radius: 10px; background: var(--panel-2); }
+.sp-chips .chip span { color: var(--muted); }
+.sp-chips .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sp-chips .chip.on span { color: inherit; opacity: .8; }
+.sp-list { flex: 1; min-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; outline: none; }
+.sp-group { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0 2px; }
+.sp-group:first-child { margin-top: 0; }
+.sp-row { display: flex; align-items: baseline; gap: 8px; text-align: left; border: 0; background: transparent; padding: 4px 8px; border-radius: 6px; font-size: 13px; }
+.sp-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-row .note { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+.sp-row:hover { background: var(--panel-2); }
+.sp-row.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+.sp-row.silent .nm { color: var(--muted); }
+.sp-empty { padding: 6px 0; }
+.sp-foot { font-size: 11px; }
+.sound-btn-pick { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

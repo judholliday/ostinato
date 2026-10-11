@@ -8,7 +8,9 @@ import { randomIdea } from './generate.js';
 import { writeMidi, renderSong as songToMidi } from './midifile.js';
 import * as C from './capture.js';
 import { STOCK } from './stock.js';
-import { portLabel, looksLikeSynthIn } from '../core/midiports.js';
+import { portLabel, looksLikeSynthIn, looksLikeSynthOut } from '../core/midiports.js';
+import { soundReporter } from '../core/sounding.js';
+import { openSoundPicker } from '../core/soundpicker.js';
 import { deviceForOut } from '../core/devices.js';
 import { storage, placeOf, stemOf } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
@@ -248,17 +250,32 @@ function sendDeviceSound(t, data) {
 // The editor runs alongside (index.html) and tells us what sound it holds; we send it sounds to edit.
 const soundChannel = 'BroadcastChannel' in window ? new BroadcastChannel('mkxl') : null;
 let editorSound = null; // { name, data } in the microKORG XL editor now
+const reportSound = soundReporter(soundChannel, 'sequencer');
+
+// A track's sound as the Recorder keeps it with takes (core/sounding.js).
+function soundOfTrack(ti) {
+  const t = song.tracks[ti];
+  if (!t) return null;
+  if (t.out === M.COMPUTER) return t.inst ? { kind: 'lab', name: t.inst.name, patch: t.inst.patch } : { kind: 'voice', name: `${t.voice} (test voice)`, voice: t.voice };
+  if (isXLOut(t.out)) { const x = t.sound || editorSound; return x ? { kind: 'xl', name: x.name, data: x.data } : null; }
+  const port = outPort(t.out);
+  return { kind: 'midi', name: `${port ? portLabel(port) : t.out} ch ${t.ch}${t.program !== null ? ` program ${t.program + 1}` : ''}`, out: t.out, ch: t.ch, program: t.program };
+}
 let liveSound = null; // the track whose sound is on the XL now: edits in the editor are saved to it
 const sameSound = (a, b) => !!a && !!b && a.data.length === b.data.length && a.data.every((x, i) => x === b.data[i]);
 
 if (soundChannel) soundChannel.onmessage = e => {
   if (e.data?.type === 'qwerty') {
-    if (e.data.from === 'recorder' && prefs.keysIn === QWERTY && onScreen()) onQwerty(e.data.data, e.data.wall - performance.timeOrigin);
+    if (e.data.from === 'recorder' && prefs.keysIn === QWERTY && (onScreen() || view === 'capture')) {
+      if (onScreen()) onQwerty(e.data.data, e.data.wall - performance.timeOrigin); else thruOnly(e.data.data, e.data.wall - performance.timeOrigin);
+    }
     return;
   }
   if (onRecorderMessage(e.data || {})) return;
   if (e.data?.type === 'instruments-changed') { refreshInstruments(); return; }
   if (e.data?.type === 'instrument') {
+    // A take's sound being edited in the Sound Lab (linked from Capture): its loop follows along.
+    if (e.data.link && audition?.link === e.data.link && auditionLab) auditionLab.setPatch(e.data.patch);
     // An instrument being edited in the Lab: tracks using it (by name) follow along.
     const inst = M.cleanInst({ name: e.data.name, patch: e.data.patch });
     let any = false;
@@ -424,17 +441,21 @@ function onKeys(data, at = performance.now()) {
   else if (type === 0x80 || type === 0x90) keyUp(data[1], at);
 }
 
+let poolHinted = false; // told once per session that the pool needs the track armed
 function keyDown(key, vel, at) {
   if (sustained.delete(key)) releaseKey(key, at); // the same key again while sustained
   const n = M.snapToScale(key, song.scale);
   const fresh = held.length === 0;
   if (!held.includes(n)) held.push(n);
   const ti = sel.t, t = song.tracks[ti], v = views[ti];
-  if (prefs.thru && !(t.mode === 'pool' && engine.playing)) { thru.get(key)?.(); thru.set(key, noteNow(ti, n, vel)); }
+  if (prefs.thru && !(t.mode === 'pool' && engine.playing)) { thru.get(key)?.(); thru.set(key, noteNow(ti, n, vel)); reportSound(soundOfTrack(ti)); }
   if (t.mode === 'pool') {
     if (t.pool.latch && armed === ti) {
       t.pool.notes = fresh ? [n] : [...t.pool.notes.filter(x => x !== n), n];
       changed({ coalesce: !fresh });
+    } else if (t.pool.latch && !poolHinted) {
+      poolHinted = true;
+      toast(`To set ${t.name}'s note pool from your keyboard, arm the track first (✎ in its header, or double-click the header).`);
     }
     renderTrack(ti);
   } else if (rec.on && engine.playing) {
@@ -565,16 +586,33 @@ function wireInputs() {
       if ((d[0] & 0xf0) === 0x90 && d[2] > 0) noteSeen(input, d[1]);
       if (input.name !== prefs.keysIn) return;
       // Only while the sequencer is on screen: keys played while auditioning in the microKORG XL editor
-      // shouldn't fill in steps behind your back.
+      // shouldn't fill in steps behind your back. On Capture they only sound.
       if (onScreen()) onKeys(d, e.timeStamp);
+      else if (view === 'capture') thruOnly(d, e.timeStamp);
     });
     input.open?.().catch(() => {});
   }
 }
 
 const onScreen = () => !window.frameElement || !window.frameElement.hidden;
+// Which view index.html shows. While it's Capture, keys play through the selected track (so what
+// you play is heard, and captured with its sound) but don't change any pattern.
+let view = 'sequencer';
+addEventListener('message', e => { if (e.origin === location.origin && e.data?.type === 'view') view = e.data.view; });
+parent.postMessage({ type: 'view-hello' }, location.origin);
+function thruOnly(data, at) {
+  const type = data[0] & 0xf0, key = data[1];
+  if (type === 0xb0 && key === 64) setSustain(data[2] >= 64, at);
+  else if (type === 0x90 && data[2] > 0) {
+    if (sustained.delete(key)) releaseKey(key, at);
+    if (!prefs.thru) return;
+    thru.get(key)?.();
+    thru.set(key, noteNow(sel.t, M.snapToScale(key, song.scale), data[2]));
+    reportSound(soundOfTrack(sel.t));
+  } else if (type === 0x80 || type === 0x90) { if (sustain) sustained.add(key); else releaseKey(key, at); }
+}
 
-// The computer keyboard as MIDI in (core/qwerty.js): typed here, or in the Recorder panel over us.
+// The computer keyboard as MIDI in (core/qwerty.js): typed here, or on the Capture tab.
 const qwertyIn = { name: QWERTY };
 const onQwerty = (d, ts) => { if ((d[0] & 0xf0) === 0x90) noteSeen(qwertyIn, d[1]); onKeys(d, ts); };
 attachQwerty({ active: () => prefs.keysIn === QWERTY && onScreen(), onMessage: onQwerty, channel: soundChannel, from: 'sequencer',
@@ -739,13 +777,22 @@ function trackHTML(ti) {
   </section>`;
 }
 
-// Test voices, then Lab instruments (plus the track's own, if it isn't saved in the Lab).
-function soundOptions(t) {
-  const lab = instruments.map(x => x.name);
-  if (t.inst && !lab.includes(t.inst.name)) lab.unshift(t.inst.name);
-  const cur = t.inst ? `lab:${t.inst.name}` : t.voice;
-  return `<optgroup label="Test sounds">${options(M.VOICES.map(x => [x, x]), cur)}</optgroup>`
-    + (lab.length ? `<optgroup label="Lab instruments">${options(lab.map(n => [`lab:${n}`, `🎹 ${n}`]), cur)}</optgroup>` : '');
+// A Computer track's sound, from the sound picker: an Ostinato Synth sound (factory or yours) or a
+// test voice. Each pick is heard at once; picks while the picker is open are one undo step.
+function pickTrackSound(ti, anchor) {
+  const t = song.tracks[ti];
+  openSoundPicker({
+    anchor, title: `Sound for ${t.name}`, instruments: ['synth'], outputs,
+    current: t.inst ? `inst:${t.inst.name}` : `voice:${t.voice}`,
+    isCurrent: e => t.inst && e.name === t.inst.name && JSON.stringify(e.sound.patch) === JSON.stringify(t.inst.patch),
+    extra: [{ label: 'Test voices', items: M.VOICES.map(v => ({ key: `voice:${v}`, name: v, note: 'simple test sound', sound: { kind: 'voice', voice: v } })) }],
+    onPick(item) {
+      const s = item.sound;
+      edit(ti, () => { if (s.kind === 'voice') { t.voice = s.voice; t.inst = null; } else t.inst = M.cleanInst({ name: s.name, patch: s.patch }); }, { coalesce: true });
+      synth.wake();
+      preview(ti, !t.inst && t.voice === 'Drums' ? 36 : 48);
+    },
+  });
 }
 
 const options = (list, current) => list.map(([value, label]) =>
@@ -777,7 +824,7 @@ function headHTML(ti) {
       </span>
       <label class="field">Out <select data-act="out" class="${outList.at(-1)[1].endsWith('(not connected)') && t.out === outList.at(-1)[0] ? 'missing' : ''}">${options(outList, t.out)}</select></label>
       ${t.out === M.COMPUTER
-        ? `<label class="field" title="A built-in test sound, or an instrument you built in the Lab">Sound <select data-act="voice">${soundOptions(t)}</select></label>`
+        ? `<label class="field" title="An Ostinato Synth sound from the Sound Lab, or a simple test voice">Sound <button class="sound-btn-pick" data-act="pick-sound">🎹 ${esc(t.inst ? t.inst.name : `${t.voice} (test voice)`)} ▾</button></label>`
         : `<label class="field">Ch <select data-act="ch">${options(Array.from({ length: 16 }, (_, c) => [c + 1, c + 1]), t.ch)}</select></label>`}
       ${isXLOut(t.out) ? `<button class="ghost sound-btn${liveSound === ti ? ' live' : ''}" data-act="sound" title="${t.sound
           ? 'This track\'s XL sound, sent to the XL when playback starts. Click to send it now and edit it in the microKORG XL editor; your edits there are remembered.'
@@ -979,6 +1026,8 @@ const KIT = [[36, 'Kick'], [37, 'Rim'], [38, 'Snare'], [39, 'Clap'], [41, 'Low t
 const KIT_NAME = new Map(KIT);
 const KIT_ORDER = KIT.map(([n]) => n);
 const kitName = n => KIT_NAME.get(n) || M.drumName(n);
+// A lane's name: the pad's own name when the track plays an Ostinato Synth kit (lab/drums.js).
+const laneName = (ti, n) => song.tracks[ti]?.inst?.patch?.modules?.find(m => m.pads)?.pads?.[n]?.name || kitName(n);
 const isDrums = t => t.mode === 'steps' && M.guessRole(t) === 'drums';
 
 // Rows: the basic kit, every drum the pattern uses, and any the user added.
@@ -996,7 +1045,7 @@ function lanesHTML(ti) {
   const cols = Array.from({ length: PS }, (_, k) => start + k);
   const numbers = `<div></div>${cols.map(i => `<div class="lane-num${sel.t === ti && sel.i === i ? ' sel' : ''}${i >= pat.length ? ' beyond' : ''}"
     data-act="cell" data-s="${i}" title="Edit step ${i + 1}">${i + 1}</div>`).join('')}`;
-  const rows = lanesOf(ti).map(note => `<div class="lane-name" data-act="lane-name" data-n="${note}" title="Click to hear it">${esc(kitName(note))}</div>`
+  const rows = lanesOf(ti).map(note => `<div class="lane-name" data-act="lane-name" data-n="${note}" title="Click to hear it">${esc(laneName(ti, note))}</div>`
     + cols.map(i => {
       const s = at.get(i), on = !!s && s.notes.includes(note);
       const cls = `lane-cell${i % 4 === 0 ? ' beat' : ''}${i >= pat.length ? ' beyond' : ''}${on ? ' on' : ''}${on && s.vel >= 110 ? ' accent' : ''}${on && s.vel < 70 ? ' soft' : ''}${on && s.prob ? ' chance' : ''}`;
@@ -1090,7 +1139,7 @@ function editorHTML(ti) {
       <label class="field" title="How much of its last step the note sounds for">Gate <input type="range" data-act="e-gate" min="1" max="100" value="${s.gate}"> <span class="e-gate">${s.gate}%</span></label>
       <label class="field" title="How often this step plays: below 100%, it's left out at random">Chance <select data-act="e-prob">${options(M.PROBS.map(p => [p, `${p}%`]), s.prob || 100)}</select></label>
       <label class="field" title="Repeat the note this many times across its length (a roll or stutter)">Ratchet <select data-act="e-rat">${options([[1, 'off'], [2, '×2'], [3, '×3'], [4, '×4']], s.rat || 1)}</select></label>`
-    : `<span class="hint">Empty step. ${pool ? 'Tick On to make it fire.' : isDrums(t) ? 'Click a drum below, or hit a pad.' : armed === ti ? 'Click a key below or play one to add a note.' : 'Click a key below to add a note, or arm the track (✎) to play notes in.'}</span>`}
+    : `<span class="hint">Empty step. ${pool ? 'Click the step (or tick On) to make it fire.' : isDrums(t) ? 'Click a drum below, or hit a pad.' : armed === ti ? 'Click a key below or play one to add a note.' : 'Click a key below to add a note, or arm the track (✎) to play notes in.'}</span>`}
     <button class="ghost small x" data-act="e-close" title="Hide the editor (Esc)">✕</button>
     ${pool ? keyboardHTML(ti, n => t.pool.notes.includes(n), 'pool-key')
       : isDrums(t) ? kitHTML(ti, n => !!s && s.notes.includes(n))
@@ -1108,7 +1157,10 @@ function poolHTML(ti) {
     <label class="field">Order <select data-act="p-order">${options(Object.entries(M.ORDERS), t.pool.order)}</select></label>
     <label class="field" title="Keep playing the last notes after you let go"><input type="checkbox" data-act="p-latch" ${t.pool.latch ? 'checked' : ''}> Latch</label>
     <button class="ghost small" data-act="p-clear">Clear</button>
-    <span class="hint">${sel.t === ti ? 'Play notes on your keyboard to set the pool. Each step that fires plays the next one.' : 'Select this track to set the pool from your keyboard.'}</span>
+    <span class="hint">${armed === ti
+      ? (t.pool.latch ? '<b>Armed:</b> play notes on your keyboard to set the pool (a new chord replaces it; keys added while holding join it).' : 'The pool is the keys you\'re holding (Latch keeps them after you let go).')
+      : `<button class="small" data-act="arm" title="Notes you play on your keyboard go into this track">✎ Arm</button> to set the pool from your keyboard, or click notes on the keyboard in the step editor.`}
+      Steps set the rhythm: click a step to turn it on; each one that fires plays the next pool note.</span>
   </div>`;
 }
 
@@ -1200,7 +1252,8 @@ function rollDice(ti) {
   const t = song.tracks[ti], v = views[ti], ai = v.ai;
   const role = ai.role === 'auto' ? M.guessRole(t) : ai.role;
   const idea = randomIdea({ role, length: viewPattern(ti).length, scale: song.scale, density: ai.density,
-    register: ai.register, pool: t.mode === 'pool' });
+    register: ai.register, pool: t.mode === 'pool', avoid: v.lastRhythm });
+  v.lastRhythm = idea.rhythm; // the next roll won't repeat this rhythm
   synth.wake();
   addIdeas(ti, [v.pat], [{ summary: idea.summary, patterns: { [v.pat]: idea.pattern }, pool: null }]);
 }
@@ -1507,41 +1560,110 @@ function postSeqState(force = false) {
     if (!t || !v) return;
     const state = { type: 'seq-state', bpm: song.bpm, mode: prefs.mode, songBars: song.song.reduce((n, x) => n + x.bars, 0), songName: song.name,
       track: { name: t.name, pattern: v.pat, rate: t.rate, mode: t.mode, ch: t.ch },
-      xlTracks: song.tracks.map((x, ti) => ({ ti, name: x.name, ch: x.ch })).filter(x => isXLOut(song.tracks[x.ti].out)) };
+      xlTracks: song.tracks.map((x, ti) => ({ ti, name: x.name, ch: x.ch })).filter(x => isXLOut(song.tracks[x.ti].out)),
+      // Every track, for the Recorder's sound menu and "put into a track".
+      tracks: song.tracks.map((x, ti) => ({ ti, name: x.name, mode: x.mode, rate: x.rate, pattern: views[ti]?.pat || 'A', ch: x.ch,
+        out: x.out === M.COMPUTER ? 'computer' : isXLOut(x.out) ? 'xl' : 'midi', soundName: soundOfTrack(ti)?.name || '' })) };
     const json = JSON.stringify(state);
     if (force || json !== lastSeqState) { lastSeqState = json; soundChannel?.postMessage(state); }
   }, force ? 0 : 150);
 }
 
-// Playing a take on the selected track (chunks scheduled ahead, so it can be stopped).
-let audition = null;
-function stopAudition() { if (audition) clearInterval(audition.timer); audition = null; }
-function auditionTake(notes) {
+// Playing a take for the Recorder: on a track (`sound: { kind: 'track', ti }`, or the selected
+// track when there's no sound) or on a sound kept with the take (core/sounding.js). Notes are
+// scheduled in chunks so it can be stopped; `loopMs` repeats it. `at` is the wall-clock start.
+let audition = null, auditionLab = null;
+// Stopping cuts everything at once, including notes already scheduled a little ahead: Lab and test
+// sounds are faded out now (with their echoes and reverb); MIDI can't be unscheduled, so All Notes Off goes now and again just
+// after the last note that was already on its way.
+function stopAudition() {
+  if (!audition) return;
+  clearInterval(audition.timer);
+  auditionLab?.silence();
+  if (audition.ti !== undefined && !engine.playing) { labSynths.get(audition.ti)?.synth.silence(); synth.stopAll(); }
+  if (audition.voice && !engine.playing) synth.stopAll();
+  const { port, ch } = audition;
+  if (port) { send(port, [0xb0 | ch, 123, 0]); setTimeout(() => send(port, [0xb0 | ch, 123, 0]), 260); }
+  audition = null;
+}
+// The XL port and channel to audition an XL sound on: an XL track's, else any XL output.
+function auditionXL() {
+  const t = song.tracks.find(x => isXLOut(x.out) && outPort(x.out));
+  if (t) return { port: outPort(t.out), ch: t.ch - 1 };
+  const port = outputs().find(looksLikeSynthOut);
+  return port ? { port, ch: 1 } : null; // the XL's global channel is 2 here
+}
+function auditionPlayer(sound) {
+  if (!sound || sound.kind === 'track') {
+    const ti = song.tracks[sound?.ti] ? sound.ti : sel.t, t = song.tracks[ti], port = t.out === M.COMPUTER ? null : outPort(t.out);
+    return { ti, port, ch: t.ch - 1, play: (n, v, at, dur) => playNote(ti, n, v, at, dur) };
+  }
+  if (sound.kind === 'lab') {
+    auditionLab ||= new LabSynth(synth.wake(), synth.output());
+    auditionLab.setPatch(sound.patch);
+    return { play: (n, v, at, dur) => auditionLab.play(n, v, auditionLab.atTime(at), dur / 1000) };
+  }
+  if (sound.kind === 'voice') return { voice: true, play: (n, v, at, dur) => synth.play(sound.voice, n, v, at, dur, 1) };
+  const dest = sound.kind === 'xl' ? auditionXL() : outPort(sound.out) && { port: outPort(sound.out), ch: (sound.ch || 1) - 1 };
+  if (!dest) return null;
+  if (sound.kind === 'xl') {
+    const dev = deviceForOut(dest.port, dest.port.name);
+    if (!dev || (dev.needsSysex && !sysexOk)) return null;
+    send(dest.port, dev.soundMessage(dest.ch, sound.data));
+    // The XL now holds this sound, not the live track's: the track's goes back at the next play.
+    if (liveSound !== null) { const prev = liveSound; liveSound = null; renderTrack(prev); }
+  } else if (sound.program !== null && sound.program !== undefined) send(dest.port, [0xc0 | dest.ch, sound.program]);
+  return { port: dest.port, ch: dest.ch, play: (n, v, at, dur) => { send(dest.port, [0x90 | dest.ch, n, v], at); send(dest.port, [0x80 | dest.ch, n, 0], at + dur); } };
+}
+function auditionTake({ notes = [], sound = null, at = null, loopMs = 0, link = null }) {
   stopAudition();
   synth.wake();
-  const ti = sel.t, base = performance.now() + 60, list = [...notes].sort((a, b) => a.dt - b.dt);
-  let k = 0;
+  const player = auditionPlayer(sound);
+  if (!player) { soundChannel?.postMessage({ type: 'take-result', text: sound?.kind === 'xl' ? 'The microKORG XL isn\'t connected (or SysEx isn\'t allowed), so its sound can\'t be played.' : `${sound?.name || 'That sound'} isn't connected.` }); return; }
+  const list = [...notes].sort((a, b) => a.dt - b.dt);
+  // A sound sent to the XL needs a moment to load before the first note.
+  let base = Math.max(performance.now() + (sound?.kind === 'xl' ? 150 : 60), at ? at - performance.timeOrigin : 0), k = 0;
   const pump = () => {
     const horizon = performance.now() + 200;
-    for (; k < list.length && base + list[k].dt < horizon; k++) playNote(ti, list[k].note, list[k].vel, base + list[k].dt, list[k].dur);
-    if (k >= list.length) stopAudition();
+    for (;;) {
+      if (k >= list.length) {
+        if (!loopMs) { if (performance.now() > base + (list.at(-1)?.dt ?? 0) + (list.at(-1)?.dur ?? 0)) stopAudition(); return; }
+        base += loopMs; k = 0;
+      }
+      if (base + list[k].dt >= horizon) return;
+      const n = list[k++];
+      if (!loopMs || n.dt < loopMs) player.play(n.note, n.vel, base + n.dt, loopMs ? Math.min(n.dur, loopMs - n.dt) : n.dur);
+    }
   };
-  audition = { timer: setInterval(pump, 50) };
+  audition = { timer: setInterval(pump, 50), port: player.port, ch: player.ch, ti: player.ti, voice: player.voice, link };
+  if (!list.length) { stopAudition(); return; }
   pump();
 }
 
-function takeToTrack({ items, fromBar, bpm, synced }) {
-  const ti = sel.t, t = song.tracks[ti], v = views[ti];
+// A take or clip into a pattern: the track and pattern the Recorder chose (else the selected
+// ones), optionally giving the track the clip's sound too. One undo step.
+function takeToTrack({ items, fromBar = 0, bpm, synced, ti = sel.t, pattern = null, sound = null }) {
+  const t = song.tracks[ti], v = views[ti];
   const reply = (text, ok = false) => soundChannel?.postMessage({ type: 'take-result', text, ok });
-  if (t.mode === 'pool') { reply(`${t.name} is a note-pool track; select a Steps track.`); return; }
+  if (!t) { reply('That track isn\'t in the song any more.'); return; }
+  if (t.mode === 'pool') { reply(`${t.name} is a note-pool track; choose a Steps track.`); return; }
+  const name = M.PATTERNS.includes(pattern) ? pattern : v.pat;
   const pat = C.takeToPattern(items, M.RATES[t.rate], { fromBar });
   if (!pat.steps.length) { reply('No notes in those bars.'); return; }
-  t.patterns[v.pat] = keepLanes(t.patterns[v.pat], pat);
+  t.patterns[name] = keepLanes(t.patterns[name], pat);
+  let gave = '';
+  if (sound?.kind === 'xl' && isXLOut(t.out)) { t.sound = M.cleanSound({ name: sound.name, data: sound.data }) || t.sound; gave = `, with the sound ${sound.name}`; if (liveSound === ti) liveSound = null; }
+  else if (sound?.kind === 'lab' && t.out === M.COMPUTER) { t.inst = M.cleanInst({ name: sound.name, patch: sound.patch }) || t.inst; gave = `, with the instrument ${sound.name}`; }
+  else if (sound?.kind === 'voice' && t.out === M.COMPUTER) { t.inst = null; t.voice = sound.voice; gave = `, with the ${sound.voice} voice`; }
+  // Show where it went.
+  sel.t = ti;
+  v.pat = name;
   v.page = 0;
   changed();
-  renderTrack(ti);
+  renderTracks();
+  postSeqState();
   const bars = pat.length / (M.TICKS_PER_BAR / M.RATES[t.rate]);
-  reply(`Put ${bars} bar${bars > 1 ? 's' : ''} into ${t.name} pattern ${v.pat}.` + (!synced && bpm !== song.bpm ? ` You played it at ${bpm} BPM; the song is at ${song.bpm}.` : ''), true);
+  reply(`Put ${bars} bar${bars > 1 ? 's' : ''} into ${t.name} pattern ${name}${gave}.` + (!synced && bpm !== song.bpm ? ` It was played at ${bpm} BPM; the song is at ${song.bpm}.` : ''), true);
 }
 
 // ---- Recording our own sound: the Recorder's Audio in "Ostinato (what it plays)" ----
@@ -1617,7 +1739,7 @@ function printStem({ ti, tail = 2 }) {
 function onRecorderMessage(m) {
   switch (m.type) {
     case 'get-seq-state': postSeqState(true); postTransport(); return true;
-    case 'audition-take': auditionTake(m.notes || []); return true;
+    case 'audition-take': auditionTake(m); return true;
     case 'stop-audition': stopAudition(); return true;
     case 'take-to-track': takeToTrack(m); return true;
     case 'set-tempo': song.bpm = Math.max(20, Math.min(300, Math.round(m.bpm))); changed(); renderTop(); postSeqState(); return true;
@@ -1651,6 +1773,15 @@ $('#export').onclick = () => {
 
 // ---------------------------------------------------------------------------------------------
 // Editing
+
+// A note-pool track's steps are only rhythm: clicking an empty step turns it on; clicking a step
+// that's on selects it (to change its length, velocity…), and clicking it again turns it off.
+function poolStep(ti, i, on) {
+  const wasSel = sel.t === ti && sel.i === i;
+  select(ti, i, sel.open || sel.t !== ti);
+  if (!on) edit(ti, () => addNoteAt(ti, i));
+  else if (wasSel) edit(ti, () => M.removeStep(viewPattern(ti), i));
+}
 
 function select(ti, i, open = true) {
   const prev = sel.t;
@@ -1728,6 +1859,7 @@ $('#tracks').addEventListener('click', e => {
     case 'page': v.page = +el.dataset.pg; renderTrack(ti); break;
     case 'cell': case 'blk':
       if (e.target.classList.contains('handle')) break;
+      if (t.mode === 'pool') { poolStep(ti, +el.dataset.s, el.dataset.act === 'blk'); break; }
       select(ti, +el.dataset.s);
       break;
     case 'e-on':
@@ -1767,7 +1899,7 @@ $('#tracks').addEventListener('click', e => {
     case 'sound':
       if (t.sound) {
         sendSound(ti);
-        if (top !== self) parent.postMessage({ type: 'switch-view', view: 'editor' }, location.origin);
+        if (top !== self) parent.postMessage({ type: 'switch-view', view: 'instruments' }, location.origin);
       } else if (editorSound) {
         t.sound = { ...editorSound };
         liveSound = ti;
@@ -1782,6 +1914,7 @@ $('#tracks').addEventListener('click', e => {
       if (v.lib.open) document.querySelector(`#trk-${ti} [data-act="lib-q"]`)?.focus();
       break;
     case 'lib-source': v.lib.source = el.dataset.val; renderTrack(ti); break;
+    case 'pick-sound': pickTrackSound(ti, el); break;
     case 'snd':
       if (v.snd.open) { endTrying(ti); v.snd.open = false; renderTrack(ti); } else openSounds(ti);
       break;
@@ -1856,6 +1989,7 @@ $('#tracks').addEventListener('dblclick', e => {
   const el = e.target.closest('[data-act="cell"], [data-act="blk"]'), tEl = trackEl(e);
   if (!el || !tEl || e.target.classList.contains('handle') || el.classList.contains('lane-num')) return;
   const ti = +tEl.dataset.t, i = +el.dataset.s;
+  if (song.tracks[ti].mode === 'pool') return; // single clicks turn its steps on and off
   sel = { t: ti, i, open: sel.open || sel.t !== ti };
   edit(ti, () => { if (el.dataset.act === 'cell') addNoteAt(ti, i); else M.removeStep(viewPattern(ti), i); });
   if (el.dataset.act === 'cell' && song.tracks[ti].mode === 'steps') preview(ti, views[ti].lastNote);
@@ -1911,16 +2045,6 @@ $('#tracks').addEventListener('change', e => {
       edit(ti, () => { t.program = el.value === '' ? null : +el.value; });
       const port = outPort(t.out);
       if (port && t.program !== null) send(port, [0xc0 | (t.ch - 1), t.program]); // hear it right away
-      break;
-    }
-    case 'voice': {
-      const v = el.value;
-      if (v.startsWith('lab:')) {
-        const name = v.slice(4), found = instruments.find(x => x.name === name);
-        if (found) edit(ti, () => { t.inst = M.cleanInst({ name, patch: found.patch }); });
-      } else edit(ti, () => { t.voice = v; t.inst = null; });
-      synth.wake();
-      preview(ti, !t.inst && t.voice === 'Drums' ? 36 : 48);
       break;
     }
     case 'rate': edit(ti, () => { t.rate = el.value; }); break;
@@ -2274,13 +2398,6 @@ document.addEventListener('keydown', e => {
 
 // ---------------------------------------------------------------------------------------------
 // Start
-
-// Ask the host page (index.html) to show the other view; nothing reloads, so playback continues.
-document.querySelectorAll('.app-nav a[data-view]').forEach(a => a.addEventListener('click', e => {
-  if (top === self) return;
-  e.preventDefault();
-  parent.postMessage({ type: 'switch-view', view: a.dataset.view }, location.origin);
-}));
 
 {
   const w = store.get('working', null);

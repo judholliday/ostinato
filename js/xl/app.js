@@ -110,7 +110,29 @@ if (soundChannel) soundChannel.onmessage = e => {
   if (m.type === 'show-program' && Array.isArray(m.data) && m.data.length >= PROGRAM_SIZE - 8) {
     loadProgram(Uint8Array.from(m.data), { slot: null, dirty: false });
   }
+  // A sound opened in the Sound Lab's library: edit it here, and hear it on the synth.
+  if (m.type === 'open-program' && Array.isArray(m.data) && m.data.length >= PROGRAM_SIZE - 8) {
+    if (['presets', 'help', 'log'].includes(state.tab)) state.tab = 't1'; // the library replaces Presets here
+    loadProgram(Uint8Array.from(m.data), { slot: null, dirty: false, send: !!state.output });
+    if (m.preview && state.output) previewNote(m.preview);
+  }
 };
+// A short note on the synth, so a sound picked in the library is heard straight away.
+function previewNote({ note = 60, ms = 450 } = {}) {
+  const ch = state.channel;
+  setTimeout(() => {
+    state.output?.send([0x90 | ch, note, 100]);
+    setTimeout(() => state.output?.send([0x80 | ch, note, 0]), ms);
+  }, 120); // after the program has arrived
+}
+const myChanged = () => soundChannel?.postMessage({ type: 'my-sounds-changed' });
+
+// Inside the Sound Lab (index.html shows this page beside its library), the page's own name and
+// tabs are hidden; under Instruments it's a page of its own.
+addEventListener('message', e => {
+  if (e.origin === location.origin && e.data?.type === 'view') document.body.classList.toggle('embedded', e.data.view === 'lab');
+});
+if (top !== self) parent.postMessage({ type: 'view-hello' }, location.origin);
 
 // Every param list that can be addressed, given the current data (fx params depend on fx type).
 function allParams() {
@@ -1048,7 +1070,8 @@ async function addToMySounds(data, { request, summary } = {}) {
     return;
   }
   await loadMySounds();
-  toast(`Added "${name}" to My Sounds. Find it in the Presets tab.`, 'ok');
+  myChanged();
+  toast(`Added "${name}" to My Sounds. It's in the Sound Lab's library and the Presets tab.`, 'ok');
   if (state.tab === 'presets') render();
 }
 
@@ -1064,6 +1087,7 @@ async function deleteMySound(p) {
     return;
   }
   await loadMySounds();
+  myChanged();
   if (presets.bank === MY_BANK && !presets.banks.some(b => b.bank === MY_BANK)) presets.bank = 'all';
   render();
 }
@@ -1233,6 +1257,7 @@ async function importIntoMySounds(file) {
     } catch { toast(SERVER_DOWN, 'err'); break; }
   }
   await loadMySounds();
+  myChanged();
   presets.bank = MY_BANK;
   render();
   toast(`Added ${n} sound${n === 1 ? '' : 's'} to My Sounds.`, 'ok');
@@ -1955,13 +1980,6 @@ function init() {
   for (const b of document.querySelectorAll('.tabs button')) {
     b.addEventListener('click', () => { state.tab = b.dataset.tab; store.set('tab', state.tab); render(); });
   }
-
-  // Ask the host page (index.html) to show the other view; nothing reloads, so playback continues.
-  document.querySelectorAll('.app-nav a[data-view]').forEach(a => a.addEventListener('click', e => {
-    if (top === self) return;
-    e.preventDefault();
-    parent.postMessage({ type: 'switch-view', view: a.dataset.view }, location.origin);
-  }));
 
   buildKeyboard();
   render();

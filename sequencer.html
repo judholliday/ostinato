@@ -14,11 +14,7 @@
     <div class="brand">
       <span class="brand-mark">O</span>
       <span class="brand-name">Ostinato</span>
-      <nav class="app-nav" aria-label="Switch view">
-        <a href="index.html#editor" data-view="editor">microKORG XL</a>
-        <a href="index.html#sequencer" data-view="sequencer" aria-current="page">Sequencer</a>
-        <a href="index.html#lab" data-view="lab">Lab</a>
-      </nav>
+      <nav class="app-nav" aria-label="Switch view" data-page="sequencer"></nav>
     </div>
     <div class="transport">
       <button id="play" title="Play (Space)">▶ Play</button>
@@ -88,7 +84,7 @@
     <button class="ghost small" id="add-track">+ Add track</button>
 
     <p class="help">
-      Click a step to edit it, double-click to turn it on or off, and drag a note's right edge to hold it longer.
+      Click a step to edit it, double-click to turn it on or off (on a note-pool track, one click turns it on), and drag a note's right edge to hold it longer.
       Keys: <kbd>Space</kbd> play/stop, <kbd>←</kbd><kbd>→</kbd> move, <kbd>↑</kbd><kbd>↓</kbd> transpose (<kbd>⇧</kbd> octave),
       <kbd>Enter</kbd> add a note, <kbd>⌫</kbd> delete, <kbd>Esc</kbd> close the editor, <kbd>1</kbd>–<kbd>8</kbd> select a track.
       With a track armed (✎, or double-click its header) and the sequencer stopped, notes played on your keyboard fill in the selected step, then move to the next one.

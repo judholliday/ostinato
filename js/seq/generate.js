@@ -21,6 +21,55 @@ export function euclid(k, n, rot = 0) {
 }
 
 const DENSITY = { sparse: 0.22, medium: 0.38, busy: 0.6 };
+
+// Rhythm feels for one bar of n steps (16 = a bar of 16ths), as on/off per step. Which ones a
+// roll can pick depends on the density; each also varies a little by itself.
+const FEELS = {
+  sparse: ['sparse', 'tresillo', 'offbeat', 'euclid', 'halfnotes'],
+  medium: ['eighths', 'offbeat', 'tresillo', 'syncopated', 'gallop', 'euclid', 'anticipate'],
+  busy: ['driving', 'gallop', 'syncopated', 'eighths', 'euclid', 'rolling'],
+};
+const FEEL_NAMES = { sparse: 'sparse', halfnotes: 'long notes', tresillo: '3-3-2', offbeat: 'offbeat', euclid: 'spread-out', eighths: 'eighth-note',
+  syncopated: 'syncopated', gallop: 'galloping', anticipate: 'pushed', driving: 'driving 16th', rolling: 'rolling' };
+function barRhythm(feel, n, d, rng) {
+  const r = (lo, hi) => lo + Math.floor(rng() * (hi - lo + 1));
+  const on = new Array(n).fill(false), q = n / 16; // q: steps per 16th, so feels fit other lengths
+  const hit = i => { const k = Math.round(i * q); if (k < n) on[k] = true; };
+  const beats = [0, 4, 8, 12];
+  switch (feel) {
+    case 'sparse': hit(0); for (let k = r(1, 2); k > 0; k--) hit(r(3, 15)); break;
+    case 'halfnotes': hit(0); hit(8); if (rng() < 0.5) hit(r(10, 14)); break;
+    case 'tresillo': [0, 3, 6, 8, 11, 14].forEach(i => { if (i < 8 || rng() < 0.75) hit(i); }); break;
+    case 'offbeat': beats.forEach(b => hit(b + 2)); if (rng() < 0.6) hit(0); if (rng() < 0.3) hit(15); break;
+    case 'eighths': for (let i = 0; i < 16; i += 2) if (i === 0 || rng() < 0.82) hit(i); if (rng() < 0.4) hit(r(0, 7) * 2 + 1); break;
+    case 'syncopated': [0, 3, 6, 10, 12, 14].forEach(i => { if (i === 0 || rng() < 0.7) hit(i); }); if (rng() < 0.4) hit(r(0, 15)); break;
+    case 'gallop': beats.forEach(b => { if (b === 0 || rng() < 0.85) { hit(b); hit(b + 2); hit(b + 3); } }); break;
+    case 'anticipate': hit(0); hit(r(5, 7)); hit(r(9, 11)); hit(15); if (rng() < 0.5) hit(r(2, 4)); break;
+    case 'driving': for (let i = 0; i < 16; i++) if (i % 4 === 0 || rng() < 0.85) hit(i); break;
+    case 'rolling': for (let i = 0; i < 16; i++) if (i % 2 === 0 || rng() < 0.6) hit(i); break;
+    default: { // euclid: an even spread at a density that varies roll to roll
+      const k = Math.max(2, Math.round(n * d * (0.7 + rng() * 0.6)));
+      return euclid(k, n, r(0, 3));
+    }
+  }
+  return on;
+}
+// Bars of a feel, the last one with a little fill or a gap, so a long pattern doesn't loop
+// a one-bar idea.
+function phrase(feel, L, d, rng) {
+  const bar = Math.min(16, L), first = barRhythm(feel, bar, d, rng), out = [];
+  const bars = Math.ceil(L / bar);
+  for (let b = 0; b < bars; b++) {
+    let r = [...first];
+    if (b === bars - 1 && bars > 1) {
+      r = r.map((x, i) => (i >= bar - 4 ? (rng() < 0.35 ? !x : x) : x)); // a fill
+    } else if (b > 0 && rng() < 0.3) r = barRhythm(feel, bar, d, rng); // sometimes a fresh bar in between
+    out.push(...r);
+  }
+  const res = out.slice(0, L);
+  if (!res.some(Boolean)) res[0] = true;
+  return res;
+}
 // Where each role sits when the register is Auto, and the Low/Mid/High registers.
 const AUTO_BASE = { bass: 36, lead: 60, chords: 57, pad: 55, arp: 60 };
 const REGISTER = { low: 36, mid: 52, high: 67 };
@@ -32,7 +81,17 @@ const PROGRESSIONS = {
 };
 const DRUM = { kick: 36, snare: 38, clap: 39, rim: 37, hat: 42, open: 46, ride: 51, shaker: 70 };
 
-export function randomIdea({ role, length = 16, scale = null, density = 'medium', register = 'auto', pool = false, rng = Math.random }) {
+// A few tries so a roll never repeats the last rhythm (`avoid`: the `rhythm` of the previous idea).
+export function randomIdea(opts) {
+  let idea;
+  for (let k = 0; k < 6; k++) {
+    idea = makeIdea(opts);
+    if (!opts.avoid || idea.rhythm !== opts.avoid) break;
+  }
+  return idea;
+}
+
+function makeIdea({ role, length = 16, scale = null, density = 'medium', register = 'auto', pool = false, rng = Math.random }) {
   const r = (lo, hi) => lo + Math.floor(rng() * (hi - lo + 1));
   const pick = list => list[Math.floor(rng() * list.length)];
   const chance = p => rng() < p;
@@ -59,11 +118,9 @@ export function randomIdea({ role, length = 16, scale = null, density = 'medium'
 
   // Note-pool tracks: rhythm only; the pool supplies the notes.
   if (pool) {
-    const k = Math.max(2, Math.round(L * d * 1.3));
-    const rot = r(0, 3);
-    euclid(k, L, rot).forEach((on, i) => { if (on) put(i, [], accent(i), r(35, 60)); });
-    if (!steps.some(s => s.i === 0) && chance(0.7)) put(0, [], 115, 50);
-    return finish(`${k} hits spread over ${L} steps`, 'Note-pool rhythm');
+    const feel = pick(FEELS[density] || FEELS.medium), gate = pick([[25, 45], [40, 65], [70, 95]]);
+    phrase(feel, L, d, rng).forEach((on, i) => { if (on) put(i, [], accent(i), r(...gate)); });
+    return finish(`${FEEL_NAMES[feel]} rhythm, ${steps.length} hits`, 'Note-pool rhythm');
   }
 
   switch (role) {
@@ -101,21 +158,37 @@ export function randomIdea({ role, length = 16, scale = null, density = 'medium'
       break;
     }
     case 'bass': {
-      const k = Math.max(2, Math.round(L * d));
-      const rot = chance(0.6) ? 0 : r(1, 3);
-      const rhythm = euclid(k, L, rot);
-      if (chance(0.8)) rhythm[0] = true;
-      const fifth = 4, octave = degrees.length;
+      // A rhythm feel, a line style, and (over two bars or more) a chord progression whose roots
+      // the line follows. Degrees are in the song's scale, so every note stays in key.
+      const feel = pick(FEELS[density] || FEELS.medium);
+      const rhythm = phrase(feel, L, d, rng);
+      if (chance(0.85)) rhythm[0] = true;
+      const n = degrees.length, octave = n, fifth = Math.min(4, n - 1);
+      const bar = Math.min(16, L), bars = Math.ceil(L / bar);
+      const prog = bars > 1 ? pick(PROGRESSIONS[isMinor ? 'minor' : 'major']).map(x => Math.round(x * n / 7)) : [0];
+      const style = pick(['pedal', 'rootfifth', 'octaves', 'walk', 'riff', 'riff']);
+      const riff = Array.from({ length: 8 }, () => pick([0, 0, 0, fifth, octave, 2, 1, n - 1, -1]));
+      const legato = chance(0.35);
+      let k = 0;
       rhythm.forEach((on, i) => {
         if (!on) return;
-        const roll = rng();
-        const deg = i === 0 || roll < 0.45 ? 0 : roll < 0.6 ? octave : roll < 0.75 ? fifth : pick([1, 2, 5, 6].filter(x => x < degrees.length));
-        const next = rhythm.findIndex((x, j) => j > i && x);
-        const room = (next < 0 ? L : next) - i;
-        const len = room > 1 && chance(0.15) ? 2 : 1;
-        put(i, [note(deg)], accent(i), len > 1 ? 100 : r(35, 65), len);
+        const b = Math.floor(i / bar), chordRoot = prog[b % prog.length], pos = i % bar;
+        const next = rhythm.findIndex((x, j) => j > i && x), room = (next < 0 ? L : next) - i;
+        let deg;
+        if (pos === 0 || style === 'pedal') deg = style === 'pedal' && pos !== 0 && chance(0.2) ? octave : 0;
+        else if (style === 'rootfifth') deg = k % 2 ? fifth : 0;
+        else if (style === 'octaves') deg = k % 2 ? octave : 0;
+        else if (style === 'walk') {
+          // Toward the next bar's root: step by step in the last notes of the bar.
+          const target = prog[(b + 1) % prog.length] - chordRoot + (prog[(b + 1) % prog.length] < chordRoot ? n : 0);
+          deg = pos >= bar - 4 ? Math.max(0, Math.min(target, Math.round(target * (pos - (bar - 5)) / 5))) : pick([0, 0, 2, fifth]);
+        } else deg = riff[k % riff.length];
+        k++;
+        const len = room > 1 && (legato ? chance(0.7) : chance(0.15)) ? Math.min(room, legato ? room : 2) : 1;
+        put(i, [note(chordRoot + deg)], accent(i), len > 1 ? r(85, 100) : legato ? r(70, 95) : r(30, 60), len);
       });
-      what = `${steps.length} notes, mostly roots and fifths`;
+      const STYLE = { pedal: 'root pedal', rootfifth: 'root–fifth', octaves: 'octave bounce', walk: 'walking', riff: 'riff' };
+      what = `${FEEL_NAMES[feel]} ${STYLE[style]} line${bars > 1 ? ` over ${prog.slice(0, Math.min(bars, 4)).map(x => NOTE_NAMES[note(x) % 12]).join(' – ')}` : ''}`;
       break;
     }
     case 'arp': {
@@ -149,7 +222,7 @@ export function randomIdea({ role, length = 16, scale = null, density = 'medium'
     default: { // lead / riff: a motif, repeated with a changed ending
       const M = L >= 16 ? L / 2 : L;
       const k = Math.max(2, Math.round(M * d * 1.1));
-      const rhythm = euclid(k, M, r(0, 2));
+      const rhythm = chance(0.5) ? euclid(k, M, r(0, 2)) : phrase(pick(FEELS[density] || FEELS.medium), M, d, rng);
       let deg = r(0, 4);
       const motif = rhythm.map(on => {
         if (!on) return null;
@@ -169,9 +242,10 @@ export function randomIdea({ role, length = 16, scale = null, density = 'medium'
 
   function finish(text, label = ROLES[role] || 'Lead / riff') {
     const keyName = `${NOTE_NAMES[sc.root]} ${sc.type}${scale ? '' : ' (no scale set)'}`;
+    const pattern = cleanPattern({ steps }, { length: L, onlyBelow: L });
     return {
       summary: `🎲 ${label}: ${text}${role === 'drums' || pool ? '' : `, in ${keyName}`}.`,
-      pattern: cleanPattern({ steps }, { length: L, onlyBelow: L }),
+      pattern, rhythm: pattern.steps.map(s => s.i).join(','),
     };
   }
 }

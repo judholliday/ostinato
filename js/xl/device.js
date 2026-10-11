@@ -7,7 +7,7 @@ import { loadSounds, ROLE_TYPES, bankLabel, MY_BANK } from './soundlib.js';
 export const device = {
   id: 'xl',
   name: 'microKORG XL',
-  view: 'editor', // its editor page in index.html
+  view: 'instruments', // its editor page in index.html
   portLabel: xlPortLabel,
   isIn: looksLikeSynthIn,
   isOut: looksLikeSynthOut,

@@ -37,7 +37,6 @@
 .sources .src-h { font-size: 12px; font-weight: 600; margin-top: 2px; }
 
 .add-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 12px 0; }
-.add-row select { max-width: 420px; }
 .lab-keys { background: var(--bg); padding: 8px 0; border-top: 1px solid var(--line); margin-top: 8px; }
 .lab-keys .kbd { height: 70px; }
 .lab-keys .kbd .w { width: 22px; height: 70px; }
@@ -109,3 +108,112 @@
 .mod-pop .route { border-top: 1px dashed var(--line); padding-top: 6px; margin-top: 6px; }
 .mod-pop .hint { margin: 6px 0 0; }
 .patch-svg .box.is-selected rect { stroke-width: 3; stroke: var(--text); }
+
+/* the add-module picker */
+.section-head .add-btn { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--text); }
+.add-btn { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
+.add-btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+.add-picker { position: fixed; z-index: 20; width: 680px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); }
+.add-picker[hidden] { display: none; }
+.pick-group h4 { margin: 6px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; }
+.pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.pick { display: grid; grid-template-columns: 28px 1fr; grid-template-rows: auto auto; column-gap: 8px; align-items: center; text-align: left;
+  padding: 7px 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; }
+.pick svg { grid-row: 1 / 3; width: 28px; height: 28px; fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.pick b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pick span { white-space: normal; min-width: 0; font-size: 11px; color: var(--muted); line-height: 1.25; }
+.pick:hover, .pick:focus-visible { border-color: var(--accent); background: var(--accent-soft); outline: none; }
+.pick.mod-env svg, .pick.mod-lfo svg { stroke: #6aa9ff; }
+.pick.mod-chorus svg, .pick.mod-delay svg, .pick.mod-reverb svg { stroke: var(--muted); }
+.add-picker .hint { margin: 10px 0 0; }
+
+/* waveforms in the diagram, and the output scope */
+.patch-svg .wave-zero { stroke: var(--line); stroke-width: 1; }
+.patch-svg .wave { fill: none; stroke: var(--accent); stroke-width: 1.4; stroke-linejoin: round; pointer-events: none; }
+.patch-svg .box.fx .wave { stroke: var(--muted); }
+.patch-svg .box.out .wave { stroke: var(--bg); }
+.patch-svg .box.out .wave-zero { stroke: color-mix(in srgb, var(--bg) 35%, var(--text)); }
+.patch-svg .shape { fill: none; stroke: #6aa9ff; stroke-width: 1.4; stroke-linejoin: round; pointer-events: none; }
+.patch-svg .box.is-off .wave, .patch-svg .box.is-off .shape { opacity: .3; }
+.waves-held .patch-svg .wave { opacity: .45; }
+.scope { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: -6px 0 14px; }
+.scope[hidden] { display: none; }
+.scope-pane { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px 4px; }
+.scope-h { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.scope-h .hint { text-transform: none; letter-spacing: 0; font-size: 11px; }
+.scope canvas { display: block; width: 100%; height: 110px; }
+@media (max-width: 700px) { .scope { grid-template-columns: 1fr; } }
+
+/* the sound library beside the editor */
+.lab-layout { display: grid; grid-template-columns: 270px minmax(0, 1fr); align-items: start; }
+.lab-layout.lib-hidden { grid-template-columns: minmax(0, 1fr); }
+.lab-layout.lib-hidden .library { display: none; }
+.lab-main { min-width: 0; }
+.library { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 10px 14px;
+  border-right: 1px solid var(--line); background: var(--panel); }
+.lib-head { display: flex; align-items: center; gap: 6px; }
+.lib-head .spacer { flex: 1; }
+.lib-head #lib-count { font-size: 11px; }
+
+#lib-search { width: 100%; }
+.lib-bank { align-self: flex-start; }
+.lib-types { display: flex; flex-wrap: wrap; gap: 4px; }
+.lib-types .chip { padding: 2px 8px; font-size: 11px; border-radius: 10px; background: var(--panel-2); }
+.lib-types .chip span { color: var(--muted); }
+.lib-types .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.lib-types .chip.on span { color: inherit; opacity: .8; }
+.lib-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; outline: none; margin: 0 -4px; padding: 0 4px; }
+.lib-group { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0 2px; }
+.lib-group:first-child { margin-top: 0; }
+.lib-row { display: flex; align-items: center; gap: 6px; text-align: left; border: 0; background: transparent; padding: 4px 8px; border-radius: 6px; font-size: 13px; }
+.lib-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-row .mine { color: var(--warn); font-size: 11px; }
+.lib-row:hover { background: var(--panel-2); }
+.lib-row.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); font-weight: 600; }
+.lib-list:focus-visible .lib-row.on { outline: 1px solid var(--accent); }
+.lib-empty { padding: 8px 0; }
+.lib-audition { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+#origin { font-size: 12px; }
+@media (max-width: 800px) {
+  .lab-layout { grid-template-columns: minmax(0, 1fr); }
+  .library { position: static; height: auto; max-height: 360px; border-right: 0; border-bottom: 1px solid var(--line); }
+}
+.lib-inst .chip.off:not(.on) { opacity: .6; }
+.lib-row .inst { font: 9px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
+.lib-row.silent .nm { color: var(--muted); }
+/* An XL sound is open: its editor (index.html places it) covers this side of the page. */
+body.pane-device .lab-main > * { visibility: hidden; }
+.link-bar { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); font-size: 12px; }
+.link-bar[hidden] { display: none; }
+.link-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* the kit editor (a Drum kit module) */
+.card.kit-card { grid-column: 1 / -1; }
+.kit { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 14px; align-items: start; border-top: 1px dashed var(--line); padding-top: 8px; }
+.pads { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.pad { aspect-ratio: 1; display: flex; flex-direction: column; justify-content: space-between; align-items: flex-start; padding: 6px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line); text-align: left; transition: background .08s; }
+.pad b { font-size: 11px; line-height: 1.2; }
+.pad span { font: 10px var(--mono); color: var(--muted); }
+.pad.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.pad.hit { background: var(--accent); color: #fff; }
+.pad.hit span { color: #fff; }
+.pad-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pad-head .spacer { flex: 1; }
+.pad-name { font-weight: 600; width: 140px; }
+.pad-wave { display: block; width: 100%; height: 70px; margin: 8px 0; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.pad-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px 16px; }
+.pad-group h4 { margin: 4px 0; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); cursor: help; }
+.pad-group .prm { margin-bottom: 2px; }
+.kit-from { margin: 8px 0; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.kf-kit { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; }
+.kf-kit > b { min-width: 110px; }
+.kf-pads { display: flex; flex-wrap: wrap; gap: 2px; }
+.kf-pads button { padding: 1px 6px; font-size: 11px; }
+@media (max-width: 760px) { .kit { grid-template-columns: minmax(0, 1fr); } }
+
+/* the Sampler and recordings */
+.prm.prm-file { grid-template-columns: 82px minmax(0, 1fr) auto; }
+.prm.prm-file select { min-width: 0; }
+.sample-wave { display: block; width: 100%; height: 64px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }

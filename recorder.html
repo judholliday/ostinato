@@ -3,23 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Recorder · Ostinato</title>
+  <title>Capture · Ostinato</title>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="sequencer.css">
   <link rel="stylesheet" href="recorder.css">
-  <!-- A panel inside index.html, opened from any page with ● Recorder (or ⌥R). -->
-  <script>if (top === self) location.replace('index.html' + location.search);</script>
+  <!-- The Capture tab of index.html: everything you play, kept as takes; clips; recording. -->
+  <script>if (top === self) location.replace('index.html' + location.search + '#capture');</script>
 </head>
 <body>
-  <header class="rec-head">
-    <b class="rec-title">● Recorder</b>
-    <label class="field" title="The keyboard or controller whose playing is kept (e.g. your MPK mini)">MIDI in <select id="midi-in"></select>
-      <span id="led" class="keys-led">●</span></label>
+  <header class="bar">
+    <div class="brand">
+      <span class="brand-mark">O</span>
+      <span class="brand-name">Ostinato</span>
+      <nav class="app-nav" aria-label="Switch view" data-page="capture"></nav>
+    </div>
     <span class="spacer"></span>
-    <button id="wide" class="ghost small" title="Fill the window, or go back to a side panel">⤢</button>
-    <button id="close" class="ghost small" title="Close (⌥R)">✕</button>
+    <label class="field" title="The keyboard or controller whose playing is kept (e.g. your MPK mini)">Capture from <select id="midi-in"></select>
+      <span id="led" class="keys-led">●</span></label>
   </header>
 
+  <main class="capture-page">
+  <section class="rec-section rec-editor" id="editor" hidden></section>
+
+  <div class="capture-cols">
+  <div class="capture-side">
   <section class="rec-section">
     <h2>Record with the sequencer</h2>
     <p class="hint">Counts in, starts the sequencer and records what you play over it as one take, rests and all.</p>
@@ -57,12 +64,24 @@
     <div id="recordings" class="recordings"></div>
   </section>
 
+  </div>
+  <div class="capture-main">
   <section class="rec-section">
     <h2>Takes <span id="takes-sum" class="hint plain"></span></h2>
     <div id="takes" class="takes"></div>
   </section>
 
+  <section class="rec-section">
+    <h2>Clips <span class="hint plain">· parts of takes you kept, with their sound</span></h2>
+    <div id="clips" class="takes"></div>
+  </section>
+
+  </div>
+  </div>
+  </main>
+
   <div id="toasts" class="toasts"></div>
   <script type="module" src="js/rec/ui.js"></script>
+  <script type="module" src="js/core/topbar.js"></script>
 </body>
 </html>

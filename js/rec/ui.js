@@ -1,16 +1,20 @@
-// The Recorder panel (recorder.html): keeps everything played on the chosen MIDI input for an hour,
+// The Capture tab (recorder.html): keeps everything played on the chosen MIDI input for an hour,
 // split into takes, and records performances with the sequencer. It makes no sound itself: the
 // sequencer plays takes back on its selected track, and receives takes into patterns, through the
 // shared BroadcastChannel('mkxl'):
 //   from the sequencer:  transport { playing, anchor: { wall, tick, bpm }, run } · seq-state { track, mode, songBars, bpm }
 //                        performance { state: 'start' | 'end', wall } · take-result { text, ok }
-//   to the sequencer:    get-seq-state · audition-take { notes } · stop-audition · take-to-track { items, fromBar, bpm, synced }
+//                        sounding { wall, sound } (what the keyboard played on: core/sounding.js) · program (the XL editor's sound)
+//   to the sequencer:    get-seq-state · audition-take { notes, sound, at, loopMs } · stop-audition
+//                        take-to-track { items, fromBar, bpm, synced, ti, pattern, sound }
 //                        set-tempo { bpm } · record-performance { bars, countIn } · stop-sequencer
 //                        print-stem { ti, tail }  (answered by stem { state: 'start' | 'end', wall, ms })
 import * as C from '../seq/capture.js';
 import { TICKS_PER_BEAT } from '../seq/model.js';
 import { writeMidi } from '../seq/midifile.js';
-import { portLabel, looksLikeSynthOut } from '../core/midiports.js';
+import { portLabel, looksLikeSynthOut, looksLikeSynthIn } from '../core/midiports.js';
+import { soundKey } from '../core/sounding.js';
+import { initEditor, wireEditor, openTake, openClip, editing, editorKey, refreshEditor, closeEditor, editorMessage } from './editor.js';
 import { AudioIn, cut, encodeWav, findOnset } from './audio.js';
 import { storage, placeOf } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
@@ -50,6 +54,7 @@ function tickAt(wall) {
 
 channel.onmessage = e => {
   const m = e.data || {};
+  editorMessage(m);
   // The computer keyboard played on another page (or here, below): captured like a MIDI keyboard.
   if (m.type === 'qwerty') { if (prefs.midiIn === QWERTY) captureEvent(m.data, m.wall - performance.timeOrigin); return; }
   if (m.type === 'transport') {
@@ -60,7 +65,10 @@ channel.onmessage = e => {
   } else if (m.type === 'stem') onStem(m);
   else if (m.type === 'own-level') { if (isOwn()) showLevel(m.peak); }
   else if (m.type === 'recordings-changed') refreshRecordings();
-  else if (m.type === 'seq-state') { seq = m; renderPerf(); renderTakes(); }
+  else if (m.type === 'seq-state') { seq = m; renderPerf(); renderTakes(); refreshEditor(); }
+  else if (m.type === 'sounding') noteSound(m);
+  else if (m.type === 'program' && Array.isArray(m.data)) xlNow = { kind: 'xl', name: String(m.name || 'XL sound'), data: m.data };
+  else if (m.type === 'clips-changed') refreshClips();
   else if (m.type === 'performance') {
     if (m.state === 'start') { perf = { start: m.wall, end: Infinity }; cap.ranges.push({ ...perf, kind: 'performance' }); }
     else if (perf) { cap.ranges.at(-1).end = m.wall; perf = null; finishPerfAudio(m.wall); }
@@ -74,7 +82,7 @@ channel.onmessage = e => {
 // Capture: every note, pedal and the times they happened (see seq/capture.js)
 
 const KEEP_MS = 60 * 60 * 1000, MAX_EVENTS = 20000;
-const cap = { events: [], ranges: [], bpm: new Map(), fromBar: new Map(), est: new Map(), auditioning: null };
+const cap = { events: [], ranges: [], bpm: new Map(), est: new Map(), auditioning: null };
 {
   // Takes used to be kept by the sequencer page; bring them over once.
   const old = localStorage.getItem('mkxl.seq.capture');
@@ -84,6 +92,41 @@ const cap = { events: [], ranges: [], bpm: new Map(), fromBar: new Map(), est: n
   // A performance left open by a reload ends at its last note.
   for (const r of cap.ranges) if (r.end === Infinity) r.end = cap.events.at(-1)?.t ?? r.start;
 }
+// The sounds takes were played on: pages report what the keyboard plays through (sounding); the
+// log says from when each was in use. Kept beside the capture, for as long as it.
+const snd = { byKey: store.get('sounds', {}), log: store.get('soundlog', []) }; // log: [{ t, k }]
+let xlNow = null; // the XL editor's sound: what the XL's own keys play
+let soundTimer = null;
+function noteSound(m) {
+  if (!m.sound?.kind) return;
+  const k = soundKey(m.sound);
+  snd.byKey[k] = m.sound;
+  if (snd.log.at(-1)?.k !== k) snd.log.push({ t: m.wall, k });
+  clearTimeout(soundTimer);
+  soundTimer = setTimeout(saveSounds, 1500);
+  if (!renderTimer) renderTimer = setTimeout(() => { renderTimer = null; renderTakes(); }, 400);
+}
+function saveSounds() {
+  // Forget sounds older than the oldest captured note (keeping the one in use then).
+  const oldest = cap.events[0]?.t ?? Date.now();
+  const first = Math.max(0, snd.log.findLastIndex(e => e.t <= oldest));
+  snd.log = snd.log.slice(first).slice(-500);
+  const used = new Set(snd.log.map(e => e.k));
+  for (const k of Object.keys(snd.byKey)) if (!used.has(k)) delete snd.byKey[k];
+  store.set('sounds', snd.byKey);
+  store.set('soundlog', snd.log);
+}
+// A take's sound: the one in use when it started (reports can arrive just after the first note).
+function takeSound(take) {
+  let e = null;
+  for (const x of snd.log) { if (x.t <= take.start + 500) e = x; else break; }
+  e ||= snd.log.find(x => x.t <= take.end);
+  if (e && snd.byKey[e.k]) return snd.byKey[e.k];
+  const input = inputs().find(p => p.name === prefs.midiIn);
+  return input && looksLikeSynthIn(input) ? xlNow : null;
+}
+const soundName = s => (!s ? '' : s.kind === 'xl' ? `${s.name} (XL)` : s.kind === 'lab' ? `${s.name} (Lab)` : s.name);
+
 let saveTimer = null, renderTimer = null, endTimer = null;
 function saveSoon() {
   clearTimeout(saveTimer);
@@ -135,8 +178,6 @@ const ago = ms => {
 };
 const clock = ms => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const stamp = ms => { const d = new Date(ms), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}`; };
-const barsPerPattern = rate => C.barsPerPattern(RATES[rate] || 24);
-const RATES = { '1/32': 12, '1/16T': 16, '1/16': 24, '1/8T': 32, '1/8': 48, '1/4': 96 };
 
 function rollSVG(take) {
   const span = Math.max(1, take.end - take.start);
@@ -147,6 +188,7 @@ function rollSVG(take) {
 }
 
 function renderTakes() {
+  countNews();
   const el = $('#takes');
   const takes = allTakes();
   const input = inputs().find(p => p.name === prefs.midiIn);
@@ -157,31 +199,76 @@ function renderTakes() {
     el.innerHTML = '<div class="hint">Nothing yet. Play anything, in any view, with or without the sequencer, and it shows up here as a take.</div>';
     return;
   }
-  const t = seq?.track, perPat = t ? barsPerPattern(t.rate) : 4;
   el.innerHTML = takes.map(take => {
-    const bpm = takeBpm(take), items = C.takeTicks(take, bpm), bars = C.takeBars(items);
-    const from = Math.min(cap.fromBar.get(take.id) || 0, bars - 1), fit = Math.min(perPat, bars - from);
+    const bpm = takeBpm(take), bars = C.takeBars(C.takeTicks(take, bpm)), sound = takeSound(take);
     const auditioning = cap.auditioning?.id === take.id;
     return `<div class="take${take.live ? ' live' : ''}${take.kind ? ' perf' : ''}" data-id="${take.id}">
-      <div class="take-top"><button class="ghost play-take" data-act="play" title="${auditioning ? 'Stop' : `Play it on ${t ? esc(t.name) : 'the selected track'}'s sound`}">${auditioning ? '■' : '▶'}</button>${rollSVG(take)}</div>
+      <div class="take-top"><button class="ghost play-take" data-act="play" title="${auditioning ? 'Stop' : `Play it on ${sound ? esc(soundName(sound)) : 'the sequencer\'s selected track'}`}">${auditioning ? '■' : '▶'}</button>
+        <span class="roll-open" data-act="open" title="Open it in the editor">${rollSVG(take)}</span></div>
       <div class="take-info"><b>${take.live ? (take.kind ? 'Recording…' : 'Playing now…') : ago(take.end)}</b>
         · ${clock(take.end - take.start)} · ${take.notes.length} note${take.notes.length > 1 ? 's' : ''}
         · <span class="hint">${take.kind ? 'performance, ' : ''}${take.synced ? `played along at ${bpm} BPM` : 'free time'} · ${bars} bar${bars > 1 ? 's' : ''}</span></div>
       <div class="take-actions">
-        ${take.synced ? '' : `<label class="field" title="The take's tempo, first note on beat 1. It's a guess; change it if the bars look wrong.">BPM <input type="number" data-act="bpm" min="40" max="240" value="${bpm}"></label>
-          ${seq && bpm !== seq.bpm ? `<button class="ghost small" data-act="tempo" title="Change the song's tempo to the take's">Song to ${bpm}</button>` : ''}`}
-        ${bars > perPat ? `<label class="field" title="A pattern holds ${perPat} bar${perPat > 1 ? 's' : ''} of ${t?.rate || '1/16'} steps">From bar
-          <select data-act="from">${Array.from({ length: bars }, (_, b) => `<option value="${b}" ${b === from ? 'selected' : ''}>${b + 1}</option>`).join('')}</select></label>` : ''}
+        <span class="take-sound hint" title="The sound it was played on">🔊 ${sound ? esc(soundName(sound)) : 'sound not known'}</span>
         <span class="spacer"></span>
-        <button data-act="use" ${!t || t.mode === 'pool' ? 'disabled' : ''} title="${!t ? 'The sequencer isn\'t ready' : t.mode === 'pool'
-          ? 'Select a Steps track in the sequencer to put this in'
-          : `Replace ${esc(t.name)} pattern ${t.pattern} with ${fit === bars ? 'this take' : `bars ${from + 1}–${from + fit}`}, quantized to ${t.rate} steps (Undo in the sequencer brings the old one back)`}">→ ${t ? `${esc(t.name)} ${t.pattern}` : 'track'}</button>
+        <button data-act="open" ${take.live ? 'disabled' : ''} title="See it all on a timeline: select part of it, loop it, save it as a clip or put it into a track">✎ Open</button>
         <button class="ghost" data-act="mid" title="Download this take as a MIDI file, as played (not quantized)">.mid</button>
         <button class="ghost small" data-act="del" title="Forget this take">✕</button>
       </div>
     </div>`;
-  }).join('') + `<div class="hint">→ puts a take into the sequencer's selected track and the pattern shown there. <button class="ghost small" data-act="clear">Forget all</button></div>`;
+  }).join('') + `<div class="hint">Open a take to pick out the part you want. <button class="ghost small" data-act="clear">Forget all</button></div>`;
 }
+
+// ---- clips: saved selections of takes (data/clips/, see editor.js) ----
+
+let clips = [], clipPlaying = null;
+async function refreshClips() {
+  try { clips = await storage.list('clips'); } catch { clips = []; }
+  renderClips();
+}
+function clipRoll(c) {
+  const span = Math.max(1, c.length || 1), ns = c.notes.map(n => n.note);
+  const lo = Math.min(...ns), hi = Math.max(...ns), rows = Math.max(12, hi - lo + 1), top = hi + Math.floor((rows - (hi - lo + 1)) / 2);
+  return `<svg class="roll" viewBox="0 0 1000 ${rows}" preserveAspectRatio="none" aria-hidden="true">${c.notes.map(n =>
+    `<rect x="${(n.pos / span * 1000).toFixed(1)}" y="${top - n.note}" width="${Math.max(4, n.len / span * 1000).toFixed(1)}" height="1"/>`).join('')}</svg>`;
+}
+function renderClips() {
+  const el = $('#clips');
+  if (!clips.length) { el.innerHTML = '<div class="hint">None yet. Open a take, select the part you want and save it as a clip.</div>'; return; }
+  el.innerHTML = clips.map(c => {
+    const bars = Math.round((c.length || 0) / (TICKS_PER_BEAT * 4) * 100) / 100;
+    return `<div class="take clip" data-file="${esc(c.file)}">
+      <div class="take-top"><button class="ghost play-take" data-act="play" title="${clipPlaying === c.file ? 'Stop' : `Play it on ${c.sound ? esc(soundName(c.sound)) : 'the sequencer\'s selected track'}`}">${clipPlaying === c.file ? '■' : '▶'}</button>
+        <span class="roll-open" data-act="open" title="Open it in the editor">${clipRoll(c)}</span></div>
+      <div class="take-info"><b>${esc(c.name)}</b> · ${bars} bar${bars === 1 ? '' : 's'} · ${c.bpm} BPM · ${c.notes.length} notes</div>
+      <div class="take-actions"><span class="take-sound hint">🔊 ${c.sound ? esc(soundName(c.sound)) : 'no sound kept'}</span><span class="spacer"></span>
+        <button data-act="open" title="Open it in the editor: loop it, trim it, rename it, put it into a track">✎ Open</button>
+        <button class="ghost small" data-act="del" title="Remove this clip (moved to data/clips/deleted/)">✕</button></div>
+    </div>`;
+  }).join('');
+}
+$('#clips').addEventListener('click', async e => {
+  const el = e.target.closest('[data-act]'), c = clips.find(x => x.file === el?.closest('[data-file]')?.dataset.file);
+  if (!c) return;
+  if (el.dataset.act === 'open') openClip(c);
+  else if (el.dataset.act === 'play') {
+    channel.postMessage({ type: 'stop-audition' });
+    clearTimeout(cap.auditionTimer);
+    if (clipPlaying === c.file) clipPlaying = null;
+    else {
+      const ms = 60000 / (c.bpm * TICKS_PER_BEAT);
+      channel.postMessage({ type: 'audition-take', sound: c.sound, notes: c.notes.map(n => ({ dt: n.pos * ms, dur: n.len * ms, note: n.note, vel: n.vel })) });
+      clipPlaying = c.file;
+      cap.auditionTimer = setTimeout(() => { clipPlaying = null; renderClips(); }, c.length * ms + 400);
+    }
+    renderClips();
+  } else if (el.dataset.act === 'del') {
+    if (!confirm(`Remove the clip "${c.name}"?`)) return;
+    try { await storage.remove('clips', c.file); toast(`Removed "${c.name}".`); } catch (err) { toast(`Couldn't remove it: ${err.message}`, 'err'); }
+    if (editing()?.src.file === c.file) closeEditor();
+    refreshClips();
+  }
+});
 
 function renderPerf() {
   const lens = [['song', seq?.mode === 'song' ? `The song (${seq.songBars} bars)` : 'The song sections'], ['4', '4 bars'], ['8', '8 bars'], ['16', '16 bars'], ['32', '32 bars'], ['open', 'Until I stop']];
@@ -213,19 +300,16 @@ $('#takes').addEventListener('click', e => {
     case 'play':
       if (cap.auditioning?.id === id) { channel.postMessage({ type: 'stop-audition' }); cap.auditioning = null; clearTimeout(cap.auditionTimer); }
       else {
-        channel.postMessage({ type: 'audition-take', notes: take.notes.map(n => ({ dt: n.t - take.start, dur: n.dur, note: n.note, vel: n.vel })) });
+        channel.postMessage({ type: 'audition-take', sound: takeSound(take), notes: take.notes.map(n => ({ dt: n.t - take.start, dur: n.dur, note: n.note, vel: n.vel })) });
         cap.auditioning = { id };
         clearTimeout(cap.auditionTimer);
         cap.auditionTimer = setTimeout(() => { cap.auditioning = null; renderTakes(); }, take.end - take.start + 300);
       }
       break;
-    case 'use':
-      channel.postMessage({ type: 'take-to-track', items: C.takeTicks(take, bpm), fromBar: cap.fromBar.get(id) || 0, bpm, synced: take.synced });
-      break;
+    case 'open': if (!take.live) openTake(take); break;
     case 'mid':
       download(writeMidi({ name: 'Captured take', bpm, tracks: [{ name: 'Take', ch: seq?.track?.ch || 1, notes: C.takeMidiNotes(take, bpm) }] }), `Take ${stamp(take.start)}.mid`);
       break;
-    case 'tempo': channel.postMessage({ type: 'set-tempo', bpm }); break;
     case 'del':
       cap.events = cap.events.filter(x => x.t < take.start || x.t > take.end);
       cap.ranges = cap.ranges.filter(r => r.start !== take.id);
@@ -234,14 +318,6 @@ $('#takes').addEventListener('click', e => {
   }
   renderTakes();
 });
-$('#takes').addEventListener('change', e => {
-  const id = +e.target.closest('[data-id]')?.dataset.id;
-  if (e.target.dataset.act === 'bpm') { const v = Math.round(+e.target.value); if (v >= 40 && v <= 240) cap.bpm.set(id, v); }
-  else if (e.target.dataset.act === 'from') cap.fromBar.set(id, +e.target.value);
-  e.target.blur();
-  renderTakes();
-});
-
 function download(bytes, name) {
   const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/midi' }));
   const a = Object.assign(document.createElement('a'), { href: url, download: name });
@@ -266,13 +342,24 @@ $('#perf-go').onclick = () => {
   channel.postMessage({ type: 'record-performance', bars, countIn: prefs.countIn, ownAudio: prefs.perfAudio && isOwn() });
 };
 
-// The panel's own buttons: ask the host page (index.html).
-$('#close').onclick = () => parent.postMessage({ type: 'toggle-recorder' }, location.origin);
-$('#wide').onclick = () => parent.postMessage({ type: 'recorder-wide' }, location.origin);
-addEventListener('keydown', e => {
-  if (e.altKey && e.code === 'KeyR') { e.preventDefault(); parent.postMessage({ type: 'toggle-recorder' }, location.origin); }
-  else if (e.key === 'Escape') parent.postMessage({ type: 'toggle-recorder', open: false }, location.origin);
+addEventListener('keydown', e => { if (editorKey(e)) e.preventDefault(); });
+
+// New takes while another tab shows: a count on the Capture tab (core/topbar.js) until you look.
+let showing = false, seenTakes = null, news = 0;
+const finishedTakes = () => allTakes().filter(t => !t.live).length;
+function postNews() { channel.postMessage({ type: 'capture-news', count: news }); }
+addEventListener('message', e => {
+  if (e.origin !== location.origin || e.data?.type !== 'view') return;
+  showing = e.data.view === 'capture';
+  if (showing && news) { news = 0; postNews(); }
+  seenTakes = finishedTakes();
 });
+parent.postMessage({ type: 'view-hello' }, location.origin);
+function countNews() {
+  const n = finishedTakes();
+  if (seenTakes !== null && n > seenTakes && !showing) { news += n - seenTakes; postNews(); }
+  seenTakes = n;
+}
 
 // ---------------------------------------------------------------------------------------------
 // MIDI in
@@ -564,8 +651,20 @@ attachQwerty({ active: () => prefs.midiIn === QWERTY, from: 'recorder', channel,
 setInterval(() => { if (!document.hidden) renderTakes(); }, 15000);
 
 if (STATIC) document.querySelector('#audio-sec .sub .hint').textContent = '· kept in this browser: download the ones you want to keep';
+// The take editor (editor.js) and what it needs from here.
+initEditor({
+  channel, toast, download,
+  seq: () => seq,
+  outputs: () => (midi ? [...midi.outputs.values()] : []),
+  takeBpm, setTakeBpm: (id, bpm) => { cap.bpm.set(id, bpm); renderTakes(); },
+  takeSound,
+  clipsChanged: () => { refreshClips(); channel.postMessage({ type: 'clips-changed' }); },
+});
+wireEditor();
+
 renderTakes();
 renderPerf();
+refreshClips();
 initMidi();
 fillDevices().then(() => { if (prefs.audioIn) useAudio(prefs.audioIn); else if (STATIC) useAudio(OWN); else renderAudio(); });
 refreshRecordings();

@@ -28,6 +28,8 @@ Serves the editor on http://localhost:8765 (Web MIDI needs a localhost origin) a
   POST /api/pattern  have the AI write sequencer patterns for one track; streams like /api/design
   GET  /api/patterns, POST /api/patterns, POST /api/patterns/delete
                      the user's saved patterns (the sequencer's library), one JSON per pattern in my-patterns/
+  GET  /api/clips, POST /api/clips, POST /api/clips/delete
+                     clips saved from the Recorder's takes (notes as played, tempo, sound), in clips/
 
 The AI features use the provider chosen in AI settings (see ai_providers.py): Claude Code with
 your own login, the Anthropic API, or an OpenAI-compatible API. They may only read the reference
@@ -59,6 +61,7 @@ AI_DESIGNS = DATA / 'ai-designs'
 SEQUENCES = DATA / 'sequences'
 INSTRUMENTS = DATA / 'instruments'
 MY_PATTERNS = DATA / 'my-patterns'
+CLIPS = DATA / 'clips'
 DATA_FOLDERS = ('my-sounds', 'sequences', 'audio')  # served to the page at /my-sounds/<file>, /sequences/<file>, /audio/<file>
 AUDIO = DATA / 'audio'  # recordings (WAV), kept out of the data repo's git
 MAX_AUDIO = 1_000_000_000
@@ -689,6 +692,53 @@ def delete_my_pattern(name):
     commit_data(f'Remove pattern {path.stem}')
 
 
+def list_clips():
+    out = []
+    for f in CLIPS.glob('*.json'):
+        try:
+            c = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(c, dict) and isinstance(c.get('notes'), list):
+            out.append({**c, 'file': f.name})
+    out.sort(key=lambda c: c.get('modified') or '', reverse=True)
+    return out
+
+
+def save_clip(req):
+    """Saves a clip: over its own file when it has one (editing), else as a new clips/<name>.json."""
+    c = req.get('clip')
+    if not isinstance(c, dict) or not isinstance(c.get('notes'), list) or len(json.dumps(c)) > 1_000_000:
+        raise ValueError('not a clip')
+    keep = ('format', 'version', 'name', 'bpm', 'length', 'notes', 'sound', 'source', 'created')
+    file = str(c.get('file') or '')
+    c = {k: c[k] for k in keep if k in c}
+    c['name'] = str(c.get('name') or 'Clip')[:60]
+    c['modified'] = time.strftime('%Y-%m-%dT%H:%M:%S')
+    c.setdefault('created', c['modified'])
+    CLIPS.mkdir(parents=True, exist_ok=True)
+    path = CLIPS / file
+    if not file or path.parent != CLIPS or path.suffix != '.json' or not path.is_file():
+        stem = safe_stem(c['name'])
+        path, n = CLIPS / f'{stem}.json', 2
+        while path.exists():
+            path, n = CLIPS / f'{stem} {n}.json', n + 1
+    path.write_text(json.dumps(c, indent=1) + '\n')
+    commit_data(f"Save clip {c['name']}")
+    return path.name
+
+
+def delete_clip(name):
+    """Moves the clip into clips/deleted/ rather than erasing it."""
+    path = CLIPS / str(name)
+    if path.parent != CLIPS or path.suffix != '.json' or not path.is_file():
+        raise ValueError('no such clip')
+    trash = CLIPS / 'deleted'
+    trash.mkdir(exist_ok=True)
+    path.replace(trash / path.name)
+    commit_data(f'Remove clip {path.stem}')
+
+
 design_lock = threading.Lock()
 pattern_lock = threading.Lock()
 
@@ -757,6 +807,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, list_audio())
             if self.path == '/api/patterns':
                 return self._json(200, list_my_patterns())
+            if self.path == '/api/clips':
+                return self._json(200, list_clips())
             return self._json(404, {'error': 'not found'})
         parts = unquote(urlsplit(self.path).path).strip('/').split('/')
         # The user's sounds and songs are fetched by the page from the data folder.
@@ -840,6 +892,14 @@ class Handler(SimpleHTTPRequestHandler):
                 if self.path == '/api/instruments':
                     return self._json(200, {'file': save_instrument(req)})
                 delete_instrument(req.get('file'))
+                return self._json(200, {'ok': True})
+            except (ValueError, AttributeError) as e:
+                return self._json(400, {'error': str(e)})
+        if self.path in ('/api/clips', '/api/clips/delete'):
+            try:
+                if self.path == '/api/clips':
+                    return self._json(200, {'file': save_clip(req)})
+                delete_clip(req.get('file'))
                 return self._json(200, {'ok': True})
             except (ValueError, AttributeError) as e:
                 return self._json(400, {'error': str(e)})
