@@ -302,11 +302,13 @@ $('#new-sound').onclick = () => {
 $('#inst-type').onchange = e => { patch.type = e.target.value; changed(); renderLibrary(); };
 
 // A choice of your recordings (data/audio/): samples, impulse responses. "Import audio…" adds one.
-function fileHTML(spec, v, attrs, help = '') {
+const fileOptions = v => {
   const files = recordings.map(r => r.file);
   if (v && !files.includes(v)) files.unshift(v);
-  return `<div class="prm prm-file"${help}><label>${spec.label}</label><select ${attrs}>
-    <option value="">${recordings.length ? '— choose a recording —' : 'No recordings yet'}</option>${files.map(f => `<option value="${esc(f)}" ${f === v ? 'selected' : ''}>${esc(f.replace(/\.wav$/i, ''))}${recordings.some(r => r.file === f) ? '' : ' (missing)'}</option>`).join('')}</select>
+  return `<option value="">${recordings.length ? '— choose a recording —' : 'No recordings yet'}</option>${files.map(f => `<option value="${esc(f)}" ${f === v ? 'selected' : ''}>${esc(f.replace(/\.wav$/i, ''))}${recordings.some(r => r.file === f) ? '' : ' (missing)'}</option>`).join('')}`;
+};
+function fileHTML(spec, v, attrs, help = '') {
+  return `<div class="prm prm-file"${help}><label>${spec.label}</label><select ${attrs}>${fileOptions(v)}</select>
     <button class="ghost small" data-act="import-audio" ${attrs.replace('data-act="', 'data-for="')} title="Bring a WAV, AIFF or MP3 from your computer into your recordings (${STATIC ? 'kept in this browser' : 'data/audio/'})">Import…</button></div>`;
 }
 
@@ -1189,11 +1191,20 @@ $('#learn').onclick = () => {
 // ---------------------------------------------------------------------------------------------
 // Files: data/instruments/ at home, or this browser in the travel version (core/storage.js)
 
+// Your recordings, for the Sample menus: the menus' options are updated in place (an open menu
+// stays open), only when the list has changed.
 async function refreshRecordings() {
-  try { recordings = await storage.list('audio'); } catch { recordings = []; }
-  if (patch?.modules.some(m => MODULES[m.type].params.some(p => p.kind === 'file'))) renderModules();
+  let list = [];
+  try { list = await storage.list('audio'); } catch { /* none */ }
+  if (list.map(r => r.file).join('|') === recordings.map(r => r.file).join('|')) return;
+  recordings = list;
+  document.querySelectorAll('select[data-act="file"], select[data-act="pad-file"]').forEach(sel => { sel.innerHTML = fileOptions(sel.value); });
 }
 channel?.addEventListener('message', e => { if (e.data?.type === 'recordings-changed') refreshRecordings(); });
+// Opening a Sample menu checks for new recordings first (made in another tab or window).
+document.addEventListener('pointerdown', e => {
+  if (e.target.closest('select[data-act="file"], select[data-act="pad-file"]')) refreshRecordings();
+}, true);
 async function refreshSaved() {
   try { saved = await storage.list('instruments'); } catch { saved = []; }
   renderLibrary();

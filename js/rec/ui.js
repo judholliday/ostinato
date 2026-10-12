@@ -558,7 +558,8 @@ async function saveWav(chans, name) {
   const wav = encodeWav(chans, audio.sampleRate);
   try {
     const file = await storage.save('audio', wav, name);
-    toast(`Saved to ${placeOf('audio', file)}`, 'ok');
+    toast(`Saved to ${placeOf('audio', file)}. It's in the Sound Lab's Sample menus (Sampler, Granular, drum pads) too.`, 'ok');
+    channel.postMessage({ type: 'recordings-changed' }); // so the other tabs' menus list it
   } catch (err) {
     toast(`Couldn't save the recording: ${err.message}.${STATIC ? '' : ' Is serve.py running?'}`, 'err');
   }
