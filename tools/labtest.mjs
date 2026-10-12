@@ -78,4 +78,16 @@ for (const [type, spec] of Object.entries(MODULES)) {
   const kits = FACTORY.filter(s => s.modules.some(m => m.type === 'drums'));
   assert.ok(kits.length >= 3 && kits.every(k => Object.keys(k.modules.find(m => m.type === 'drums').pads).length === 16), 'factory kits have their pads');
 }
+{
+  // Multi-sample zones: cleaned, sorted, and the right one picked for each note.
+  const { cleanZones, zoneFor } = await import('../js/lab/patch.js');
+  const z = cleanZones([{ file: 'b.wav', root: 60, lo: 58, hi: 63 }, { file: 'a.wav', root: 48, lo: 0, hi: 57, loopStart: 0.4, loopEnd: 2 }, { file: '' }, null]);
+  assert.deepEqual(z.map(x => x.file), ['a.wav', 'b.wav'], 'zones sorted, junk dropped');
+  assert.equal(z[0].loopEnd, 1, 'loop points clamped');
+  assert.equal(zoneFor(z, 50).file, 'a.wav');
+  assert.equal(zoneFor(z, 60).file, 'b.wav');
+  assert.equal(zoneFor(z, 100).file, 'b.wav', 'past the last zone: the nearest');
+  const { patch } = normalizePatch({ modules: [{ id: 'smp1', type: 'sampler', params: {}, zones: z }], audio: [{ from: 'smp1', to: 'out' }] });
+  assert.equal(patch.modules[0].zones.length, 2, 'zones kept by normalizePatch');
+}
 console.log(`ok — Lab patches (${FACTORY.length} factory sounds)`);

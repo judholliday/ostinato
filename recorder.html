@@ -20,6 +20,7 @@
     <span class="spacer"></span>
     <label class="field" title="The keyboard or controller whose playing is kept (e.g. your MPK mini)">Capture from <select id="midi-in"></select>
       <span id="led" class="keys-led">●</span></label>
+    <button id="other-in" class="small other-in" hidden></button>
   </header>
 
   <main class="capture-page">
@@ -60,6 +61,11 @@
       <button id="stems" class="ghost" title="Records each XL track of the song on its own, one after another">Print stems</button>
       <span id="stems-status" class="hint">Plays the song once per XL track, solo, and saves each as its own file, all starting at bar 1.</span>
     </div>
+    <div class="audio-row">
+      <button id="sample-xl" class="ghost" title="Record the XL's current sound note by note and make an Ostinato Synth sound from it">🎹 Sample the XL</button>
+      <span class="hint">Plays the XL's current sound across the keyboard, records each note, and makes a multi-sample Ostinato Synth sound you can play without the XL.</span>
+    </div>
+    <div id="sample-panel" class="sample-panel" hidden></div>
     <h3 class="sub">Recordings <span class="hint plain">· saved in data/audio/ (not backed up to GitHub)</span></h3>
     <div id="recordings" class="recordings"></div>
   </section>

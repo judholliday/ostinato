@@ -75,3 +75,7 @@ body { padding-bottom: 24px; }
 .ed-roll .head { stroke: var(--text); stroke-width: 1.5; pointer-events: none; }
 .ed-status { margin: 6px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .ed-put { padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); }
+.sample-panel { margin: 6px 0 10px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--panel); }
+.sample-panel input[type=number] { width: 64px; }
+.sample-panel input[data-smp=name] { width: 160px; }
+.other-in { background: var(--warn); border-color: var(--warn); color: #111; font-weight: 600; }

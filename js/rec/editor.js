@@ -102,7 +102,8 @@ function pickSound(anchor) {
       ed.giveSound = undefined;
       const btn = document.querySelector('#ed-sound');
       if (btn) { btn.textContent = `🔊 ${choiceLabel()} ▾`; btn.title = choiceLabel(); }
-      restart();
+      // Heard at once: the loop restarts on it, or the first moments of the take play.
+      if (ed.playing?.loop) restart(); else play({ upTo: 2500 });
     },
   });
 }
@@ -123,7 +124,7 @@ function render() {
     <div class="ed-tools">
       <button class="rec-play${ed.playing ? ' on' : ''}" data-ed="play" title="Space">${playLabel}</button>
       <label class="field">Sound <button id="ed-sound" class="sound-btn-pick" data-ed="sound" title="${esc(choiceLabel())}. Saving a clip keeps the sound chosen here.">🔊 ${esc(choiceLabel())} ▾</button></label>
-      <button class="ghost small" data-ed="edit-sound" ${editable(chosenSound()) ? '' : 'disabled'} title="${editable(chosenSound()) ? 'Open this sound in the Sound Lab and change it while this loops; it plays your changes, and a clip saved afterwards keeps them' : 'Pick an Ostinato Synth or XL sound to edit it'}">✎ Edit sound</button>
+      <button class="ghost small" data-ed="edit-sound" ${editable(chosenSound()) ? '' : 'disabled'} title="${editable(chosenSound()) ? 'Change this sound while it loops (an Ostinato Synth sound in the Sound Lab, an XL sound in its editor under Instruments); the loop plays your changes, and a clip saved afterwards keeps them' : 'Pick an Ostinato Synth or XL sound to edit it'}">✎ Edit sound</button>
       <label class="field" title="${ed.free ? 'A guess from your playing. Changing it moves the bar lines, not the notes.' : ed.src.kind === 'take' ? 'The sequencer\'s tempo when you played it' : 'The clip\'s tempo'}">Tempo
         <input type="number" id="ed-bpm" min="40" max="240" value="${ed.bpm}" ${ed.src.kind === 'take' && !ed.free ? 'disabled' : ''}></label>
       ${song && song.bpm !== ed.bpm ? `<button class="ghost small" data-ed="tempo" title="Set the song's tempo to ${ed.bpm} BPM">Song to ${ed.bpm}</button>` : ''}
@@ -208,8 +209,15 @@ function editSound() {
   if (!editable(sound)) return;
   ed.link = `capture-${Date.now()}`;
   ed.linkKind = sound.kind;
-  env.channel.postMessage({ type: 'edit-sound', link: ed.link, sound, title: ed.name });
-  parent.postMessage({ type: 'switch-view', view: 'lab' }, location.origin);
+  if (sound.kind === 'xl') {
+    // In the XL's own editor (Instruments): it loads the sound onto the XL; its changes come back
+    // here as 'program' messages.
+    env.channel.postMessage({ type: 'open-program', name: sound.name, data: sound.data });
+    parent.postMessage({ type: 'switch-view', view: 'instruments' }, location.origin);
+  } else {
+    env.channel.postMessage({ type: 'edit-sound', link: ed.link, sound, title: ed.name });
+    parent.postMessage({ type: 'switch-view', view: 'lab' }, location.origin);
+  }
   if (ed.playing) play(); // so the loop carries the link
 }
 // Messages from the other pages that concern the open editor.
@@ -229,14 +237,16 @@ export function editorMessage(m) {
 
 // ---- playing (on the sequencer page) ----
 
-function play() {
+// `upTo` (ms): play only the start, once (a quick listen to a sound just picked).
+function play({ upTo = 0 } = {}) {
   stop();
-  const [a, b] = range(), ms = msPerTick();
+  const [a, full] = range(), ms = msPerTick(), b = upTo ? Math.min(full, a + upTo / ms) : full;
   const notes = inRange([a, b]).map(n => ({ dt: (n.pos - a) * ms, dur: Math.max(20, Math.min(n.len, b - n.pos) * ms), note: n.note, vel: n.vel }));
   if (!notes.length) { env.toast('No notes there to play.'); return; }
   const at = performance.timeOrigin + performance.now() + 150;
-  env.channel.postMessage({ type: 'audition-take', notes, sound: chosenSound(), at, loopMs: ed.sel ? (b - a) * ms : 0, link: ed.link || null });
-  ed.playing = { at, a, b, ms, loop: !!ed.sel };
+  const loop = !!ed.sel && !upTo;
+  env.channel.postMessage({ type: 'audition-take', notes, sound: chosenSound(), at, loopMs: loop ? (b - a) * ms : 0, link: ed.link || null });
+  ed.playing = { at, a, b, ms, loop };
   requestAnimationFrame(head);
   render();
 }

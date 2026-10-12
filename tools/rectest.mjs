@@ -53,4 +53,25 @@ import { cut, encodeWav, findOnset, AudioIn } from '../js/rec/audio.js';
   assert.equal(r.chans[0].length, 300);
   assert.deepEqual([r.chans[0][0], r.chans[0][150], r.chans[0][210], r.chans[0][299]], [1, 2, 3, 3]);
 }
+// Sampling an instrument: which notes, which keys each plays, trimming, release, seamless loops.
+{
+  const { notesToSample, zonesFor, tidy, releaseTime, makeLoop } = await import('../js/rec/sampleinst.js');
+  assert.deepEqual(notesToSample(36, 48, 4), [36, 40, 44, 48]);
+  assert.deepEqual(notesToSample(36, 46, 4), [36, 40, 44, 46], 'always ends on the top note');
+  const z = zonesFor([36, 40, 44]);
+  assert.deepEqual(z.map(x => [x.lo, x.hi]), [[0, 38], [39, 42], [43, 127]], 'zones meet halfway and reach the ends');
+  const sr = 8000, f = 220, hold = sr * 2, n = hold + sr;
+  // A held tone that starts after 20 ms of silence and fades out after the key goes up.
+  const tone = new Float32Array(n);
+  for (let i = 160; i < n; i++) tone[i] = 0.5 * Math.sin(2 * Math.PI * f * i / sr) * (i < hold ? 1 : Math.exp(-(i - hold) / sr * 12));
+  const t = tidy([tone], hold, sr);
+  assert.ok(t.chans[0].length < n && Math.abs(t.hold - (hold - 160)) < 40, 'leading silence trimmed, key-up moved with it');
+  const rel = releaseTime(t.chans, t.hold, sr);
+  assert.ok(rel > 0.3 && rel < 0.5, `release about 0.38 s (${rel})`);
+  const loop = makeLoop(t.chans, t.hold, sr);
+  assert.ok(loop && loop.start > t.hold * 0.4 && loop.end < t.hold * 0.95, 'loop inside the held part');
+  // Seamless: the samples either side of the jump back continue the wave.
+  const a = t.chans[0], step = 2 * Math.PI * f / sr;
+  assert.ok(Math.abs(a[loop.end - 1] - a[loop.start - 1]) < 0.05 && Math.abs(a[loop.start] - a[loop.start - 1]) < Math.sin(step) * 0.5 + 0.01, 'the loop joins smoothly');
+}
 console.log('ok — Recorder audio');

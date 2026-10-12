@@ -1,4 +1,5 @@
-// The Capture tab (recorder.html): keeps everything played on the chosen MIDI input for an hour,
+// The Capture tab (recorder.html): keeps everything played for an hour (the chosen MIDI input, the
+// computer keyboard on any page, the Sound Lab's on-screen keys),
 // split into takes, and records performances with the sequencer. It makes no sound itself: the
 // sequencer plays takes back on its selected track, and receives takes into patterns, through the
 // shared BroadcastChannel('mkxl'):
@@ -16,6 +17,7 @@ import { portLabel, looksLikeSynthOut, looksLikeSynthIn } from '../core/midiport
 import { soundKey } from '../core/sounding.js';
 import { initEditor, wireEditor, openTake, openClip, editing, editorKey, refreshEditor, closeEditor, editorMessage } from './editor.js';
 import { AudioIn, cut, encodeWav, findOnset } from './audio.js';
+import { notesToSample, zonesFor, tidy, releaseTime, makeLoop, buildPatch, noteName } from './sampleinst.js';
 import { storage, placeOf } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
 import { QWERTY, QWERTY_LABEL, attachQwerty } from '../core/qwerty.js';
@@ -56,7 +58,9 @@ channel.onmessage = e => {
   const m = e.data || {};
   editorMessage(m);
   // The computer keyboard played on another page (or here, below): captured like a MIDI keyboard.
-  if (m.type === 'qwerty') { if (prefs.midiIn === QWERTY) captureEvent(m.data, m.wall - performance.timeOrigin); return; }
+  // The computer keyboard (any page) and the Sound Lab's on-screen keys are always captured, as
+  // well as the MIDI keyboard chosen under Capture from.
+  if (m.type === 'qwerty' || m.type === 'played') { captureEvent(m.data, m.wall - performance.timeOrigin); return; }
   if (m.type === 'transport') {
     transport = m;
     // Bar 1 of a performance being recorded with audio: where its audio file starts.
@@ -67,7 +71,11 @@ channel.onmessage = e => {
   else if (m.type === 'recordings-changed') refreshRecordings();
   else if (m.type === 'seq-state') { seq = m; renderPerf(); renderTakes(); refreshEditor(); }
   else if (m.type === 'sounding') noteSound(m);
-  else if (m.type === 'program' && Array.isArray(m.data)) xlNow = { kind: 'xl', name: String(m.name || 'XL sound'), data: m.data };
+  else if (m.type === 'program' && Array.isArray(m.data)) {
+    const was = xlNow?.name;
+    xlNow = { kind: 'xl', name: String(m.name || 'XL sound'), data: m.data };
+    if (was !== xlNow.name && !smp.running) { if (smp.name === `XL ${was || 'Sound'}`) smp.name = ''; renderSamplePanel(); }
+  }
   else if (m.type === 'clips-changed') refreshClips();
   else if (m.type === 'performance') {
     if (m.state === 'start') { perf = { start: m.wall, end: Infinity }; cap.ranges.push({ ...perf, kind: 'performance' }); }
@@ -192,8 +200,8 @@ function renderTakes() {
   const el = $('#takes');
   const takes = allTakes();
   const input = inputs().find(p => p.name === prefs.midiIn);
-  $('#takes-sum').textContent = !prefs.midiIn ? '· choose a MIDI in to capture what you play'
-    : `· everything played on ${prefs.midiIn === QWERTY ? 'the computer keyboard' : input ? portLabel(input) : prefs.midiIn} is kept for an hour`;
+  $('#takes-sum').textContent = !prefs.midiIn || prefs.midiIn === QWERTY ? '· everything played on the computer keyboard (and the Sound Lab\'s keys) is kept for an hour; choose your MIDI keyboard under Capture from to keep that too'
+    : `· everything played on ${prefs.midiIn === QWERTY ? '' : `${input ? portLabel(input) : prefs.midiIn} and `}the computer keyboard is kept for an hour`;
   if (el.contains(document.activeElement) && document.activeElement.matches('input, select')) return;
   if (!takes.length) {
     el.innerHTML = '<div class="hint">Nothing yet. Play anything, in any view, with or without the sequencer, and it shows up here as a take.</div>';
@@ -279,7 +287,7 @@ function renderPerf() {
   go.textContent = perf ? '■ Stop' : '● Record';
   go.classList.toggle('on', !!perf);
   $('#perf-status').textContent = perf ? (transport.playing ? 'Recording with the sequencer. Everything you play now goes into one take.' : 'Counting in…')
-    : !prefs.midiIn ? 'Choose your keyboard under MIDI in first.' : '';
+    : '';
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -332,7 +340,6 @@ $('#perf-countin').onchange = e => { prefs.countIn = e.target.checked; savePrefs
 $('#perf-audio').onchange = e => { prefs.perfAudio = e.target.checked; savePrefs(); };
 $('#perf-go').onclick = () => {
   if (perf) { channel.postMessage({ type: 'stop-sequencer' }); return; }
-  if (!prefs.midiIn) { toast('Choose your keyboard under MIDI in first.'); return; }
   const bars = prefs.perfLen === 'song' ? 'song' : prefs.perfLen === 'open' ? null : +prefs.perfLen;
   if (prefs.perfAudio && !audioReady()) { toast('Choose an audio input first (Audio in), or untick Record audio too.'); return; }
   if (prefs.perfAudio && !isOwn()) {
@@ -378,15 +385,23 @@ function onMidi(e) {
 }
 function wireMidi() {
   const ins = inputs();
-  if (prefs.midiIn !== QWERTY && (!prefs.midiIn || !ins.some(p => p.name === prefs.midiIn))) {
-    // Use what the sequencer listens to, else a controller keyboard (the MPK mini), else the
-    // first; with no MIDI keyboard at all, the computer keyboard.
+  // Chosen for you (not by you): the computer keyboard when no MIDI keyboard was there. That
+  // gives way to a real keyboard as soon as one is connected. (Old settings without the flag
+  // count as chosen for you.)
+  const auto = prefs.midiInAuto !== false;
+  if (!prefs.midiIn || (prefs.midiIn !== QWERTY && !ins.some(p => p.name === prefs.midiIn)) || (prefs.midiIn === QWERTY && auto && ins.length)) {
+    // What the sequencer listens to, else a controller keyboard (the MPK mini), else the first;
+    // with no MIDI keyboard at all, the computer keyboard.
     const seqIn = (() => { try { return JSON.parse(localStorage.getItem('mkxl.seq.prefs'))?.keysIn; } catch { return null; } })();
-    const guess = seqIn === QWERTY ? null : ins.find(p => p.name === seqIn) || ins.find(p => /mpk|akai/i.test(p.name)) || ins[0];
-    prefs.midiIn = guess ? guess.name : QWERTY;
+    const guess = ins.find(p => p.name === seqIn) || ins.find(p => /mpk|akai/i.test(p.name)) || ins[0];
+    const next = guess ? guess.name : QWERTY;
+    if (next !== prefs.midiIn && prefs.midiIn) toast(`Capturing from ${guess ? portLabel(guess) : QWERTY_LABEL} now.`);
+    prefs.midiIn = next;
+    prefs.midiInAuto = true;
     savePrefs();
   }
-  for (const p of ins) { p.onmidimessage = p.name === prefs.midiIn ? onMidi : null; if (p.name === prefs.midiIn) p.open?.().catch(() => {}); }
+  // Every input is listened to: the chosen one is captured; notes from another show a prompt.
+  for (const p of ins) { p.onmidimessage = p.name === prefs.midiIn ? onMidi : e => otherNote(p, e); p.open?.().catch(() => {}); }
   $('#midi-in').innerHTML = `<option value="">— none —</option>${ins.map(p => `<option value="${esc(p.name)}">${esc(portLabel(p))}</option>`).join('')}`
     + `<option value="${QWERTY}">${QWERTY_LABEL}</option>`;
   $('#midi-in').value = prefs.midiIn || '';
@@ -403,7 +418,24 @@ async function initMidi() {
   midi.onstatechange = wireMidi;
   wireMidi();
 }
-$('#midi-in').onchange = e => { prefs.midiIn = e.target.value || null; savePrefs(); wireMidi(); };
+$('#midi-in').onchange = e => { prefs.midiIn = e.target.value || null; prefs.midiInAuto = false; savePrefs(); $('#other-in').hidden = true; wireMidi(); };
+// Notes from a keyboard Capture isn't listening to: offer to capture from it instead.
+function otherNote(port, e) {
+  if ((e.data[0] & 0xf0) !== 0x90 || !e.data[2]) return;
+  const b = $('#other-in');
+  b.hidden = false;
+  b.dataset.port = port.name;
+  b.textContent = `♪ Notes from ${portLabel(port)}: capture from it`;
+  b.title = `You're playing ${portLabel(port)}, but Capture is listening to ${prefs.midiIn === QWERTY ? 'the computer keyboard' : prefs.midiIn || 'nothing'}. Click to capture from ${portLabel(port)}.`;
+}
+$('#other-in').onclick = e => {
+  prefs.midiIn = e.target.dataset.port;
+  prefs.midiInAuto = false;
+  savePrefs();
+  e.target.hidden = true;
+  wireMidi();
+  toast(`Capturing from ${$('#midi-in').selectedOptions[0]?.textContent || prefs.midiIn}.`, 'ok');
+};
 
 
 // ---------------------------------------------------------------------------------------------
@@ -588,6 +620,128 @@ $('#measure').onclick = async () => {
   }
   renderAudio();
 };
+
+// ---- Sample the XL: its current sound, note by note, into a multi-sample Ostinato Synth sound ----
+
+const smp = { lo: 36, hi: 84, step: 4, vel: 100, hold: 2.5, tail: 1.5, loop: true, name: '', running: null };
+const xlOut = () => midi && [...midi.outputs.values()].find(p => p.state !== 'disconnected' && looksLikeSynthOut(p));
+function renderSamplePanel() {
+  const el = $('#sample-panel');
+  if (el.hidden) return;
+  if (smp.running) {
+    el.innerHTML = `<div class="audio-row"><b>${esc(smp.running.status)}</b><span class="spacer"></span><button class="ghost small" data-smp="cancel">■ Stop</button></div>
+      <div class="meter"><i style="width:${Math.round(smp.running.done / smp.running.total * 100)}%"></i></div>`;
+    return;
+  }
+  const notes = notesToSample(smp.lo, smp.hi, smp.step), secs = notes.length * (smp.hold + smp.tail + 0.6);
+  const keys = Array.from({ length: 73 }, (_, k) => k + 24);
+  const noteSel = (key, v) => `<select data-smp="${key}">${keys.map(n => `<option value="${n}" ${n === v ? 'selected' : ''}>${noteName(n)}</option>`).join('')}</select>`;
+  const ready = audio.open && !isOwn(), out = xlOut();
+  smp.name ||= `XL ${xlNow?.name || 'Sound'}`.trim();
+  el.innerHTML = `
+    <div class="audio-row"><span>Sound on the XL now: <b>${esc(xlNow?.name || 'whatever it\'s set to')}</b></span>
+      <span class="hint">Choose it in the Sound Lab or on the XL first. Arpeggiator off, ideally.</span></div>
+    <div class="audio-row">
+      <label class="field">Name <input data-smp="name" value="${esc(smp.name)}" maxlength="40"></label>
+      <label class="field">From ${noteSel('lo', smp.lo)}</label><label class="field">to ${noteSel('hi', smp.hi)}</label>
+      <label class="field" title="Fewer semitones apart: more recordings, each stretched less">every <select data-smp="step">${[2, 3, 4, 6, 12].map(n => `<option value="${n}" ${n === smp.step ? 'selected' : ''}>${n}</option>`).join('')}</select> semitones</label>
+    </div>
+    <div class="audio-row">
+      <label class="field">Velocity <input type="number" data-smp="vel" min="1" max="127" value="${smp.vel}"></label>
+      <label class="field" title="How long each key is held">Hold <input type="number" data-smp="hold" min="0.3" max="10" step="0.1" value="${smp.hold}"> s</label>
+      <label class="field" title="How long to keep recording after the key goes up, for the release">Release <input type="number" data-smp="tail" min="0.2" max="8" step="0.1" value="${smp.tail}"> s</label>
+      <label class="field" title="Find a smooth loop in each note's sustain, so notes can be held longer than they were recorded"><input type="checkbox" data-smp="loop" ${smp.loop ? 'checked' : ''}> Loop the sustain</label>
+    </div>
+    <div class="audio-row">
+      <button class="rec-go" data-smp="go" ${ready && out ? '' : 'disabled'}>● Start sampling</button>
+      <span class="hint">${!out ? 'The XL isn\'t connected (no SOUND port).' : !ready ? 'Choose your audio interface above (Audio in) and the input the XL is on.'
+        : `${notes.length} notes (${notes.map(noteName).join(' ')}), about ${Math.ceil(secs / 60)} min. Play a note on the XL first and check the meter stays out of the red.`}</span>
+      <span class="spacer"></span><button class="ghost small" data-smp="close">Close</button>
+    </div>`;
+}
+$('#sample-xl').onclick = () => {
+  const el = $('#sample-panel');
+  el.hidden = !el.hidden;
+  channel.postMessage({ type: 'get-program' }); // the XL editor says which sound the XL has
+  renderSamplePanel();
+};
+$('#sample-panel').addEventListener('change', e => {
+  const k = e.target.dataset.smp;
+  if (!k) return;
+  if (k === 'name') smp.name = e.target.value.trim().slice(0, 40);
+  else if (k === 'loop') smp.loop = e.target.checked;
+  else smp[k] = +e.target.value;
+  if (smp.hi < smp.lo) [smp.lo, smp.hi] = [smp.hi, smp.lo];
+  renderSamplePanel();
+});
+$('#sample-panel').addEventListener('click', e => {
+  const k = e.target.closest('[data-smp]')?.dataset.smp;
+  if (k === 'close') { $('#sample-panel').hidden = true; }
+  else if (k === 'cancel' && smp.running) { smp.running.cancel = true; smp.running.status = 'Stopping after this note…'; renderSamplePanel(); }
+  else if (k === 'go') sampleXL();
+});
+
+async function sampleXL() {
+  const out = xlOut(), ch = (seq?.xlTracks?.[0]?.ch || 2) - 1, sr = audio.sampleRate;
+  const notes = notesToSample(smp.lo, smp.hi, smp.step), name = smp.name || 'XL Sound';
+  if (!out || !audio.open) return;
+  channel.postMessage({ type: 'stop-sequencer' }); // nothing else playing while it records
+  const run = smp.running = { cancel: false, done: 0, total: notes.length, status: 'Starting…' };
+  renderSamplePanel();
+  const takes = [];
+  for (const note of notes) {
+    if (run.cancel) break;
+    run.status = `Recording ${noteName(note)} (${run.done + 1} of ${notes.length})…`;
+    renderSamplePanel();
+    audio.record();
+    const at = performance.now() + 250;
+    out.send([0x90 | ch, note, smp.vel], at);
+    out.send([0x80 | ch, note, 0], at + smp.hold * 1000);
+    await sleep(250 + (smp.hold + smp.tail) * 1000 + 150);
+    const r = await audio.finish();
+    // From when the note left (plus the measured delay back) to the end of its release.
+    const clip = r && tidy(cut(r, audio.frameAt(at + latency()), Math.round((smp.hold + smp.tail) * sr)), Math.round(smp.hold * sr), sr);
+    if (clip) takes.push({ note, ...clip });
+    run.done++;
+    await sleep(300); // let the last one ring out
+  }
+  out.send([0xb0 | ch, 123, 0]);
+  if (!takes.length) { smp.running = null; renderSamplePanel(); toast('Nothing came back from the XL. Check it\'s on the chosen input and the meter moves when you play it.', 'err'); return; }
+
+  // One gain for all, so the notes keep their levels relative to each other.
+  const loudest = Math.max(...takes.map(t => t.peak));
+  if (loudest > 0.98) toast('Some notes reached full level and may be clipped: turn the input gain down a little and sample again.', 'err');
+  const gain = Math.min(0.9 / loudest, 10 ** (30 / 20));
+  run.status = 'Saving…';
+  renderSamplePanel();
+  const zones = [], releases = [];
+  try {
+    for (const [k, z] of zonesFor(takes.map(t => t.note)).entries()) {
+      const t = takes[k];
+      t.chans.forEach(c => { for (let i = 0; i < c.length; i++) c[i] *= gain; });
+      releases.push(releaseTime(t.chans, t.hold, sr));
+      const loop = smp.loop ? makeLoop(t.chans, t.hold, sr) : null;
+      const file = await storage.save('audio', encodeWav(t.chans, sr), `${name} ${noteName(t.note)}`);
+      const len = t.chans[0].length;
+      zones.push({ ...z, file, loopStart: loop ? loop.start / len : 0, loopEnd: loop ? loop.end / len : 0 });
+    }
+    releases.sort((a, b) => a - b);
+    const patch = buildPatch({ name, zones, loop: smp.loop && zones.some(z => z.loopEnd > z.loopStart), release: releases[Math.floor(releases.length / 2)], type: 'Other' });
+    const file = await storage.save('instruments', patch);
+    refreshRecordings();
+    channel.postMessage({ type: 'recordings-changed' });
+    channel.postMessage({ type: 'instruments-changed' });
+    smp.running = null;
+    $('#sample-panel').hidden = true;
+    toast(`Made "${name}" from ${zones.length} notes${run.cancel ? ' (stopped early)' : ''}: it's in the Sound Lab's My Sounds. Opening it…`, 'ok');
+    channel.postMessage({ type: 'open-instrument', file });
+    parent.postMessage({ type: 'switch-view', view: 'lab' }, location.origin);
+  } catch (err) {
+    smp.running = null;
+    renderSamplePanel();
+    toast(`Couldn't save the samples: ${err.message}`, 'err');
+  }
+}
 
 // Print stems: each XL track of the song, solo, from bar 1, one after another.
 $('#stems').onclick = async () => {

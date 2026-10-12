@@ -645,9 +645,13 @@ function renderPorts() {
   // If the saved port isn't connected (unplugged, or a name saved from the simulator), use the
   // XL's keyboard, or else the first input.
   // With no MIDI keyboard at all, the computer keyboard plays.
-  if (prefs.keysIn !== QWERTY && (!prefs.keysIn || !ins.some(p => p.name === prefs.keysIn))) {
-    const guess = ins.find(looksLikeSynthIn) || ins[0];
+  // The computer keyboard chosen for you (no MIDI keyboard was there) gives way to a real one when
+  // it's connected; chosen by you, it stays. Old settings without the flag count as for you.
+  const auto = prefs.keysInAuto !== false;
+  if (!prefs.keysIn || (prefs.keysIn !== QWERTY && !ins.some(p => p.name === prefs.keysIn)) || (prefs.keysIn === QWERTY && auto && ins.length)) {
+    const guess = ins.find(p => /mpk|akai/i.test(p.name)) || ins.find(looksLikeSynthIn) || ins[0];
     prefs.keysIn = guess ? guess.name : QWERTY;
+    prefs.keysInAuto = true;
     savePrefs();
   }
   const keys = $('#keys-in');
@@ -1621,8 +1625,8 @@ function auditionTake({ notes = [], sound = null, at = null, loopMs = 0, link = 
   const player = auditionPlayer(sound);
   if (!player) { soundChannel?.postMessage({ type: 'take-result', text: sound?.kind === 'xl' ? 'The microKORG XL isn\'t connected (or SysEx isn\'t allowed), so its sound can\'t be played.' : `${sound?.name || 'That sound'} isn't connected.` }); return; }
   const list = [...notes].sort((a, b) => a.dt - b.dt);
-  // A sound sent to the XL needs a moment to load before the first note.
-  let base = Math.max(performance.now() + (sound?.kind === 'xl' ? 150 : 60), at ? at - performance.timeOrigin : 0), k = 0;
+  // A sound sent to the XL needs a moment to load before the first note (150 ms wasn't enough).
+  let base = Math.max(performance.now() + (sound?.kind === 'xl' ? 400 : 60), at ? at - performance.timeOrigin : 0), k = 0;
   const pump = () => {
     const horizon = performance.now() + 200;
     for (;;) {
@@ -2237,12 +2241,12 @@ $('#add-track').onclick = () => {
   changed();
   renderSong(); renderTracks();
 };
-$('#keys-in').onchange = e => { prefs.keysIn = e.target.value || null; savePrefs(); held.length = 0; };
+$('#keys-in').onchange = e => { prefs.keysIn = e.target.value || null; prefs.keysInAuto = false; savePrefs(); held.length = 0; };
 // Clicking the amber light (or its text) switches MIDI in to the port the notes came from.
 for (const id of ['#keys-led', '#keys-last']) $(id).addEventListener('click', e => {
   if (!lastOther) return;
   e.preventDefault();
-  prefs.keysIn = lastOther; savePrefs();
+  prefs.keysIn = lastOther; prefs.keysInAuto = false; savePrefs();
   held.length = 0;
   lastOther = null;
   $('#keys-last').textContent = '';

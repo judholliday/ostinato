@@ -110,9 +110,9 @@ if (soundChannel) soundChannel.onmessage = e => {
   if (m.type === 'show-program' && Array.isArray(m.data) && m.data.length >= PROGRAM_SIZE - 8) {
     loadProgram(Uint8Array.from(m.data), { slot: null, dirty: false });
   }
-  // A sound opened in the Sound Lab's library: edit it here, and hear it on the synth.
+  // A sound to edit here, sent from another page (Capture's Edit sound): heard on the synth too.
   if (m.type === 'open-program' && Array.isArray(m.data) && m.data.length >= PROGRAM_SIZE - 8) {
-    if (['presets', 'help', 'log'].includes(state.tab)) state.tab = 't1'; // the library replaces Presets here
+    if (['presets', 'help', 'log'].includes(state.tab)) state.tab = 't1'; // straight to the knobs
     loadProgram(Uint8Array.from(m.data), { slot: null, dirty: false, send: !!state.output });
     if (m.preview && state.output) previewNote(m.preview);
   }
@@ -127,12 +127,7 @@ function previewNote({ note = 60, ms = 450 } = {}) {
 }
 const myChanged = () => soundChannel?.postMessage({ type: 'my-sounds-changed' });
 
-// Inside the Sound Lab (index.html shows this page beside its library), the page's own name and
-// tabs are hidden; under Instruments it's a page of its own.
-addEventListener('message', e => {
-  if (e.origin === location.origin && e.data?.type === 'view') document.body.classList.toggle('embedded', e.data.view === 'lab');
-});
-if (top !== self) parent.postMessage({ type: 'view-hello' }, location.origin);
+
 
 // Every param list that can be addressed, given the current data (fx params depend on fx type).
 function allParams() {

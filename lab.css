@@ -179,11 +179,6 @@
   .lab-layout { grid-template-columns: minmax(0, 1fr); }
   .library { position: static; height: auto; max-height: 360px; border-right: 0; border-bottom: 1px solid var(--line); }
 }
-.lib-inst .chip.off:not(.on) { opacity: .6; }
-.lib-row .inst { font: 9px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
-.lib-row.silent .nm { color: var(--muted); }
-/* An XL sound is open: its editor (index.html places it) covers this side of the page. */
-body.pane-device .lab-main > * { visibility: hidden; }
 .link-bar { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); font-size: 12px; }
 .link-bar[hidden] { display: none; }
 .link-actions { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -217,3 +212,4 @@ body.pane-device .lab-main > * { visibility: hidden; }
 .prm.prm-file { grid-template-columns: 82px minmax(0, 1fr) auto; }
 .prm.prm-file select { min-width: 0; }
 .sample-wave { display: block; width: 100%; height: 64px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
+.zones { font-size: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }

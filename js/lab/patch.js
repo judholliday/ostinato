@@ -4,7 +4,8 @@
 //
 // A patch file (data/instruments/<name>.json):
 //   { format: 'mkxl-inst', version: 1, name, type?, voices, volume,   // type: 'Bass', 'Pad'… (sounds.js)
-//     modules: [{ id, type, params: {...}, off?, pads? }],  // off: bypassed; pads: a Drum kit's (drums.js)
+//     modules: [{ id, type, params: {...}, off?, pads?, zones? }],  // off: bypassed; pads: a Drum kit's (drums.js);
+//                                                                   // zones: a multi-sample Sampler's (cleanZones)
 //     audio: [{ from, to }],                            // module id -> module id, or to 'out'
 //     mod: [{ from, to: '<id>.<target>', amount }],     // from an env/lfo id, or 'vel' / 'wheel'
 //     cc: { <controller number>: '<id>.<param>' } }     // knobs learned from a MIDI controller
@@ -245,6 +246,20 @@ function cleanValue(spec, v) {
   return spec.step ? Math.round(c / spec.step) * spec.step : c;
 }
 
+// A multi-sample Sampler's zones: each a recording played on the keys lo–hi, at its own pitch on
+// `root`, with its own loop (fractions of the recording; 0/0 = use the module's). Sorted by key.
+export function cleanZones(raw) {
+  const note = (v, d) => (Number.isInteger(+v) && +v >= 0 && +v <= 127 ? +v : d);
+  const frac = v => Math.min(1, Math.max(0, Number(v) || 0));
+  return raw.filter(z => z && typeof z.file === 'string' && z.file).slice(0, 64).map(z => {
+    const root = note(z.root, 60), lo = note(z.lo, root), hi = Math.max(lo, note(z.hi, root));
+    return { file: z.file.slice(0, 200), root, lo, hi, loopStart: frac(z.loopStart), loopEnd: frac(z.loopEnd) };
+  }).sort((a, b) => a.lo - b.lo);
+}
+// The zone that plays a note: the one covering it, else the nearest.
+export const zoneFor = (zones, note) => zones.find(z => note >= z.lo && note <= z.hi)
+  || zones.reduce((best, z) => (Math.abs(z.root - note) < Math.abs(best.root - note) ? z : best), zones[0]);
+
 export function defaultParams(type) {
   return Object.fromEntries(MODULES[type].params.map(p => [p.key, p.def]));
 }
@@ -268,7 +283,8 @@ export function normalizePatch(raw) {
     if (!id || id === 'out' || SOURCES[id] || modules.some(x => x.id === id)) id = newId({ modules }, m.type);
     const params = {};
     for (const p of spec.params) params[p.key] = cleanValue(p, m.params?.[p.key] ?? p.def);
-    modules.push({ id, type: m.type, params, ...(m.type === 'drums' ? { pads: cleanPads(m.pads) } : {}), ...(m.off ? { off: true } : {}) });
+    modules.push({ id, type: m.type, params, ...(m.type === 'drums' ? { pads: cleanPads(m.pads) } : {}),
+      ...(m.type === 'sampler' && Array.isArray(m.zones) && m.zones.length ? { zones: cleanZones(m.zones) } : {}), ...(m.off ? { off: true } : {}) });
     if (modules.length >= MAX_MODULES) break;
   }
   const byId = new Map(modules.map(m => [m.id, m]));

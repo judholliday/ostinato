@@ -5,7 +5,7 @@
 //   const synth = new LabSynth(audioContext, destinationNode);
 //   synth.setPatch(patch);
 //   synth.play(60, 100, synth.atTime(performance.now()), 0.5);   // or noteOn / noteOff
-import { MODULES, isSource } from './patch.js';
+import { MODULES, isSource, zoneFor } from './patch.js';
 import { ALIASES } from './drums.js';
 
 const OSC_TYPES = { saw: 'sawtooth', square: 'square', triangle: 'triangle', sine: 'sine' };
@@ -228,6 +228,7 @@ export class LabSynth {
     const files = new Set();
     for (const m of this.patch?.modules || []) {
       if ((m.type === 'sampler' || m.type === 'granular') && m.params.file) files.add(m.params.file);
+      for (const z of m.zones || []) files.add(z.file);
       for (const p of Object.values(m.pads || {})) if (p.sFile) files.add(p.sFile);
     }
     for (const f of files) if (!this.samples.has(f)) {
@@ -583,20 +584,25 @@ export class LabSynth {
           [`${m.id}.level`]: v => out.gain.setTargetAtTime(v, ac.currentTime, 0.01) });
         nodes[m.id] = { out, targets };
       } else if (m.type === 'sampler') {
-        // A recording at the note's pitch relative to the root, trimmed, looped or one-shot.
-        const buf = this.samples.get(p.file), out = keep(ac.createGain());
+        // A recording at the note's pitch relative to the root, trimmed, looped or one-shot. A
+        // multi-sample sampler plays the zone for the note, with the zone's own loop.
+        const zone = m.zones?.length ? zoneFor(m.zones, note) : null;
+        const file = zone ? zone.file : p.file, root = zone ? zone.root : p.root;
+        const loopStart = zone && zone.loopEnd > zone.loopStart ? zone.loopStart : p.loopStart;
+        const loopEnd = zone && zone.loopEnd > zone.loopStart ? zone.loopEnd : p.loopEnd;
+        const buf = this.samples.get(file), out = keep(ac.createGain());
         out.gain.value = p.level;
         if (buf) {
           const s = src(ac.createBufferSource()), dur = buf.duration;
           s.buffer = buf;
-          s.playbackRate.value = 2 ** ((note - p.root + p.tune) / 12);
+          s.playbackRate.value = 2 ** ((note - root + p.tune) / 12);
           s.detune.value = p.fine;
           this.bendCents.connect(s.detune);
           const from = Math.min(p.start, 0.999) * dur;
           if (p.mode === 'loop') {
             s.loop = true;
-            s.loopStart = Math.min(p.loopStart, p.loopEnd - 0.001) * dur;
-            s.loopEnd = Math.max(p.loopEnd, p.loopStart + 0.001) * dur;
+            s.loopStart = Math.min(loopStart, loopEnd - 0.001) * dur;
+            s.loopEnd = Math.max(loopEnd, loopStart + 0.001) * dur;
             s._start = [from];
           } else {
             const len = Math.max(0.005, (Math.max(p.end, p.start + 0.001) - p.start) * dur);

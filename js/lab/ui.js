@@ -1,6 +1,6 @@
 // The Lab page: build and play instruments made of modules (see patch.js), save them to
 // data/instruments/, and share them with the sequencer. No framework.
-import { MODULES, MAX_MODULES, SOURCES, visibleParams, normalizePatch, copyPatch, defaultParams, newId, paramOf, formatValue, toSlider, fromSlider, defaultTarget } from './patch.js';
+import { MODULES, MAX_MODULES, SOURCES, visibleParams, zoneFor, normalizePatch, copyPatch, defaultParams, newId, paramOf, formatValue, toSlider, fromSlider, defaultTarget } from './patch.js';
 import { LabSynth } from './engine.js';
 import { patchSVG, layout, shapePath, WAVE } from './patchview.js';
 import { portLabel } from '../core/midiports.js';
@@ -12,7 +12,7 @@ import { FACTORY, TYPES, typeOf } from './sounds.js';
 import { PAD_GROUPS, padParam, KIT_NOTES, DEFAULT_PADS, cleanPad, varyPad } from './drums.js';
 import { LabSynth as RenderSynth, fileBuffer } from './engine.js';
 import { encodeWav } from '../rec/audio.js';
-import { deviceSounds, availability, typeRank, instrumentName, INSTRUMENTS } from '../core/catalog.js';
+import { typeRank } from '../core/catalog.js';
 
 const $ = sel => document.querySelector(sel);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -28,7 +28,7 @@ function toast(text, kind = '') {
   $('#toasts').append(el);
   setTimeout(() => el.remove(), kind === 'err' ? 7000 : 3500);
 }
-const prefs = { keysIn: null, base: 48, viewOpen: true, libOpen: true, libInst: 'playable', libBank: 'all', libType: '', audition: true, ...store.get('prefs', {}) };
+const prefs = { keysIn: null, base: 48, viewOpen: true, libOpen: true, libBank: 'all', libType: '', audition: true, ...store.get('prefs', {}) };
 const savePrefs = () => store.set('prefs', prefs);
 
 // ---------------------------------------------------------------------------------------------
@@ -158,44 +158,29 @@ function renderFileBar() {
   document.title = `${patch.name}${dirty ? ' •' : ''} · Sound Lab · Ostinato`;
 }
 
-// ---- the sound library: every instrument's sounds (core/catalog.js), grouped by type ----
-// Ostinato Synth's open in this page; a device's (the XL's) open in its editor, which index.html
-// shows beside the library (lab-pane).
+// ---- the sound library: Ostinato Synth's sounds, factory and yours, grouped by type ----
+// (Hardware sounds live with their instrument: the XL's in its editor under Instruments. The sound
+// picker, core/soundpicker.js, is where every instrument's sounds meet.)
 
 const BANKS = [['all', 'All'], ['mine', '★ Mine'], ['factory', 'Factory']];
-let deviceList = []; // the XL's sounds, once loaded
-let xlKey = null; // the XL sound open in the XL editor, while that's showing
-let paneMode = 'synth';
 const keyOf = e => e.key;
-const currentKey = () => (paneMode !== 'synth' ? xlKey : fileName ? `synth:m:${fileName}` : factoryName ? `synth:f:${factoryName}` : '');
-const playable = () => availability(midi ? [...midi.outputs.values()] : []);
+const currentKey = () => (fileName ? `synth:m:${fileName}` : factoryName ? `synth:f:${factoryName}` : '');
 function libraryEntries() {
-  return [...saved.map(x => ({ key: `synth:m:${x.file}`, instrument: 'synth', file: x.file, name: x.name, type: typeOf(x.patch), bank: 'My Sounds', mine: true, patch: x.patch })),
-    ...FACTORY.map(p => ({ key: `synth:f:${p.name}`, instrument: 'synth', name: p.name, type: typeOf(p), bank: 'Factory', mine: false, patch: p })),
-    ...deviceList];
+  return [...saved.map(x => ({ key: `synth:m:${x.file}`, file: x.file, name: x.name, type: typeOf(x.patch), mine: true, patch: x.patch })),
+    ...FACTORY.map(p => ({ key: `synth:f:${p.name}`, name: p.name, type: typeOf(p), mine: false, patch: p }))];
 }
-// What the list shows: instrument, bank, search, then type.
+// What the list shows: bank, search, then type.
 function shownEntries() {
-  const q = $('#lib-search').value.trim().toLowerCase(), on = playable();
-  const inBank = libraryEntries().filter(e => (prefs.libInst === 'playable' ? on[e.instrument] : e.instrument === prefs.libInst)
-    && (prefs.libBank === 'all' || e.mine === (prefs.libBank === 'mine'))
-    && (!q || `${e.name} ${e.type} ${e.bank}`.toLowerCase().includes(q)));
+  const q = $('#lib-search').value.trim().toLowerCase();
+  const inBank = libraryEntries().filter(e => (prefs.libBank === 'all' || e.mine === (prefs.libBank === 'mine'))
+    && (!q || `${e.name} ${e.type}`.toLowerCase().includes(q)));
   return { inBank, shown: inBank.filter(e => !prefs.libType || e.type === prefs.libType) };
 }
-const MAX_ROWS = 300;
 function renderLibrary() {
   if (!patch) return;
-  const xl = paneMode !== 'synth';
-  $('#lab-layout').classList.toggle('lib-hidden', !prefs.libOpen && !xl);
+  $('#lab-layout').classList.toggle('lib-hidden', !prefs.libOpen);
   $('#lib-show').hidden = prefs.libOpen;
-  $('#lib-hide').hidden = xl; // the library stays while an XL sound is open (it's how you get back)
-  const all = libraryEntries(), on = playable();
-  $('#lib-count').textContent = ` ${all.length} sounds`;
-  // Instruments: what you can hear now, or one instrument (even if it isn't connected).
-  const count = id => all.filter(e => e.instrument === id).length;
-  const insts = INSTRUMENTS.filter(i => i.id === 'synth' || count(i.id));
-  $('#lib-inst').innerHTML = `<button class="chip${prefs.libInst === 'playable' ? ' on' : ''}" data-inst="playable" title="Sounds of the instruments you can hear right now">Playable now</button>`
-    + insts.map(i => `<button class="chip${prefs.libInst === i.id ? ' on' : ''}${on[i.id] ? '' : ' off'}" data-inst="${i.id}" title="${on[i.id] ? '' : 'Not connected: you can browse and edit its sounds, but not hear them'}">${esc(i.name)} <span>${count(i.id)}</span>${on[i.id] ? '' : ' <span>· not connected</span>'}</button>`).join('');
+  $('#lib-count').textContent = ` ${FACTORY.length} factory · ${saved.length} mine`;
   $('#lib-bank').innerHTML = BANKS.map(([v, l]) => `<button class="${prefs.libBank === v ? 'on' : ''}" data-bank="${v}">${l}</button>`).join('');
   const { inBank, shown } = shownEntries();
   const counts = new Map();
@@ -204,37 +189,20 @@ function renderLibrary() {
   $('#lib-types').innerHTML = `<button class="chip${prefs.libType ? '' : ' on'}" data-type="">All</button>`
     + types.map(t => `<button class="chip${prefs.libType === t ? ' on' : ''}" data-type="${esc(t)}">${esc(t)} <span>${counts.get(t)}</span></button>`).join('');
   const cur = currentKey();
-  const sorted = [...shown].sort((a, b) => typeRank(a.type) - typeRank(b.type) || a.type.localeCompare(b.type)
-    || (b.mine - a.mine) || (a.instrument === 'synth' ? -1 : 0) - (b.instrument === 'synth' ? -1 : 0) || a.name.localeCompare(b.name));
+  const sorted = [...shown].sort((a, b) => typeRank(a.type) - typeRank(b.type) || a.type.localeCompare(b.type) || (b.mine - a.mine) || a.name.localeCompare(b.name));
   const groups = new Map();
-  for (const e of sorted.slice(0, MAX_ROWS)) { if (!groups.has(e.type)) groups.set(e.type, []); groups.get(e.type).push(e); }
-  const several = new Set(shown.map(e => e.instrument)).size > 1;
+  for (const e of sorted) { if (!groups.has(e.type)) groups.set(e.type, []); groups.get(e.type).push(e); }
   $('#lib-list').innerHTML = shown.length ? [...groups].map(([type, list]) => `${prefs.libType ? '' : `<div class="lib-group">${esc(type)}</div>`}${list.map(e =>
-    `<button class="lib-row${keyOf(e) === cur ? ' on' : ''}${on[e.instrument] ? '' : ' silent'}" data-key="${esc(keyOf(e))}" title="${esc(instrumentName(e.instrument))} · ${esc(e.bank)}${on[e.instrument] ? '' : ' (not connected: silent)'}">
-      <span class="nm">${esc(e.name)}</span>${e.mine ? '<span class="mine">★</span>' : ''}${several || e.instrument !== 'synth' ? `<span class="inst">${e.instrument === 'synth' ? 'OS' : esc(e.instrument.toUpperCase())}</span>` : ''}</button>`).join('')}`).join('')
-      + (shown.length > MAX_ROWS ? `<div class="hint lib-empty">${shown.length - MAX_ROWS} more: search or pick a type.</div>` : '')
+    `<button class="lib-row${keyOf(e) === cur ? ' on' : ''}" data-key="${esc(keyOf(e))}" title="${e.mine ? 'One of your sounds' : 'A factory sound'}: click to open it">
+      <span class="nm">${esc(e.name)}</span>${e.mine ? '<span class="mine">★</span>' : ''}</button>`).join('')}`).join('')
     : `<div class="hint lib-empty">${prefs.libBank === 'mine' ? 'None of yours here yet. Open a sound, change it, and save it to My Sounds.' : 'No sounds match.'}</div>`;
   $('#lib-audition').checked = prefs.audition;
 }
 
-// Which editor the Sound Lab shows: this page's (Ostinato Synth) or the XL's beside the library.
-function setPane(mode) {
-  paneMode = mode;
-  document.body.classList.toggle('pane-device', mode !== 'synth');
-  renderLibrary();
-  placePane();
-}
-function placePane() {
-  if (top === self) return;
-  const main = $('.lab-main').getBoundingClientRect(), bar = $('header.bar').getBoundingClientRect();
-  parent.postMessage({ type: 'lab-pane', mode: paneMode, left: Math.round(main.left), top: Math.round(Math.max(bar.bottom, main.top)) }, location.origin);
-}
-addEventListener('resize', () => { if (paneMode !== 'synth') placePane(); });
-
 // ---- a take's sound, opened from Capture (✎ Edit sound) ----
 // Changes made while linked carry `link`, so the take's loop plays them and Capture keeps them.
 // Opening another sound from the library ends the link.
-let link = null; // { id, title, kind }
+let link = null; // { id, title }
 function renderLink() {
   const bar = $('#link-bar');
   bar.hidden = !link;
@@ -257,51 +225,29 @@ $('#link-bar').addEventListener('click', e => {
 channel?.addEventListener('message', e => {
   const m = e.data || {};
   if (m.type === 'edit-ended' && link?.id === m.link) { link = null; renderLink(); }
-  if (m.type !== 'edit-sound' || !m.sound) return;
-  if (m.sound.kind === 'lab') {
-    if (paneMode === 'synth' && !discardOk()) return;
-    // Your own sound of that name and settings: open it as itself, so Save updates it.
-    const mine = saved.find(x => x.name === m.sound.name && JSON.stringify(normalizePatch(x.patch).patch) === JSON.stringify(normalizePatch(m.sound.patch).patch));
-    const factory = !mine && FACTORY.find(p => p.name === m.sound.name);
-    endLink();
-    load(m.sound.patch, mine?.file || null, false, factory ? factory.name : null);
-    setPane('synth');
-  } else if (m.sound.kind === 'xl') {
-    endLink();
-    channel?.postMessage({ type: 'open-program', name: m.sound.name, data: m.sound.data });
-    xlKey = null;
-    setPane('xl');
-  } else return;
-  link = { id: m.link, title: m.title || 'a take', kind: m.sound.kind };
+  if (m.type !== 'edit-sound' || m.sound?.kind !== 'lab' || !discardOk()) return;
+  // Your own sound of that name and settings: open it as itself, so Save updates it.
+  const mine = saved.find(x => x.name === m.sound.name && JSON.stringify(normalizePatch(x.patch).patch) === JSON.stringify(normalizePatch(m.sound.patch).patch));
+  const factory = !mine && FACTORY.find(p => p.name === m.sound.name);
+  endLink();
+  load(m.sound.patch, mine?.file || null, false, factory ? factory.name : null);
+  link = { id: m.link, title: m.title || 'a take' };
   renderLink();
 });
 
 // Opening a sound from the library. Edits you haven't saved are only thrown away if you say so.
 const discardOk = () => !dirty || confirm(`Discard unsaved changes to "${patch.name}"?`);
 const previewOf = type => ({ note: type === 'Drums' ? 36 : type === 'Bass' ? 36 : 60, ms: ['Pad', 'Strings', 'FX', 'Organ'].includes(type) ? 1200 : 450 });
-let warnedSilent = false;
 function openEntry(key, { audition = true } = {}) {
   const e = libraryEntries().find(x => keyOf(x) === key);
   if (!e) return;
-  endLink();
-  if (e.instrument !== 'synth') {
-    // In the device's own editor: it loads the sound and sends it to the synth.
-    channel?.postMessage({ type: 'open-program', name: e.name, data: e.sound.data, preview: audition && prefs.audition ? previewOf(e.type) : null });
-    xlKey = key;
-    setPane(e.instrument);
-    if (!playable()[e.instrument] && !warnedSilent) { warnedSilent = true; toast(`${instrumentName(e.instrument)} isn't connected: you can edit its sounds, but not hear them.`); }
-  } else {
-    // Back from an XL sound to the one you were editing: carry on with it as it was.
-    const synthKey = fileName ? `synth:m:${fileName}` : factoryName ? `synth:f:${factoryName}` : '';
-    const returning = paneMode !== 'synth' && key === synthKey;
-    if (!returning && (key !== synthKey || dirty)) {
-      if (!discardOk()) return;
-      if (e.mine) load(e.patch, e.file);
-      else load(copyPatch(e.patch), null, false, e.name);
-    }
-    if (paneMode !== 'synth') setPane('synth');
-    if (audition && prefs.audition) preview();
+  if (key !== currentKey() || dirty) {
+    if (!discardOk()) return;
+    endLink();
+    if (e.mine) load(e.patch, e.file);
+    else load(copyPatch(e.patch), null, false, e.name);
   }
+  if (audition && prefs.audition) preview();
   renderLibrary();
   document.querySelector(`#lib-list [data-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'nearest' });
 }
@@ -319,18 +265,17 @@ function preview() {
   previewTimer = setTimeout(() => notes.forEach(n => synth.noteOff(n, ac.currentTime)), ms + 220 * (notes.length - 1));
 }
 
-async function loadDeviceSounds(reload = false) {
-  deviceList = [];
-  for (const i of INSTRUMENTS) if (i.id !== 'synth') deviceList.push(...await deviceSounds(i.id, { reload }));
-  renderLibrary();
-}
-channel?.addEventListener('message', e => { if (e.data?.type === 'my-sounds-changed') loadDeviceSounds(true); });
+// A sound made elsewhere (Capture's Sample the XL): open it here once the list has it.
+channel?.addEventListener('message', async e => {
+  if (e.data?.type !== 'open-instrument') return;
+  await refreshSaved();
+  if (discardOk()) { dirty = false; openEntry(`synth:m:${e.data.file}`); }
+});
 
 $('#library').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if (b.dataset.inst) { prefs.libInst = b.dataset.inst; prefs.libType = ''; savePrefs(); renderLibrary(); }
-  else if (b.dataset.bank) { prefs.libBank = b.dataset.bank; prefs.libType = ''; savePrefs(); renderLibrary(); }
+  if (b.dataset.bank) { prefs.libBank = b.dataset.bank; prefs.libType = ''; savePrefs(); renderLibrary(); }
   else if (b.dataset.type !== undefined) { prefs.libType = b.dataset.type; savePrefs(); renderLibrary(); }
   else if (b.dataset.key) openEntry(b.dataset.key);
 });
@@ -349,9 +294,8 @@ for (const el of [$('#lib-list'), $('#lib-search')]) el.addEventListener('keydow
   openEntry(next.dataset.key);
 });
 $('#new-sound').onclick = () => {
-  if (paneMode === 'synth' && !discardOk()) return;
+  if (!discardOk()) return;
   endLink();
-  if (paneMode !== 'synth') setPane('synth');
   load({ ...copyPatch(FACTORY.find(p => p.name === 'Init')), name: 'New Sound' }, null, true);
   $('#inst-name').select();
 };
@@ -433,7 +377,10 @@ function drawSample(m) {
   if (!canvas) return;
   const w = canvas.clientWidth, h = canvas.clientHeight, dpr = devicePixelRatio || 1;
   canvas.width = w * dpr; canvas.height = h * dpr;
-  const g = canvas.getContext('2d'), p = m.params, buf = synth.samples.get(p.file);
+  // A multi-sample: the zone for the last note played, with its own loop.
+  const z = m.zones?.length ? zoneFor(m.zones, scopeNote) : null;
+  const p = z ? { ...m.params, file: z.file, ...(z.loopEnd > z.loopStart ? { loopStart: z.loopStart, loopEnd: z.loopEnd } : {}) } : m.params;
+  const g = canvas.getContext('2d'), buf = synth.samples.get(p.file);
   g.scale(dpr, dpr);
   g.fillStyle = css('--muted');
   g.font = '11px system-ui';
@@ -640,7 +587,10 @@ function renderModules() {
       <header title="${esc(spec.help)}"><button class="power-btn${m.off ? ' is-off' : ''}" data-act="power" data-id="${m.id}" title="${m.off ? 'Bypassed: click to switch it back on' : 'Bypass: switch it off without deleting, to hear the difference'}">⏻</button>
         <b>${spec.label}</b> <span class="mid">${m.id}</span>${spec.scope === 'global' ? '<span class="tag">effect</span>' : ''}${m.off ? '<span class="tag">off</span>' : ''}
         <span class="spacer"></span><button class="ghost small x" data-act="del" data-id="${m.id}" title="Remove this module">✕</button></header>
-      <div class="prms">${visibleParams(m).map(p => paramHTML(m, p)).join('')}</div>
+      <div class="prms">${visibleParams(m).filter(p => !(m.zones && (p.key === 'file' || p.key === 'root'))).map(p => paramHTML(m, p)).join('')}</div>
+      ${m.zones ? `<div class="zones"><b>Multi-sample:</b> ${m.zones.length} recordings, ${noteName(m.zones[0].lo === 0 ? m.zones[0].root : m.zones[0].lo)}–${noteName(m.zones.at(-1).root)}${m.zones.some(z => z.loopEnd > z.loopStart) ? ', each with its own loop' : ''}.
+        <span class="hint">Each note plays the nearest recording. The waveform shows the one for the last note played.</span>
+        <button class="ghost small" data-act="zones-clear" data-id="${m.id}" title="Forget the zones and play one recording across the keyboard">Use one sample instead</button></div>` : ''}
       ${m.pads ? kitHTML(m) : ''}
       ${m.type === 'sampler' || m.type === 'granular' ? `<canvas class="sample-wave" data-id="${m.id}" title="${m.type === 'granular' ? 'The recording: grains come from the marked part, around the position line' : 'The sample: the bright part plays (start to end), the marked part loops'}"></canvas>` : ''}
       ${routesHTML(m.id)}
@@ -1090,6 +1040,16 @@ $('#modules').addEventListener('click', e => {
   if (learn && row && el?.dataset.act !== 'unlearn') { learnTarget = row.dataset.target; renderModules(); return; }
   if (!el || routeClick(el)) return;
   switch (el.dataset.act) {
+    case 'zones-clear': {
+      const m = modOf(el.dataset.id);
+      if (!confirm('Forget the zones? It then plays one recording (the one for C4) across the keyboard. ⌘Z brings them back.')) break;
+      const z = zoneFor(m.zones, 60);
+      Object.assign(m.params, { file: z.file, root: z.root });
+      delete m.zones;
+      changed({ rebuild: true });
+      renderModules();
+      break;
+    }
     case 'import-audio': importFor = { act: el.dataset.for, id: el.dataset.id, key: el.dataset.key }; importInput.click(); break;
     case 'pad': { const m = modOf(el.dataset.id); kitSel[m.id] = +el.dataset.n; renderModules(); hitPad(+el.dataset.n); break; }
     case 'pad-play': hitPad(selPad(modOf(el.dataset.id))); break;
@@ -1287,6 +1247,7 @@ function noteOn(note, vel) {
   scopeNote = note;
   startScopes();
   flashPad(note);
+  for (const m of patch.modules) if (m.zones) drawSample(m);
   document.querySelector(`#kbd [data-n="${note}"]`)?.classList.add('on');
 }
 function noteOff(note) {
@@ -1395,7 +1356,10 @@ $('#kbd').addEventListener('pointerdown', e => {
   if (!k) return;
   const n = +k.dataset.n;
   noteOn(n, 100);
-  const up = () => { noteOff(n); removeEventListener('pointerup', up); };
+  // Capture keeps these too (MIDI and the computer keyboard reach it by themselves).
+  const played = d => channel?.postMessage({ type: 'played', data: d, wall: performance.timeOrigin + performance.now() });
+  played([0x90, n, 100]);
+  const up = () => { noteOff(n); played([0x80, n, 0]); removeEventListener('pointerup', up); };
   addEventListener('pointerup', up);
 });
 $('#oct-up').onclick = () => { setQwertyBase(Math.min(96, qwertyBase() + 12)); renderKbd(); };
@@ -1437,6 +1401,4 @@ channel?.addEventListener('message', e => { if (e.data?.type === 'qwerty' && e.d
   refreshSaved();
   refreshRecordings();
   initMidi();
-  loadDeviceSounds();
-  setPane('synth');
 }
