@@ -1,17 +1,21 @@
 // The Lab page: build and play instruments made of modules (see patch.js), save them to
 // data/instruments/, and share them with the sequencer. No framework.
-import { MODULES, MAX_MODULES, SOURCES, visibleParams, zoneFor, normalizePatch, copyPatch, defaultParams, newId, paramOf, formatValue, toSlider, fromSlider, defaultTarget } from './patch.js';
+import { icon as uiIcon } from '../core/icons.js';
+import { MODULES, MAX_MODULES, SOURCES, RACK_EFFECTS, MAX_RACK, cleanRack, rackOf, visibleParams, zoneFor, normalizePatch, copyPatch, defaultParams, newId, paramOf, formatValue, toSlider, fromSlider, defaultTarget } from './patch.js';
 import { LabSynth } from './engine.js';
 import { patchSVG, layout, shapePath, WAVE } from './patchview.js';
 import { portLabel } from '../core/midiports.js';
-import { storage, placeOf, stemOf } from '../core/storage.js';
+import { storage, placeOf, stemOf, FACTORY_SAMPLES } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
 import { attachQwerty, qwertyBase, setQwertyBase } from '../core/qwerty.js';
 import { soundReporter } from '../core/sounding.js';
 import { FACTORY, TYPES, typeOf } from './sounds.js';
-import { PAD_GROUPS, padParam, KIT_NOTES, DEFAULT_PADS, cleanPad, varyPad } from './drums.js';
+import { PAD_GROUPS, padParam, KIT_NOTES, DEFAULT_PADS, cleanPad, varyPad, padLength, padSoundKey } from './drums.js';
+import { openSoundPicker } from '../core/soundpicker.js';
 import { LabSynth as RenderSynth, fileBuffer } from './engine.js';
 import { encodeWav } from '../rec/audio.js';
+import { zonesFor, noteInName } from '../rec/sampleinst.js';
+import { heat, rowHz } from '../core/spectral.js';
 import { typeRank } from '../core/catalog.js';
 
 const $ = sel => document.querySelector(sel);
@@ -58,7 +62,9 @@ let patch;
 let fileName = null; // in My Sounds (data/instruments/), if it's one of yours
 let factoryName = null; // else the factory sound it came from, if any
 let dirty = false;
-let saved = []; // [{ file, name, patch }]
+let saved = []; // [{ file, name, patch }]: My Sounds and saved effect racks (patch.kind 'rack')
+const mySounds = () => saved.filter(x => x.patch?.kind !== 'rack');
+const myRacks = () => saved.filter(x => x.patch?.kind === 'rack');
 let recordings = []; // your audio recordings (data/audio/): impulse responses for the reverb
 const undoStack = [], redoStack = [];
 let snapshot = null, lastPush = 0, workTimer = null, shareTimer = null;
@@ -147,6 +153,14 @@ function renderFileBar() {
   $('#dirty').hidden = !dirty;
   $('#dirty').textContent = fileName || factoryName ? 'unsaved changes' : 'not saved yet';
   $('#origin').textContent = fileName ? '★ My Sounds' : factoryName ? 'Factory sound' : '';
+  const play = patch.play || 'poly';
+  document.querySelectorAll('#play-mode [data-play]').forEach(b => b.classList.toggle('on', b.dataset.play === play));
+  $('#glide-field').hidden = play === 'poly';
+  $('#voices').disabled = play !== 'poly';
+  if (document.activeElement !== $('#glide')) $('#glide').value = Math.round(Math.sqrt((patch.glide || 0) / 2) * 1000);
+  $('#glide-val').textContent = patch.glide ? `${Math.round(patch.glide * 1000)} ms` : 'off';
+  $('#about').hidden = !patch.about;
+  $('#about').textContent = patch.about || '';
   $('#save').textContent = fileName ? 'Save' : 'Save to My Sounds';
   $('#delete').hidden = !fileName;
   const type = typeOf(patch), types = TYPES.includes(type) ? TYPES : [...TYPES, type];
@@ -166,7 +180,7 @@ const BANKS = [['all', 'All'], ['mine', '★ Mine'], ['factory', 'Factory']];
 const keyOf = e => e.key;
 const currentKey = () => (fileName ? `synth:m:${fileName}` : factoryName ? `synth:f:${factoryName}` : '');
 function libraryEntries() {
-  return [...saved.map(x => ({ key: `synth:m:${x.file}`, file: x.file, name: x.name, type: typeOf(x.patch), mine: true, patch: x.patch })),
+  return [...mySounds().map(x => ({ key: `synth:m:${x.file}`, file: x.file, name: x.name, type: typeOf(x.patch), mine: true, patch: x.patch })),
     ...FACTORY.map(p => ({ key: `synth:f:${p.name}`, name: p.name, type: typeOf(p), mine: false, patch: p }))];
 }
 // What the list shows: bank, search, then type.
@@ -180,7 +194,7 @@ function renderLibrary() {
   if (!patch) return;
   $('#lab-layout').classList.toggle('lib-hidden', !prefs.libOpen);
   $('#lib-show').hidden = prefs.libOpen;
-  $('#lib-count').textContent = ` ${FACTORY.length} factory · ${saved.length} mine`;
+  $('#lib-count').textContent = ` ${FACTORY.length} factory · ${mySounds().length} mine`;
   $('#lib-bank').innerHTML = BANKS.map(([v, l]) => `<button class="${prefs.libBank === v ? 'on' : ''}" data-bank="${v}">${l}</button>`).join('');
   const { inBank, shown } = shownEntries();
   const counts = new Map();
@@ -227,7 +241,7 @@ channel?.addEventListener('message', e => {
   if (m.type === 'edit-ended' && link?.id === m.link) { link = null; renderLink(); }
   if (m.type !== 'edit-sound' || m.sound?.kind !== 'lab' || !discardOk()) return;
   // Your own sound of that name and settings: open it as itself, so Save updates it.
-  const mine = saved.find(x => x.name === m.sound.name && JSON.stringify(normalizePatch(x.patch).patch) === JSON.stringify(normalizePatch(m.sound.patch).patch));
+  const mine = mySounds().find(x => x.name === m.sound.name && JSON.stringify(normalizePatch(x.patch).patch) === JSON.stringify(normalizePatch(m.sound.patch).patch));
   const factory = !mine && FACTORY.find(p => p.name === m.sound.name);
   endLink();
   load(m.sound.patch, mine?.file || null, false, factory ? factory.name : null);
@@ -242,7 +256,8 @@ function openEntry(key, { audition = true } = {}) {
   const e = libraryEntries().find(x => keyOf(x) === key);
   if (!e) return;
   if (key !== currentKey() || dirty) {
-    if (!discardOk()) return;
+    // Unsaved edits: ask in a bar on the page (a browser dialog blocks the page, or is ignored).
+    if (dirty) { askUnsaved(e.name, () => { dirty = false; openEntry(key, { audition }); }); return; }
     endLink();
     if (e.mine) load(e.patch, e.file);
     else load(copyPatch(e.patch), null, false, e.name);
@@ -250,6 +265,21 @@ function openEntry(key, { audition = true } = {}) {
   if (audition && prefs.audition) preview();
   renderLibrary();
   document.querySelector(`#lib-list [data-key="${CSS.escape(key)}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+function askUnsaved(next, go) {
+  const bar = $('#unsaved-bar');
+  bar.innerHTML = `<span><b>${esc(patch.name)}</b> has unsaved changes.</span>
+    <button class="small accent" data-u="save">Save, then open ${esc(next)}</button>
+    <button class="small" data-u="discard">Discard them and open ${esc(next)}</button>
+    <button class="small ghost" data-u="cancel">Keep editing</button>`;
+  bar.hidden = false;
+  bar.onclick = async ev => {
+    const u = ev.target.closest('[data-u]')?.dataset.u;
+    if (!u) return;
+    bar.hidden = true;
+    if (u === 'save') { await save(); if (!dirty) go(); }
+    else if (u === 'discard') go();
+  };
 }
 // A short note to hear the sound: lower for basses, the kick and snare for drums, longer for pads.
 let previewTimer = null;
@@ -304,8 +334,11 @@ $('#inst-type').onchange = e => { patch.type = e.target.value; changed(); render
 // A choice of your recordings (data/audio/): samples, impulse responses. "Import audio…" adds one.
 const fileOptions = v => {
   const files = recordings.map(r => r.file);
-  if (v && !files.includes(v)) files.unshift(v);
-  return `<option value="">${recordings.length ? '— choose a recording —' : 'No recordings yet'}</option>${files.map(f => `<option value="${esc(f)}" ${f === v ? 'selected' : ''}>${esc(f.replace(/\.wav$/i, ''))}${recordings.some(r => r.file === f) ? '' : ' (missing)'}</option>`).join('')}`;
+  if (v && !files.includes(v) && !FACTORY_SAMPLES.includes(v)) files.unshift(v);
+  const opt = (f, label, missing = false) => `<option value="${esc(f)}" ${f === v ? 'selected' : ''}>${esc(label)}${missing ? ' (missing)' : ''}</option>`;
+  return `<option value="">— choose a recording —</option>
+    <optgroup label="${recordings.length ? 'Your recordings' : 'Your recordings (none yet)'}">${files.map(f => opt(f, f.replace(/\.wav$/i, ''), !recordings.some(r => r.file === f))).join('')}</optgroup>
+    <optgroup label="Factory samples">${FACTORY_SAMPLES.map(f => opt(f, f.slice(8).replace(/\.wav$/i, ''))).join('')}</optgroup>`;
 };
 function fileHTML(spec, v, attrs, help = '') {
   return `<div class="prm prm-file"${help}><label>${spec.label}</label><select ${attrs}>${fileOptions(v)}</select>
@@ -396,7 +429,7 @@ function drawSample(m) {
     let lo = 0, hi = 0;
     for (let i = Math.floor(x / w * d.length); i < Math.floor((x + 1) / w * d.length); i++) { lo = Math.min(lo, d[i]); hi = Math.max(hi, d[i]); }
     const f = x / w;
-    g.fillStyle = f >= a && f <= b ? css('--accent') : css('--line');
+    g.fillStyle = f >= a && f <= b ? (css('--lcd-text') || css('--accent')) : css('--line');
     g.fillRect(x, h / 2 - hi * (h / 2 - 2), 1, Math.max(1, (hi - lo) * (h / 2 - 2)));
   }
   g.fillStyle = css('--text');
@@ -452,14 +485,14 @@ async function setRootFrom(m, file) {
 const importInput = Object.assign(document.createElement('input'), { type: 'file', accept: 'audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg', hidden: true });
 document.body.append(importInput);
 let importFor = null;
-async function importAudio(file) {
+async function importAudio(file, { quiet = false } = {}) {
   try {
     const buf = await ac.decodeAudioData(await file.arrayBuffer());
     const chans = Array.from({ length: Math.min(2, buf.numberOfChannels) }, (_, c) => buf.getChannelData(c));
     const saved = await storage.save('audio', encodeWav(chans, buf.sampleRate), file.name.replace(/\.[^.]+$/, ''));
     await refreshRecordings();
     channel?.postMessage({ type: 'recordings-changed' });
-    toast(`Imported ${file.name} (${buf.duration.toFixed(1)} s) into your recordings.`, 'ok');
+    if (!quiet) toast(`Imported ${file.name} (${buf.duration.toFixed(1)} s) into your recordings.`, 'ok');
     return saved;
   } catch (err) {
     toast(`Couldn't import ${file.name}: ${err.message || 'not an audio file this browser can read'}.`, 'err');
@@ -479,6 +512,42 @@ importInput.onchange = async () => {
   renderModules();
 };
 
+// Load multi-sample…: several recordings into a Sampler's zones. Each file goes into your
+// recordings (as WAV), its note comes from its name or else its pitch, and the zones split the
+// keyboard halfway between notes. With several files on one note (velocity layers), the first is used.
+const multiInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true, accept: 'audio/*,.wav,.aif,.aiff,.mp3,.m4a,.flac,.ogg', hidden: true });
+document.body.append(multiInput);
+let multiFor = null;
+multiInput.onchange = async () => {
+  const files = [...multiInput.files], id = multiFor;
+  multiInput.value = '';
+  if (!files.length || !modOf(id)) return;
+  toast(`Loading ${files.length} recording${files.length > 1 ? 's' : ''}…`);
+  const found = [], skipped = [];
+  let byPitch = 0;
+  for (const file of files) {
+    let note = noteInName(file.name);
+    const saved = await importAudio(file, { quiet: true });
+    if (!saved) { skipped.push(`${file.name} (couldn't read it)`); continue; }
+    if (note === null) {
+      const buf = await fileBuffer(ac, saved), p = buf && detectPitch(buf);
+      if (p === undefined || p === null) { skipped.push(`${file.name} (no note in its name, no clear pitch)`); continue; }
+      note = Math.round(p);
+      byPitch++;
+    }
+    if (found.some(f => f.root === note)) { skipped.push(`${file.name} (another file already plays ${noteName(note)})`); continue; }
+    found.push({ root: note, file: saved });
+  }
+  const m = modOf(id);
+  if (!m || !found.length) { toast(`Nothing loaded.${skipped.length ? ` Skipped: ${skipped.join('; ')}.` : ''}`, 'err'); return; }
+  found.sort((a, b) => a.root - b.root);
+  m.zones = zonesFor(found.map(f => f.root)).map((z, k) => ({ ...z, file: found[k].file, loopStart: 0, loopEnd: 0 }));
+  synth.setPatch(patch);
+  changed({ rebuild: true });
+  renderModules();
+  toast(`Loaded ${found.length} zone${found.length > 1 ? 's' : ''}, ${noteName(found[0].root)} to ${noteName(found.at(-1).root)}${byPitch ? ` (${byPitch} placed by their pitch)` : ''}.${skipped.length ? ` Skipped ${skipped.length}: ${skipped.slice(0, 4).join('; ')}${skipped.length > 4 ? '…' : ''}.` : ''} ⌘Z undoes.`, 'ok');
+};
+
 // ---- the kit editor (a Drum kit module's pads, drums.js) ----
 
 const kitSel = {}; // module id -> the pad (note) being edited
@@ -489,7 +558,12 @@ function kitHTML(m) {
   const n = selPad(m), p = m.pads[n];
   // The grid reads like a pad controller: the first four pads on the bottom row.
   const rows = [12, 8, 4, 0].map(r => KIT_NOTES.slice(r, r + 4));
-  const pspec = (spec, v) => spec.kind === 'file' ? fileHTML(spec, v, `data-act="pad-file" data-id="${m.id}" data-key="${spec.key}"`, spec.help ? ` title="${esc(spec.help)}"` : '')
+  const pspec = (spec, v) => spec.kind === 'sound'
+    ? `<div class="prm prm-file"${spec.help ? ` title="${esc(spec.help)}"` : ''}><label>${spec.label}</label><span class="pad-sound">
+        <button class="small${v ? '' : ' ghost'}" data-act="pad-sound" data-id="${m.id}" title="Choose an Ostinato Synth sound for this pad">${v ? esc(v.name) : 'Choose…'}</button>
+        ${v ? `<button class="ghost small" data-act="pad-sound-off" data-id="${m.id}" title="No sound on this pad">✕</button>` : ''}</span></div>`
+    : spec.kind === 'file' ? fileHTML(spec, v, `data-act="pad-file" data-id="${m.id}" data-key="${spec.key}"`, spec.help ? ` title="${esc(spec.help)}"` : '')
+      + (v ? `<button class="ghost small" data-act="spectro" data-id="${m.id}" data-pad="1" title="See the sample as a spectrogram and paint on it; the edit is saved as a new recording, which this pad then plays">${uiIcon('spectro')} Spectrogram</button>` : '')
     : spec.kind === 'choice'
     ? `<div class="prm"><label>${spec.label}</label><span class="seg-btn">${spec.choices.map(c => `<button data-act="pad-choice" data-id="${m.id}" data-key="${spec.key}" data-v="${c}" class="${c === v ? 'on' : ''}">${c}</button>`).join('')}</span></div>`
     : `<div class="prm"${spec.help ? ` title="${esc(spec.help)}"` : ''}><label>${spec.label}</label>
@@ -498,17 +572,18 @@ function kitHTML(m) {
   const kits = kitFrom === m.id ? otherKits() : null;
   return `<div class="kit">
     <div class="pads">${rows.map(r => r.map(k => `<button class="pad${k === n ? ' on' : ''}" data-act="pad" data-id="${m.id}" data-n="${k}" title="${esc(m.pads[k].name)} (${noteName(k)}): click to edit and hear it">
-      <b>${esc(m.pads[k].name)}</b><span>${noteName(k)}</span></button>`).join('')).join('')}</div>
+      <b>${esc(m.pads[k].name)}</b><canvas class="pad-thumb" data-id="${m.id}" data-n="${k}" aria-hidden="true"></canvas><span>${noteName(k)}</span></button>`).join('')).join('')}</div>
     <div class="pad-edit">
       <div class="pad-head">
         <input class="pad-name" data-act="pad-name" data-id="${m.id}" value="${esc(p.name)}" maxlength="24" spellcheck="false" aria-label="Pad name">
         <span class="hint">${noteName(n)} · note ${n}</span><span class="spacer"></span>
         <button class="small" data-act="pad-play" data-id="${m.id}" title="Hear it (or click the pad)">▶</button>
-        <button class="ghost small" data-act="pad-vary" data-id="${m.id}" data-amt="0.15" title="A small random variation (⌘Z undoes)">🎲 Vary</button>
-        <button class="ghost small" data-act="pad-vary" data-id="${m.id}" data-amt="0.5" title="A bigger random change, sometimes a different wave or filter">🎲 Wild</button>
+        <button class="ghost small" data-act="pad-vary" data-id="${m.id}" data-amt="0.15" title="A small random variation (⌘Z undoes)">${icon('generate')} Vary</button>
+        <button class="ghost small" data-act="pad-vary" data-id="${m.id}" data-amt="0.5" title="A bigger random change, sometimes a different wave or filter">${icon('generate')} Wild</button>
         <button class="ghost small" data-act="pad-reset" data-id="${m.id}" title="Back to the original kit's ${esc(DEFAULT_PADS[n]?.name || 'pad')}">↺ Reset</button>
         <button class="ghost small" data-act="pad-copy" data-id="${m.id}" title="Copy this pad">Copy</button>
         <button class="ghost small" data-act="pad-paste" data-id="${m.id}" ${padClip ? '' : 'disabled'} title="${padClip ? `Replace it with the copied ${esc(padClip.name)}` : 'Copy a pad first'}">Paste</button>
+        <button class="ghost small" data-act="pad-bounce" data-id="${m.id}" title="Record this pad, all its layers, into one of your recordings and make the pad play just that (⌘Z undoes; the recording stays)">${uiIcon('bounce')} Bounce</button>
         <button class="${kitFrom === m.id ? '' : 'ghost '}small" data-act="pad-from" data-id="${m.id}" title="Take a pad from another kit for this one">From another kit…</button>
       </div>
       ${kits ? `<div class="kit-from">${kits.length ? kits.map((k, i) => `<div class="kf-kit"><b>${esc(k.name)}</b>${k.mine ? ' <span class="hint">★</span>' : ''}<span class="kf-pads">${KIT_NOTES.map(note =>
@@ -522,7 +597,7 @@ function kitHTML(m) {
 // Kits to take pads from: the factory kits and your own, but not this one.
 function otherKits() {
   const kitOf = x => x.modules?.find(mm => mm.type === 'drums' && mm.pads);
-  return [...FACTORY.map(p => ({ name: p.name, mine: false, mod: kitOf(p) })), ...saved.map(x => ({ name: x.name, mine: true, mod: kitOf(normalizePatch(x.patch).patch) }))]
+  return [...FACTORY.map(p => ({ name: p.name, mine: false, mod: kitOf(p) })), ...mySounds().map(x => ({ name: x.name, mine: true, mod: kitOf(normalizePatch(x.patch).patch) }))]
     .filter(k => k.mod && !(k.name === patch.name)).map(k => ({ name: k.name, mine: k.mine, pads: k.mod.pads }));
 }
 // Plays one pad now (and shows it on the grid).
@@ -535,19 +610,68 @@ function hitPad(note) {
 function flashPad(note) {
   document.querySelectorAll(`.pad[data-n="${note}"]`).forEach(b => { b.classList.add('hit'); setTimeout(() => b.classList.remove('hit'), 150); });
 }
+// How long a pad sounds, its sample and sound included (as far as they've loaded).
+function padSeconds(p, dk = 1) {
+  const lsnd = p.lSound && p.lLevel > 0 ? synth.samples.get(padSoundKey(p))?.duration ?? p.lHold : 0;
+  const smp = p.sFile && p.sLevel > 0 ? Math.max(0, (synth.samples.get(p.sFile)?.duration ?? 0) * (1 - p.sStart) / 2 ** (p.sTune / 12)) : 0;
+  return Math.max(padLength(p, dk), Math.min(lsnd, p.lDecay * dk), Math.min(smp, p.sDecay * dk));
+}
+// ✎ Spectrogram on a sampler, granular module or pad sample: the edit is saved as a new recording
+// and the module (or pad) switches to it (⌘Z goes back to the original).
+async function openSpectro(m, pad) {
+  const n = selPad(m), file = pad ? m.pads[n].sFile : m.params.file;
+  if (!file) return;
+  const { openSpectroEditor } = await import('../core/spectroedit.js');
+  openSpectroEditor({ file, onSaved: async saved => {
+    await refreshRecordings();
+    if (pad) { m.pads[n].sFile = saved; padChanged(m); } else { m.params.file = saved; synth.setParam(m.id, 'file', saved); changed({ rebuild: true }); }
+    renderModules();
+    toast(`${pad ? m.pads[n].name : m.id} now plays ${saved}. ⌘Z goes back to ${file}.`, 'ok');
+  } });
+}
+// Bounce: the pad, every layer, rendered into one of your recordings (at full velocity, without
+// the kit's tune/decay/tone or the pad's pan and level, which stay on the pad), and the pad then
+// plays just that. Undo brings the layers back; the recording stays.
+async function bouncePad(m) {
+  const n = selPad(m), p = m.pads[n];
+  await synth.ready();
+  const sr = ac.sampleRate, secs = Math.min(12, padSeconds(p) + 0.3);
+  const ctx = new OfflineAudioContext(2, Math.ceil(sr * secs), sr), r = new RenderSynth(ctx, ctx.destination);
+  r.setPatch(normalizePatch({ name: 'pad', voices: 1, volume: 1, modules: [{ id: 'd', type: 'drums', params: { ...defaultParams('drums'), level: 1 },
+    pads: { [n]: { ...p, pan: 0, level: 1 } } }], audio: [{ from: 'd', to: 'out' }] }).patch);
+  await r.ready();
+  r.noteOn(n, 127, 0);
+  const buf = await ctx.startRendering(), chans = [buf.getChannelData(0), buf.getChannelData(1)];
+  let end = 0, peak = 0;
+  for (const d of chans) for (let i = 0; i < d.length; i++) { const x = Math.abs(d[i]); if (x > 1e-4) end = Math.max(end, i); peak = Math.max(peak, x); }
+  if (!peak) { toast('That pad makes no sound, so there was nothing to bounce.', 'err'); return; }
+  // Loud pads are scaled into the file and the pad's sample level makes up for it.
+  const scale = peak > 0.99 ? 0.99 / peak : 1, len = Math.min(buf.length, end + Math.round(sr * 0.01));
+  const out = chans.map(d => { const c = d.slice(0, len); for (let i = 0; i < c.length; i++) c[i] *= scale; return c; });
+  let file;
+  try { file = await storage.save('audio', encodeWav(out, sr), stemOf(`${patch.name} ${p.name}`)); } catch (err) { toast(`Couldn't save the bounce: ${err.message}`, 'err'); return; }
+  m.pads[n] = cleanPad({ name: p.name, pan: p.pan, level: p.level, choke: p.choke, t1Level: 0, t2Level: 0, nLevel: 0, click: 0, drive: 0,
+    sFile: file, sLevel: Math.min(1.5, 1 / scale), sTune: 0, sStart: 0, sDecay: 8 }, n);
+  await refreshRecordings();
+  channel?.postMessage({ type: 'recordings-changed' });
+  padChanged(m, { play: true });
+  renderModules();
+  toast(`Bounced ${p.name} into ${file} (${(len / sr).toFixed(2)} s). ⌘Z brings its layers back.`, 'ok');
+}
 // The pad's sound drawn over time: rendered silently, as it would sound alone.
 const padRenders = new Map();
 function drawPad(m) {
+  drawPadThumbs(m);
   const canvas = document.querySelector(`.pad-wave[data-id="${m.id}"]`);
   if (!canvas) return;
   const n = selPad(m), p = m.pads[n], kit = m.params;
-  const secs = Math.min(3, Math.max(p.t1Level ? p.t1Decay : 0, p.t2Level ? p.t2Decay : 0, p.nLevel ? p.nDecay : 0, 0.05) * kit.decay + 0.1);
+  const secs = Math.min(3, padSeconds(p, kit.decay) + 0.1);
   const key = JSON.stringify([p, kit]);
   const sr = 22050, ctx = new OfflineAudioContext(1, Math.ceil(sr * secs), sr), r = new RenderSynth(ctx, ctx.destination);
   r.setPatch(normalizePatch({ name: 'pad', voices: 1, volume: 1, modules: [{ id: 'd', type: 'drums', params: kit, pads: { [n]: p } }], audio: [{ from: 'd', to: 'out' }] }).patch);
-  r.noteOn(n, 110, 0);
   padRenders.set(m.id, key);
-  ctx.startRendering().then(buf => {
+  r.ready().then(() => { if (padRenders.get(m.id) === key) { r.noteOn(n, 110, 0); return ctx.startRendering(); } }).then(buf => {
+    if (!buf) return;
     if (padRenders.get(m.id) !== key || !canvas.isConnected) return;
     const d = buf.getChannelData(0), w = canvas.clientWidth, h = canvas.clientHeight, dpr = devicePixelRatio || 1;
     canvas.width = w * dpr; canvas.height = h * dpr;
@@ -556,7 +680,7 @@ function drawPad(m) {
     let peak = 0;
     for (const x of d) peak = Math.max(peak, Math.abs(x));
     const k = (h / 2 - 2) / Math.max(peak, 0.05);
-    g.fillStyle = css('--accent');
+    g.fillStyle = (css('--lcd-text') || css('--accent'));
     for (let x = 0; x < w; x++) {
       let lo = 0, hi = 0;
       for (let i = Math.floor(x / w * d.length); i < Math.floor((x + 1) / w * d.length); i++) { lo = Math.min(lo, d[i]); hi = Math.max(hi, d[i]); }
@@ -567,16 +691,53 @@ function drawPad(m) {
     g.fillText(`${secs.toFixed(2)} s`, w - 40, h - 4);
   });
 }
+// Each pad's sound as a small picture on the pad (rendered quietly at a low rate, kept until the
+// pad or the kit's settings change).
+const thumbCache = new Map();
+function drawPadThumbs(m) {
+  for (const canvas of document.querySelectorAll(`.pad-thumb[data-id="${m.id}"]`)) {
+    const n = +canvas.dataset.n, p = m.pads[n];
+    const key = JSON.stringify([p, m.params]);
+    const paint = d => {
+      if (!canvas.isConnected) return;
+      const w = canvas.clientWidth, h = canvas.clientHeight, dpr = devicePixelRatio || 1;
+      if (!w || !h) return;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      const g = canvas.getContext('2d');
+      g.scale(dpr, dpr);
+      let peak = 0;
+      for (const x of d) peak = Math.max(peak, Math.abs(x));
+      const k = (h / 2 - 1) / Math.max(peak, 0.05);
+      g.fillStyle = css('--lcd-text') || css('--accent');
+      for (let x = 0; x < w; x++) {
+        let hi = 0;
+        for (let i = Math.floor(x / w * d.length); i < Math.floor((x + 1) / w * d.length); i++) hi = Math.max(hi, Math.abs(d[i]));
+        g.fillRect(x, h / 2 - hi * k, 1, Math.max(1, 2 * hi * k));
+      }
+    };
+    const hit = thumbCache.get(`${m.id}|${n}`);
+    if (hit?.key === key) { paint(hit.data); continue; }
+    const sr = 8000, secs = Math.min(1.5, padSeconds(p, m.params.decay) + 0.05);
+    const ctx = new OfflineAudioContext(1, Math.ceil(sr * secs), sr), r = new RenderSynth(ctx, ctx.destination);
+    r.setPatch(normalizePatch({ name: 'pad', voices: 1, volume: 1, modules: [{ id: 'd', type: 'drums', params: m.params, pads: { [n]: p } }], audio: [{ from: 'd', to: 'out' }] }).patch);
+    r.ready().then(() => { r.noteOn(n, 110, 0); return ctx.startRendering(); }).then(buf => {
+      const data = buf.getChannelData(0);
+      thumbCache.set(`${m.id}|${n}`, { key, data });
+      paint(data);
+    });
+  }
+}
 const padRedraw = new Map();
 function drawPadSoon(m) { clearTimeout(padRedraw.get(m.id)); padRedraw.set(m.id, setTimeout(() => drawPad(m), 120)); }
 // A pad changed: the synth plays the new one at once, and it's one undo step per action.
 function padChanged(m, { coalesce = false, play = false } = {}) {
   synth.setPatch(patch);
   changed({ coalesce });
-  if (play) hitPad(selPad(m));
+  if (play) { const n = selPad(m); synth.ready().then(() => hitPad(n)); } // a pad's sound renders first
 }
 
 function renderModules() {
+  $('#save-rack').hidden = !patch.modules.some(m => MODULES[m.type].scope === 'global');
   // Cards follow the sound: left to right through the patch diagram, top to bottom within a
   // column; then the modulators.
   const { pos } = layout(patch);
@@ -586,14 +747,17 @@ function renderModules() {
   const card = m => {
     const spec = MODULES[m.type];
     return `<section class="card mod-${m.type}${spec.scope === 'global' ? ' global' : ''}${m.off ? ' is-off' : ''}${m.pads ? ' kit-card' : ''}" data-mod="${m.id}">
-      <header title="${esc(spec.help)}"><button class="power-btn${m.off ? ' is-off' : ''}" data-act="power" data-id="${m.id}" title="${m.off ? 'Bypassed: click to switch it back on' : 'Bypass: switch it off without deleting, to hear the difference'}">⏻</button>
+      <header title="${esc(spec.help)}"><button class="power-btn${m.off ? ' is-off' : ''}" data-act="power" data-id="${m.id}" title="${m.off ? 'Bypassed: click to switch it back on' : 'Bypass: switch it off without deleting, to hear the difference'}">${uiIcon('power')}</button>
         <b>${spec.label}</b> <span class="mid">${m.id}</span>${spec.scope === 'global' ? '<span class="tag">effect</span>' : ''}${m.off ? '<span class="tag">off</span>' : ''}
         <span class="spacer"></span><button class="ghost small x" data-act="del" data-id="${m.id}" title="Remove this module">✕</button></header>
       <div class="prms">${visibleParams(m).filter(p => !(m.zones && (p.key === 'file' || p.key === 'root'))).map(p => paramHTML(m, p)).join('')}</div>
       ${m.zones ? `<div class="zones"><b>Multi-sample:</b> ${m.zones.length} recordings, ${noteName(m.zones[0].lo === 0 ? m.zones[0].root : m.zones[0].lo)}–${noteName(m.zones.at(-1).root)}${m.zones.some(z => z.loopEnd > z.loopStart) ? ', each with its own loop' : ''}.
         <span class="hint">Each note plays the nearest recording. The waveform shows the one for the last note played.</span>
         <button class="ghost small" data-act="zones-clear" data-id="${m.id}" title="Forget the zones and play one recording across the keyboard">Use one sample instead</button></div>` : ''}
+      ${m.type === 'sampler' ? `<div class="spectro-row"><button class="ghost small" data-act="multi-import" data-id="${m.id}" title="Choose several recordings (e.g. a piano sample set, one file per note): each plays the keys around its note, found from its name (C4, F#2, piano_060…) or its pitch">Load multi-sample…</button></div>` : ''}
+      ${(m.type === 'sampler' || m.type === 'granular') && m.params.file && !m.zones ? `<div class="spectro-row"><button class="ghost small" data-act="spectro" data-id="${m.id}" title="See ${esc(m.params.file)} as a spectrogram and paint on it; the edit is saved as a new recording, which this module then plays">${uiIcon('spectro')} Spectrogram</button></div>` : ''}
       ${m.pads ? kitHTML(m) : ''}
+      ${m.rack ? rackHTML(m) : ''}
       ${m.type === 'sampler' || m.type === 'granular' ? `<canvas class="sample-wave" data-id="${m.id}" title="${m.type === 'granular' ? 'The recording: grains come from the marked part, around the position line' : 'The sample: the bright part plays (start to end), the marked part loops'}"></canvas>` : ''}
       ${routesHTML(m.id)}
     </section>`;
@@ -678,7 +842,7 @@ function fitCanvas(c) {
 }
 const SPEC_LO = 20, SPEC_HI = 20000, DB_LO = -110, DB_HI = -10;
 function drawOutput(live) {
-  const muted = css('--muted'), line = css('--line'), accent = css('--accent');
+  const muted = css('--muted'), line = css('--line'), accent = css('--lcd-text') || css('--accent'); // drawn like an LCD (theme.css)
   // The wave: three cycles of the lowest held note.
   {
     const { g, w, h } = fitCanvas($('#scope-wave'));
@@ -696,6 +860,8 @@ function drawOutput(live) {
       g.stroke();
     } else { g.fillStyle = muted; g.font = '12px system-ui'; g.fillText('Play a note to see the sound', 10, 18); }
   }
+  // Over time: a scrolling spectrogram (frequency up, time across, brighter = louder).
+  if (prefs.specMode === 'time') { drawFall(live); return; }
   // The spectrum: how loud each frequency is (log frequency across, decibels up).
   {
     const { g, w, h } = fitCanvas($('#scope-spec'));
@@ -721,12 +887,67 @@ function drawOutput(live) {
   }
 }
 
+// The spectrogram scrolls 2 px per frame on its own canvas, which is copied onto the pane.
+let fall = null, lastLive = 0;
+function drawFall(live) {
+  const c = $('#scope-spec'), r = devicePixelRatio || 1, W = Math.round(c.clientWidth * r), H = Math.round(c.clientHeight * r);
+  if (!W || !H) return; // not on screen (the Lab's frame is hidden, or the pane is closed): drawn once it shows
+  if (!fall || fall.width !== W || fall.height !== H) {
+    const old = fall;
+    fall = Object.assign(document.createElement('canvas'), { width: W, height: H });
+    const fg = fall.getContext('2d');
+    fg.fillStyle = `rgb(${heat(0).join(',')})`;
+    fg.fillRect(0, 0, W, H);
+    if (old) fg.drawImage(old, 0, 0, W, H);
+  }
+  const fg = fall.getContext('2d');
+  if (live) {
+    synth.scopes.get('out').getFloatFrequencyData(fbuf);
+    const step = Math.max(1, Math.round(2 * r)), binHz = ac.sampleRate / 2 / fbuf.length;
+    fg.drawImage(fall, -step, 0);
+    const col = fg.createImageData(step, H);
+    for (let y = 0; y < H; y++) {
+      // The loudest bin in this row's frequency range.
+      const f0 = rowHz(y + 1, H + 1, SPEC_LO, SPEC_HI), f1 = rowHz(y, H + 1, SPEC_LO, SPEC_HI);
+      let db = -Infinity;
+      for (let b = Math.floor(f0 / binHz); b <= Math.min(fbuf.length - 1, Math.ceil(f1 / binHz)); b++) db = Math.max(db, fbuf[b]);
+      const rgb = heat((db - DB_LO) / (DB_HI - DB_LO));
+      for (let x = 0; x < step; x++) col.data.set([...rgb, 255], (y * step + x) * 4);
+    }
+    fg.putImageData(col, W - step, 0);
+  }
+  const { g, w, h } = fitCanvas(c);
+  g.drawImage(fall, 0, 0, w, h);
+  g.font = '10px ui-monospace, monospace'; g.fillStyle = 'rgba(255,255,255,.75)';
+  for (const [f, label] of [[100, '100'], [1000, '1k'], [10000, '10k']]) g.fillText(label, 3, (Math.log(f / SPEC_HI) / Math.log(SPEC_LO / SPEC_HI)) * h - 2);
+}
+function setSpecMode(mode) {
+  prefs.specMode = mode;
+  savePrefs();
+  document.querySelectorAll('[data-spec]').forEach(b => b.classList.toggle('on', b.dataset.spec === mode));
+  $('#spec-hint').textContent = mode === 'time' ? 'over time, low to high' : 'bass to treble';
+  drawOutput(false);
+}
+document.querySelectorAll('[data-spec]').forEach(b => b.addEventListener('click', () => setSpecMode(b.dataset.spec)));
+setSpecMode(prefs.specMode || 'now');
+// Resizing a canvas clears it, and the Lab often loads in a hidden frame (zero size): redraw the
+// empty panes once they have a size (a held note redraws itself every frame).
+new ResizeObserver(() => { if (prefs.viewOpen && !synth.holding()) drawOutput(false); }).observe($('#scope-spec'));
+
+// The empty scope offers a note to look at; gone once anything has played.
+$('#scope-try').onclick = () => preview();
+
 function scopeFrame() {
   scopeRaf = 0;
   if (!prefs.viewOpen || !onScreen() || document.hidden) return;
   const live = synth.holding(), view = $('#patch-view');
   view.classList.toggle('waves-held', !live);
-  if (!live) return; // the last picture stays
+  if (live) { lastLive = performance.now(); $('#scope-try').hidden = true; }
+  if (!live) {
+    // The spectrogram keeps scrolling a little, to show release and echo tails.
+    if (prefs.specMode === 'time' && performance.now() - lastLive < 3000) { drawFall(true); scopeRaf = requestAnimationFrame(scopeFrame); }
+    return; // the last picture stays
+  }
   if (down.size) scopeNote = Math.min(...down.keys());
   const hz = noteHz(scopeNote);
   held = { shape: waveShape(), waves: new Map() };
@@ -771,7 +992,7 @@ function modulePanel(id) {
         <button class="x" data-act="m-del" data-i="${i}" title="Remove">✕</button></div>`).join('')}</div>` : '');
   return `<div class="view-pop mod-pop">
     <div class="mod-pop-h"><b>${esc(title)}</b>${m ? ` <span class="mid">${esc(id)}</span>` : ''}<span class="spacer"></span>
-      ${m ? `<button class="small ${m.off ? '' : 'ghost'}" data-act="power" data-id="${id}">${m.off ? '⏻ Turn on' : '⏻ Bypass'}</button>
+      ${m ? `<button class="small ${m.off ? '' : 'ghost'}" data-act="power" data-id="${id}">${uiIcon('power')} ${m.off ? 'Turn on' : 'Bypass'}</button>
         <button class="ghost small" data-act="goto" data-id="${id}" title="Show its settings">Settings ↓</button>
         <button class="ghost small" data-act="del" data-id="${id}" title="Remove this module">Remove</button>` : ''}
       <button class="ghost small" data-act="close" title="Close (Esc)">✕</button></div>
@@ -969,6 +1190,20 @@ function routeClick(el) {
   return false;
 }
 function routeChange(el) {
+  if (el.dataset.act === 'rack-add' && el.value) {
+    const m = modOf(el.dataset.id);
+    m.rack.modules.push({ type: el.value, params: defaultParams(el.value) });
+    changed({ rebuild: true });
+    renderModules();
+    return true;
+  }
+  if (el.dataset.act === 'rack-file') {
+    const m = modOf(el.dataset.id), e = m.rack.modules[+el.dataset.k];
+    e.params[el.dataset.key] = el.value;
+    synth.setParam(m.id, `${el.dataset.k}.${el.dataset.key}`, el.value);
+    changed();
+    return true;
+  }
   if (el.dataset.act === 'pad-file') {
     const m = modOf(el.dataset.id);
     m.pads[selPad(m)][el.dataset.key] = el.value;
@@ -1023,6 +1258,14 @@ $('#modules').addEventListener('input', e => {
     drawPadSoon(m);
     return;
   }
+  if (el.dataset.act === 'rack-num') {
+    const m = modOf(el.dataset.id), k = +el.dataset.k, e = m.rack.modules[k], spec = paramOf(e.type, el.dataset.key), v = fromSlider(spec, +el.value / 1000);
+    e.params[spec.key] = v;
+    synth.setParam(m.id, `${k}.${spec.key}`, v);
+    el.parentElement.querySelector('.val').textContent = formatValue(spec, v);
+    changed({ coalesce: true });
+    return;
+  }
   if (el.dataset.act === 'num') {
     const m = modOf(el.dataset.id), spec = paramOf(m.type, el.dataset.key), v = fromSlider(spec, +el.value / 1000);
     m.params[spec.key] = v;
@@ -1040,7 +1283,7 @@ $('#modules').addEventListener('click', e => {
   // Learning: clicking a setting picks it as the target for the next knob turned.
   const row = e.target.closest('.prm[data-target]');
   if (learn && row && el?.dataset.act !== 'unlearn') { learnTarget = row.dataset.target; renderModules(); return; }
-  if (!el || routeClick(el)) return;
+  if (!el || routeClick(el) || rackClick(el)) return;
   switch (el.dataset.act) {
     case 'zones-clear': {
       const m = modOf(el.dataset.id);
@@ -1053,6 +1296,7 @@ $('#modules').addEventListener('click', e => {
       break;
     }
     case 'import-audio': importFor = { act: el.dataset.for, id: el.dataset.id, key: el.dataset.key }; importInput.click(); break;
+    case 'multi-import': multiFor = el.dataset.id; multiInput.click(); break;
     case 'pad': { const m = modOf(el.dataset.id); kitSel[m.id] = +el.dataset.n; renderModules(); hitPad(+el.dataset.n); break; }
     case 'pad-play': hitPad(selPad(modOf(el.dataset.id))); break;
     case 'pad-choice': { const m = modOf(el.dataset.id); m.pads[selPad(m)][el.dataset.key] = el.dataset.v; padChanged(m, { play: true }); renderModules(); break; }
@@ -1064,6 +1308,24 @@ $('#modules').addEventListener('click', e => {
       break;
     }
     case 'pad-reset': { const m = modOf(el.dataset.id), n = selPad(m); m.pads[n] = cleanPad(DEFAULT_PADS[n], n); padChanged(m, { play: true }); renderModules(); break; }
+    case 'pad-sound': {
+      const m = modOf(el.dataset.id), n = selPad(m);
+      openSoundPicker({ anchor: el, title: `Sound for ${m.pads[n].name}`, instruments: ['synth'], isCurrent: e => e.name === m.pads[n].lSound?.name,
+        onPick: item => {
+          if (!item.sound?.patch) return;
+          const pad = m.pads[n];
+          pad.lSound = { name: item.name, patch: normalizePatch(item.sound.patch, { nested: true }).patch };
+          if (!(pad.lLevel > 0)) pad.lLevel = 1;
+          el.textContent = item.name;
+          el.classList.remove('ghost');
+          padChanged(m, { play: true });
+          drawPadSoon(m);
+        } });
+      break;
+    }
+    case 'pad-sound-off': { const m = modOf(el.dataset.id); m.pads[selPad(m)].lSound = null; padChanged(m, { play: true }); renderModules(); break; }
+    case 'pad-bounce': bouncePad(modOf(el.dataset.id)); break;
+    case 'spectro': openSpectro(modOf(el.dataset.id), !!el.dataset.pad); break;
     case 'pad-copy': { const m = modOf(el.dataset.id); padClip = { ...m.pads[selPad(m)] }; toast(`Copied ${padClip.name}.`); renderModules(); break; }
     case 'pad-paste': { const m = modOf(el.dataset.id); if (padClip) { m.pads[selPad(m)] = { ...padClip }; padChanged(m, { play: true }); renderModules(); } break; }
     case 'pad-from': { const id = el.dataset.id; kitFrom = kitFrom === id ? null : id; renderModules(); break; }
@@ -1095,10 +1357,10 @@ $('#modules').addEventListener('change', e => routeChange(e.target));
 // ---- adding modules: a picker of module types, grouped, each with a small picture ----
 
 const PICKER_GROUPS = [
-  ['Make sound', ['osc', 'sampler', 'granular', 'noise', 'fmop', 'drums']],
+  ['Make sound', ['osc', 'string', 'organ', 'sampler', 'granular', 'noise', 'fmop', 'drums']],
   ['Shape it', ['filter', 'drive', 'ring', 'amp', 'space']],
-  ['Move things', ['env', 'lfo']],
-  ['Effects', ['reverb', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor']],
+  ['Move things', ['env', 'lfo', 'glfo']],
+  ['Effects', ['soundboard', 'resonance', 'reverb', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'rotary']],
 ];
 const ICONS = {
   osc: 'M2 17 L8 7 V17 L14 7 V17 L20 7 V17',
@@ -1116,27 +1378,42 @@ const ICONS = {
   lfo: 'M2 12 C6 2 8 2 12 12 S18 22 22 12',
   chorus: 'M2 10 C6 3 8 3 12 10 S18 17 22 10 M2 14 C6 7 8 7 12 14 S18 21 22 14',
   delay: 'M4 5 V19 M9 8 V19 M14 11 V19 M19 14 V19',
+  soundboard: 'M3 15 C7 9 17 9 21 15 Z M6 13 L18 6 M9 12 L20 8',
+  resonance: 'M3 4 V20 M7 4 V20 M11 4 V20 M15 4 V20 M19 4 V20 M2 12 C6 9 8 15 12 12 S18 9 22 12',
   reverb: 'M5 11 V13 M8 7 a7 7 0 0 1 0 10 M12 4 a11 11 0 0 1 0 16 M16 2 a14 14 0 0 1 0 20',
   phaser: 'M2 12 C5 4 7 4 9 12 S13 20 15 12 S19 4 22 12 M6 3 V21 M17 3 V21',
   flanger: 'M2 8 L22 16 M2 16 L22 8 M2 12 H22',
   tremolo: 'M2 12 C3 6 5 6 6 12 S9 18 10 12 C11 9 12 9 13 12 S15 15 16 12 C17 11 18 11 19 12 S21 13 22 12',
   eq: 'M5 3 V21 M12 3 V21 M19 3 V21 M3 15 H7 M10 8 H14 M17 13 H21',
   compressor: 'M3 20 L10 9 L21 6 M3 4 V20 H21',
+  shaper: 'M2 12 C5 12 6 5 9 5 H15 C18 5 19 19 22 19',
+  string: 'M2 12 H5 M19 12 H22 M5 12 C8 4 16 20 19 12 M5 12 C8 18 16 6 19 12',
+  organ: 'M4 3 V14 M7 3 V9 M10 3 V17 M13 3 V7 M16 3 V12 M19 3 V5 M3 20 H21',
+  rotary: 'M12 12 m-8 0 a8 8 0 1 0 16 0 a8 8 0 1 0 -16 0 M12 4 V12 L17 15',
+  glfo: 'M2 12 C5 4 8 4 11 12 S17 20 20 12 M2 21 H22',
+  crusher: 'M2 18 H6 V13 H10 V8 H14 V13 H18 V6 H22',
+  stutter: 'M3 6 V18 M8 6 V18 M13 6 V18 M3 12 H5 M8 12 H10 M13 12 H15 M18 9 L22 12 L18 15',
+  freeze: 'M12 2 V22 M3.5 7 L20.5 17 M3.5 17 L20.5 7 M9 3.5 L12 6 L15 3.5 M9 20.5 L12 18 L15 20.5',
+  rack: 'M3 5 H21 V19 H3 Z M3 10 H21 M3 14 H21 M6 7.5 h.01 M6 12 h.01 M6 16.5 h.01',
 };
 const icon = type => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[type] || ''}"/></svg>`;
 const BLURBS = {
-  osc: 'A tone at the note\'s pitch', sampler: 'Plays a recording', granular: 'Clouds from a recording', noise: 'Breath, wind, hiss', fmop: 'Bells, e-pianos, FM basses', drums: 'A synthesized kit',
+  osc: 'A tone at the note\'s pitch', string: 'Plucked or struck strings', organ: 'Drawbars, percussion, click', rotary: 'Spinning speaker (Leslie)', glfo: 'Moves effects, one for all notes', sampler: 'Plays a recording', granular: 'Clouds from a recording', noise: 'Breath, wind, hiss', fmop: 'Bells, e-pianos, FM basses', drums: 'A synthesized kit',
   filter: 'Darker or brighter', drive: 'Warmth to distortion', ring: 'Metallic, robotic', amp: 'Loudness over time', space: 'Around your head',
   env: 'A shape over each note', lfo: 'Swings a setting back and forth',
-  chorus: 'Wider, thicker', delay: 'Echoes, ping-pong, tape', reverb: 'Room, hall, plate, or a recording',
+  chorus: 'Wider, thicker', delay: 'Echoes, ping-pong, tape', soundboard: 'A piano\'s body, for strings', resonance: 'The pedal\'s halo of strings', reverb: 'Room, hall, plate, or a recording',
   phaser: 'Swirling sweep', flanger: 'Jet-plane sweep', tremolo: 'Pulsing or panning', eq: 'Bass, middle, treble', compressor: 'Evens out the level',
+  shaper: 'Saturation, clipping, folding', crusher: 'Fewer bits, lower rate', stutter: 'Repeats slices, glitchy', freeze: 'Holds a moment as a drone',
 };
 
 function openPicker(anchor) {
   const el = $('#add-picker');
   el.innerHTML = PICKER_GROUPS.map(([title, types]) => `<div class="pick-group"><h4>${title}</h4><div class="pick-grid">${
     types.filter(t => MODULES[t]).map(t => `<button class="pick mod-${t}" data-type="${t}" title="${esc(MODULES[t].help)}">${icon(t)}<b>${MODULES[t].label}</b><span>${BLURBS[t] || ''}</span></button>`).join('')
-  }</div></div>`).join('') + '<p class="hint">New modules start unconnected: connect them in the panel that opens, or drag from their dot.</p>';
+  }</div></div>`).join('') + `<div class="pick-group"><h4>Your effect racks</h4>${myRacks().length ? `<div class="pick-grid">${myRacks().map(x =>
+    `<button class="pick mod-rack" data-rack="${esc(x.file)}" title="${esc(x.patch.modules.map(e => MODULES[e.type]?.label).join(' → '))}">${icon('rack')}<b>${esc(x.name)}</b><span>${esc(x.patch.modules.map(e => MODULES[e.type]?.label).join(' → '))}</span></button>`).join('')}</div>`
+    : '<p class="hint">None yet. Build a chain of effects in any sound, then <b>Save effects as rack…</b> (under the module cards) to reuse it as one module.</p>'}</div>`
+    + '<p class="hint">New modules start unconnected: connect them in the panel that opens, or drag from their dot.</p>';
   el.hidden = false;
   const r = anchor.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
   el.style.left = `${Math.max(8, Math.min(r.left, innerWidth - w - 8))}px`;
@@ -1151,6 +1428,8 @@ document.addEventListener('pointerdown', e => { if (!e.target.closest('#add-pick
 addEventListener('resize', closePicker);
 $('#add-picker').addEventListener('keydown', e => { if (e.key === 'Escape') { e.stopPropagation(); closePicker(); } });
 $('#add-picker').addEventListener('click', e => {
+  const r = e.target.closest('[data-rack]');
+  if (r) { closePicker(); addRack(myRacks().find(x => x.file === r.dataset.rack)); return; }
   const b = e.target.closest('[data-type]');
   if (!b) return;
   closePicker();
@@ -1171,11 +1450,140 @@ function addModule(type) {
   toast(`Added ${id}. Connect it in the panel beside it, or drag from its dot.`);
 }
 
+// ---- effect racks: a chain of effects saved on its own (a patch with kind 'rack') and used as
+// one module in any sound ----
+
+// A saved rack as a module, unconnected like any new module.
+function addRack(item) {
+  if (!item) return;
+  if (patch.modules.length >= MAX_MODULES) { toast(`An instrument can have up to ${MAX_MODULES} modules.`, 'err'); return; }
+  const id = newId(patch, 'rack');
+  patch.modules.push({ id, type: 'rack', params: defaultParams('rack'), rack: rackOf(item.patch) });
+  viewSel = { kind: 'module', id };
+  changed({ rebuild: true });
+  renderModules();
+  if (!prefs.viewOpen) { prefs.viewOpen = true; savePrefs(); renderView(); }
+  toast(`Added ${item.name} as ${id}. Connect a sound to it, and it to the output.`);
+}
+// The patch's effects in signal order (left to right in the diagram), racks opened up.
+function effectChain() {
+  const { pos } = layout(patch), x = id => pos.get(id)?.x ?? 1e9;
+  return patch.modules.filter(m => MODULES[m.type].scope === 'global').sort((a, b) => x(a.id) - x(b.id))
+    .flatMap(m => (m.type === 'rack' ? m.rack.modules : [{ type: m.type, params: m.params, ...(m.off ? { off: true } : {}) }]));
+}
+// Saves effects as a rack file: a patch with only those effects, chained, and kind 'rack'.
+async function saveRack(effects, suggested) {
+  if (!effects.length) { toast('There are no effects to save.', 'err'); return; }
+  if (effects.length > MAX_RACK) { toast(`A rack holds up to ${MAX_RACK} effects; the first ${MAX_RACK} are saved.`); effects = effects.slice(0, MAX_RACK); }
+  const name = (prompt(`Save ${effects.map(e => MODULES[e.type].label).join(' → ')} as a rack named:`, suggested) || '').trim().slice(0, 40);
+  if (!name) return;
+  await refreshSaved();
+  const clash = saved.find(x => x.file === fileFor(name));
+  if (clash && !confirm(clash.patch?.kind === 'rack' ? `Replace your rack ${clash.name}?` : `${clash.name} is one of your sounds. Replace it with this rack?`)) return;
+  const modules = effects.map((e, k) => ({ id: `fx${k + 1}`, type: e.type, params: { ...e.params }, ...(e.off ? { off: true } : {}) }));
+  const rack = normalizePatch({ name, kind: 'rack', type: 'FX', voices: 1, volume: 1, modules,
+    audio: modules.map((m, k) => ({ from: m.id, to: modules[k + 1]?.id || 'out' })), mod: [], cc: {} }).patch;
+  try {
+    await storage.save('instruments', rack);
+    await refreshSaved();
+    toast(`Saved ${name} as an effect rack. Add it to any sound from + Add module → Your effect racks.`, 'ok');
+  } catch (err) { toast(`Couldn't save the rack: ${err.message}`, 'err'); }
+}
+// Unpack: the rack's effects become separate modules in its place (Mix and Level are dropped:
+// each effect keeps its own mix). Undo puts the rack back.
+function unpackRack(m) {
+  const fx = m.rack.modules;
+  if (patch.modules.length - 1 + fx.length > MAX_MODULES) { toast(`That would make more than ${MAX_MODULES} modules.`, 'err'); return; }
+  const ids = [];
+  const at = patch.modules.indexOf(m);
+  const fresh = fx.map(e => { const id = newId({ modules: [...patch.modules, ...ids.map(i => ({ id: i }))] }, e.type); ids.push(id); return { id, type: e.type, params: { ...e.params }, ...(e.off ? { off: true } : {}) }; });
+  patch.modules.splice(at, 1, ...fresh);
+  const ins = patch.audio.filter(c => c.to === m.id), outs = patch.audio.filter(c => c.from === m.id);
+  patch.audio = patch.audio.filter(c => c.to !== m.id && c.from !== m.id);
+  if (fresh.length) {
+    patch.audio.push(...ins.map(c => ({ from: c.from, to: ids[0] })), ...ids.slice(1).map((id, k) => ({ from: ids[k], to: id })), ...outs.map(c => ({ from: ids.at(-1), to: c.to })));
+  } else patch.audio.push(...ins.flatMap(i => outs.map(o => ({ from: i.from, to: o.to }))));
+  patch.cc = Object.fromEntries(Object.entries(patch.cc).filter(([, t]) => !t.startsWith(`${m.id}.`)));
+  viewSel = null;
+  changed({ rebuild: true });
+  renderModules();
+  toast(`Unpacked ${m.rack.name} into ${ids.join(', ') || 'nothing'}.${m.params.mix < 1 || m.params.level !== 1 ? ' Its Mix and Level aren\'t kept.' : ''} ⌘Z puts the rack back.`);
+}
+function rackHTML(m) {
+  const fx = m.rack.modules;
+  const prm = (k, e, spec) => {
+    const v = e.params[spec.key], a = `data-id="${m.id}" data-k="${k}" data-key="${spec.key}"`, help = spec.help ? ` title="${esc(spec.help)}"` : '';
+    if (spec.kind === 'file') return fileHTML(spec, v, `data-act="rack-file" ${a}`, help);
+    if (spec.kind === 'choice') return `<div class="prm"${help}><label>${spec.label}</label><span class="seg-btn">${spec.choices.map(c =>
+      `<button data-act="rack-choice" ${a} data-v="${esc(c)}" class="${c === v ? 'on' : ''}">${esc(c)}</button>`).join('')}</span></div>`;
+    return `<div class="prm"${help}><label>${spec.label}</label><input type="range" min="0" max="1000" step="1" value="${Math.round(toSlider(spec, v) * 1000)}" data-act="rack-num" ${a}>
+      <span class="val">${esc(formatValue(spec, v))}</span></div>`;
+  };
+  return `<div class="rack">
+    <div class="rack-head"><b>${esc(m.rack.name)}</b><span class="hint">${fx.length ? fx.map(e => MODULES[e.type].label).join(' → ') : 'empty'}</span><span class="spacer"></span>
+      <button class="ghost small" data-act="rack-save" data-id="${m.id}" title="Save these effects as a rack (to update the saved one, keep its name)">Save rack…</button>
+      <button class="ghost small" data-act="rack-unpack" data-id="${m.id}" title="Turn the rack back into separate modules, connected the same way">Unpack</button></div>
+    ${fx.map((e, k) => `<div class="rack-fx${e.off ? ' is-off' : ''}">
+      <div class="rack-fx-head"><button class="power-btn${e.off ? ' is-off' : ''}" data-act="rack-power" data-id="${m.id}" data-k="${k}" title="${e.off ? 'Bypassed: click to switch it back on' : 'Bypass this effect'}">${uiIcon('power')}</button>
+        <b>${k + 1}. ${MODULES[e.type].label}</b><span class="spacer"></span>
+        <button class="ghost small" data-act="rack-move" data-id="${m.id}" data-k="${k}" data-d="-1" ${k ? '' : 'disabled'} title="Earlier in the chain">↑</button>
+        <button class="ghost small" data-act="rack-move" data-id="${m.id}" data-k="${k}" data-d="1" ${k < fx.length - 1 ? '' : 'disabled'} title="Later in the chain">↓</button>
+        <button class="ghost small x" data-act="rack-del" data-id="${m.id}" data-k="${k}" title="Remove this effect from the rack">✕</button></div>
+      <div class="prms">${visibleParams(e).map(spec => prm(k, e, spec)).join('')}</div></div>`).join('')}
+    ${fx.length < MAX_RACK ? `<label class="field rack-add">Add an effect <select data-act="rack-add" data-id="${m.id}"><option value="">…</option>${RACK_EFFECTS.map(t => `<option value="${t}">${MODULES[t].label}</option>`).join('')}</select></label>` : ''}
+  </div>`;
+}
+function rackClick(el) {
+  const m = modOf(el.dataset.id), k = +el.dataset.k, e = m?.rack?.modules[k];
+  switch (el.dataset.act) {
+    case 'rack-save': saveRack(m.rack.modules, m.rack.name); return true;
+    case 'rack-unpack': unpackRack(m); return true;
+    case 'rack-power': if (e.off) delete e.off; else e.off = true; changed({ rebuild: true }); renderModules(); return true;
+    case 'rack-del': m.rack.modules.splice(k, 1); changed({ rebuild: true }); renderModules(); return true;
+    case 'rack-move': {
+      const j = k + +el.dataset.d, list = m.rack.modules;
+      if (j < 0 || j >= list.length) return true;
+      [list[k], list[j]] = [list[j], list[k]];
+      changed({ rebuild: true });
+      renderModules();
+      return true;
+    }
+    case 'rack-choice': {
+      const spec = paramOf(e.type, el.dataset.key);
+      e.params[spec.key] = el.dataset.v;
+      if (spec.rebuild) changed({ rebuild: true }); else { synth.setParam(m.id, `${k}.${spec.key}`, el.dataset.v); changed(); }
+      renderModules();
+      return true;
+    }
+  }
+  return false;
+}
+$('#save-rack').onclick = () => saveRack(effectChain(), `${patch.name} FX`);
+
 $('#inst-name').addEventListener('change', e => { patch.name = e.target.value.trim().slice(0, 40) || 'Untitled'; changed(); });
 $('#voices').addEventListener('change', e => {
   patch.voices = Math.max(1, Math.min(16, Math.round(+e.target.value) || 8));
   synth.setPatch(patch);
   changed();
+});
+// Play mode and glide (glide's slider is squared: fine control of short glides).
+$('#play-mode').addEventListener('click', e => {
+  const b = e.target.closest('[data-play]');
+  if (!b) return;
+  if (b.dataset.play === 'poly') {
+    delete patch.play;
+    // Mono sounds often keep a voice count of 1 or 2 (unused while mono), which would leave
+    // "Poly" playing one note at a time.
+    if (patch.voices < 4) { toast(`Voices raised from ${patch.voices} to 8 so chords can sound (the Voices box beside Play).`); patch.voices = 8; }
+  } else patch.play = b.dataset.play;
+  synth.setPatch(patch);
+  changed();
+});
+$('#glide').addEventListener('input', e => {
+  const g = Math.round(2 * (+e.target.value / 1000) ** 2 * 1000) / 1000;
+  if (g > 0) patch.glide = g; else delete patch.glide;
+  synth.setPatch(patch);
+  changed({ coalesce: true });
 });
 $('#volume').addEventListener('input', e => { patch.volume = +e.target.value; synth.setPatch(patch); changed({ coalesce: true }); });
 $('#undo').onclick = undo;
@@ -1280,8 +1688,10 @@ function onMidi(e) {
   else if (type === 0xb0) onCC(d[1], d[2]);
 }
 function onCC(cc, v) {
+  if (cc === 67) { synth.setPedal('soft', v >= 64); return; } // the soft pedal: una corda
   if (cc === 64) {
     sustain = v >= 64;
+    synth.setPedal('sustain', sustain);
     if (!sustain) { for (const n of sustained) synth.noteOff(n, ac.currentTime); sustained.clear(); }
     return;
   }

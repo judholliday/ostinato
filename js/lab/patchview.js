@@ -83,6 +83,26 @@ export function shapePath(m) {
 }
 
 // Selected: { kind: 'audio' | 'mod', from, to } or null.
+// The modules you can hear: those with an audio path to the Output, and modulators that move a
+// setting of one of those (or of another such modulator).
+export function heardModules(patch) {
+  const heard = new Set(), reaches = new Map();
+  const toOut = (id, seen = new Set()) => {
+    if (reaches.has(id)) return reaches.get(id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    const r = patch.audio.some(c => c.from === id && (c.to === 'out' || toOut(c.to, seen)));
+    reaches.set(id, r);
+    return r;
+  };
+  for (const m of patch.modules) if (toOut(m.id)) heard.add(m.id);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const c of patch.mod) if (!heard.has(c.from) && heard.has(c.to.split('.')[0])) { heard.add(c.from); grew = true; }
+  }
+  return heard;
+}
+
 export function patchSVG(patch, { selected = null } = {}) {
   const { pos, width, height, byId, dots, sources } = layout(patch);
   const label = id => (id === 'out' ? 'Output' : SOURCES[id]?.label || MODULES[byId.get(id)?.type]?.label || id);
@@ -118,6 +138,7 @@ export function patchSVG(patch, { selected = null } = {}) {
       <path class="hit" d="${d}"/><path class="line" d="${d}"/>
       <text x="${t.x + 6}" y="${t.y + 14 + n * 11}" class="clabel amt">${esc(formatAmount(byId.get(tid).type, key, c.amount))}</text></g>`);
   });
+  const heard = heardModules(patch);
   const boxes = [...pos].map(([id, p]) => {
     const m = byId.get(id), spec = m && MODULES[m.type];
     const kind = id === 'out' ? 'out' : SOURCES[id] || spec?.modOut ? 'src' : spec.scope === 'global' ? 'fx' : 'voice';
@@ -127,8 +148,10 @@ export function patchSVG(patch, { selected = null } = {}) {
     if (id === 'out' || spec?.audioOut) {
       parts.push(`<line class="wave-zero" x1="${WAVE.x}" x2="${WAVE.x + WAVE.w}" y1="${WAVE.y + WAVE.h / 2}" y2="${WAVE.y + WAVE.h / 2}"/><path class="wave" data-wave="${id}" d=""/>`);
     } else if (m && spec.modOut) parts.push(`<path class="shape" d="${shapePath(m)}"/>`);
+    const deaf = m && !heard.has(id);
     if (m) {
-      parts.push(`<text x="10" y="33" class="bid">${esc(id)}</text>`);
+      parts.push(deaf ? `<text x="10" y="33" class="bid">${esc(id)} <tspan class="unheard-t">· not heard</tspan><title>Not heard: nothing connects it${spec.modOut ? ' to a module you can hear' : ' to the Output'}</title></text>`
+        : `<text x="10" y="33" class="bid">${esc(id)}</text>`);
       parts.push(`<g class="power${m.off ? ' is-off' : ''}" data-power="${id}"><circle cx="${BOX_W - 14}" cy="14" r="9"/><text x="${BOX_W - 14}" y="18" text-anchor="middle">⏻</text>
         <title>${m.off ? 'Bypassed: click to switch it back on' : 'Click to bypass (switch off without deleting)'}</title></g>`);
     }
@@ -153,7 +176,7 @@ export function patchSVG(patch, { selected = null } = {}) {
       });
     }
     const picked = selected?.kind === 'module' && selected.id === id;
-    return `<g class="box ${kind}${m?.off ? ' is-off' : ''}${picked ? ' is-selected' : ''}" data-box="${id}" transform="translate(${p.x},${p.y})">${parts.join('')}</g>`;
+    return `<g class="box ${kind}${m?.off ? ' is-off' : ''}${deaf ? ' unheard' : ''}${picked ? ' is-selected' : ''}" data-box="${id}" transform="translate(${p.x},${p.y})">${parts.join('')}</g>`;
   }).join('');
   return `<svg class="patch-svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Patch diagram">
     <g class="cables">${cables.join('')}</g>${boxes}<path class="drag-line" d=""/></svg>`;

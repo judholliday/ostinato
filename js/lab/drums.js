@@ -5,6 +5,8 @@
 //                    cymbals and hats).
 //   a noise layer    (n…): filtered noise, in 1–4 quick bursts (claps).
 //   a sample      (s…): one of your recordings, tuned, trimmed and faded, on top of the rest.
+//   a sound       (l…): any Ostinato Synth sound (a copy of its patch), played at a note for a
+//                    moment and rendered to audio by the engine, so it plays like a sample.
 //   a click, drive, pan, level, and a choke group (pads in the same group cut each other off,
 //   like open and closed hats).
 // A layer at level 0 is off. No DOM or audio here.
@@ -13,6 +15,7 @@ const num = (key, label, min, max, def, extra = {}) => ({ key, label, kind: 'num
 const choice = (key, label, choices, def) => ({ key, label, kind: 'choice', choices, def });
 const time = (key, label, min, max, def) => num(key, label, min, max, def, { unit: 's', curve: 'log' });
 const file = (key, label, extra = {}) => ({ key, label, kind: 'file', def: '', ...extra });
+const sound = (key, label, extra = {}) => ({ key, label, kind: 'sound', def: null, ...extra });
 const tone = n => [
   num(`t${n}Level`, 'Level', 0, 1.5, 0),
   choice(`t${n}Wave`, 'Wave', ['sine', 'triangle', 'square', 'saw', 'metal'], 'sine'),
@@ -40,6 +43,13 @@ export const PAD_GROUPS = [
     num('sTune', 'Tune', -24, 24, 0, { unit: 'st', step: 0.5 }),
     num('sStart', 'Start', 0, 1, 0, { help: 'Trim the beginning' }),
     time('sDecay', 'Decay', 0.01, 8, 8),
+  ] },
+  { title: 'Sound', help: 'Any Ostinato Synth sound (yours or the factory\'s), played as a hit: an FM bell, a granular cloud, a bass blip', params: [
+    sound('lSound', 'Sound', { help: 'A copy of the sound is kept in the pad, so changing the original later doesn\'t change the pad' }),
+    num('lLevel', 'Level', 0, 1.5, 1),
+    num('lNote', 'Note', 24, 96, 60, { step: 1, help: 'The note it plays (C4 = 60)' }),
+    time('lHold', 'Hold', 0.01, 4, 0.2),
+    time('lDecay', 'Decay', 0.01, 8, 1),
   ] },
   { title: 'Out', help: '', params: [
     num('click', 'Click', 0, 1, 0, { help: 'A short tick at the start, for attack' }),
@@ -79,7 +89,13 @@ export const DEFAULT_PADS = {
   56: pad('Cowbell', { t1Level: 0.3, t1Wave: 'square', t1Pitch: 540, t1Decay: 0.3, t2Level: 0.3, t2Wave: 'square', t2Pitch: 800, t2Decay: 0.3 }),
 };
 
-function cleanValue(spec, v) {
+// cleanSound(patch) checks a pad sound's patch (patch.js passes normalizePatch, so this file
+// needn't import it); without one, pad sounds are dropped.
+function cleanValue(spec, v, cleanSound) {
+  if (spec.kind === 'sound') {
+    if (!cleanSound || !v || typeof v !== 'object' || !v.patch) return null;
+    try { return { name: String(v.name || v.patch.name || 'Sound').trim().slice(0, 40) || 'Sound', patch: cleanSound(v.patch) }; } catch { return null; }
+  }
   if (spec.kind === 'choice') return spec.choices.includes(String(v)) ? String(v) : spec.def;
   if (spec.kind === 'file') return typeof v === 'string' ? v.slice(0, 200) : '';
   const n = Number(v);
@@ -87,16 +103,20 @@ function cleanValue(spec, v) {
   const c = Math.min(spec.max, Math.max(spec.min, n));
   return spec.step ? Math.round(c / spec.step) * spec.step : c;
 }
-export function cleanPad(raw, note) {
+export function cleanPad(raw, note, cleanSound) {
   const base = DEFAULT_PADS[note] || pad(`Pad ${note}`, {});
   const out = { name: String(raw?.name ?? base.name).trim().slice(0, 24) || base.name };
-  for (const p of PAD_PARAMS) out[p.key] = cleanValue(p, raw?.[p.key] ?? base[p.key]);
+  for (const p of PAD_PARAMS) out[p.key] = cleanValue(p, raw?.[p.key] ?? base[p.key], cleanSound);
   return out;
 }
 // A kit's pads, complete: every pad note, missing settings from the original kit.
-export function cleanPads(raw) {
-  return Object.fromEntries(KIT_NOTES.map(n => [n, cleanPad(raw?.[n], n)]));
+export function cleanPads(raw, cleanSound) {
+  return Object.fromEntries(KIT_NOTES.map(n => [n, cleanPad(raw?.[n], n, cleanSound)]));
 }
+// Where the engine keeps a pad's rendered sound: a new render whenever what it plays changes.
+export const padSoundKey = p => `sound:${JSON.stringify([p.lSound.patch, p.lNote, p.lHold])}`;
+// How long a pad sounds (seconds), at the kit's decay `dk`, ignoring any sample.
+export const padLength = (p, dk = 1) => Math.max(p.t1Level ? p.t1Decay : 0, p.t2Level ? p.t2Decay : 0, p.nLevel ? p.nDecay : 0, 0.05) * dk;
 export const copyPads = pads => JSON.parse(JSON.stringify(pads));
 
 // A variation of a pad: numbers nudged at random by up to `amount` (0.15 = a little, 0.5 = wild),
@@ -105,7 +125,7 @@ export const copyPads = pads => JSON.parse(JSON.stringify(pads));
 export function varyPad(p, amount, rnd = Math.random) {
   const out = { ...p };
   for (const spec of PAD_PARAMS) {
-    if (spec.kind === 'file' || spec.key === 'choke' || spec.key === 'level' || spec.key === 'nBursts') continue;
+    if (spec.kind === 'file' || spec.kind === 'sound' || spec.key === 'lNote' || spec.key === 'choke' || spec.key === 'level' || spec.key === 'nBursts') continue;
     const v = p[spec.key];
     if (spec.kind === 'choice') { if (amount >= 0.4 && rnd() < amount * 0.25) out[spec.key] = spec.choices[Math.floor(rnd() * spec.choices.length)]; continue; }
     if (/Level$/.test(spec.key) && v === 0) continue; // a layer that's off stays off

@@ -1,0 +1,264 @@
+/* Front panel: Ostinato dressed as a piece of gear. Loaded last on every page, so it restyles what
+   style.css, sequencer.css, lab.css and recorder.css lay out: a grey chassis (black in dark mode),
+   engraved uppercase labels, keys with a bevel, step keys in the TR-808 colour groups with LEDs,
+   amber LCD readouts for values, LED tabs, and patch cords. Layout lives in the other files. */
+@import url('https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@400;500;600;700&family=VT323&display=swap');
+
+:root {
+  --bg: #bdbcb5;          /* chassis */
+  --panel: #d3d2cb;
+  --panel-2: #e2e1da;
+  --line: #8e8d86;
+  --text: #18191b;        /* silkscreen */
+  --muted: #4b4b47;
+  --accent: #d8322a;      /* LED red */
+  --accent-soft: rgba(216, 50, 42, 0.14);
+  --ok: #2f8f4e;
+  --warn: #a35f00;
+  --err: #c41f2a;
+  --knob-track: #9d9c95;
+  --radius: 4px;
+  --pri: #18191b;         /* main buttons: dark keys */
+  --on-pri: #f1f0ea;
+  --key: #ecebe4;         /* step keys and pads */
+  --lcd: #2a2410;
+  --lcd-text: #ffb52e;
+  --led-off: #7b7a74;
+  --cord: #2b2c2f;        /* audio cords */
+  --mod: #b38612;         /* modulation cords */
+  --g0: #c8432c; --g1: #e07a2b; --g2: #e9c23f; --g3: #ebe8de; /* step-key groups, as on a TR-808 */
+  --display: 'Saira Semi Condensed', 'Arial Narrow', system-ui, sans-serif;
+  --lcd-font: 'VT323', ui-monospace, 'SF Mono', Menlo, monospace;
+  --bevel: inset 0 -2px 0 rgba(0, 0, 0, .28), inset 0 1px 0 rgba(255, 255, 255, .35);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111214; --panel: #1b1c1f; --panel-2: #26272b; --line: #3a3c41; --text: #eceae4; --muted: #9a9992;
+    --accent: #ff4636; --accent-soft: rgba(255, 70, 54, 0.16); --ok: #4fc27a; --warn: #ffb52e; --err: #ff5964; --knob-track: #3a3c41;
+    --pri: #eceae4; --on-pri: #111214; --key: #2a2c30; --lcd: #1a1405; --lcd-text: #ffb52e; --led-off: #3e3f43;
+    --cord: #cfcdc6; --mod: #e8b632;
+    --bevel: inset 0 -2px 0 rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 255, 255, .07);
+    color-scheme: dark;
+  }
+}
+/* The old light-mode override in style.css ties itself to prefers-color-scheme; restate ours. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) { --bg: #bdbcb5; --panel: #d3d2cb; --panel-2: #e2e1da; --line: #8e8d86; --text: #18191b; --muted: #4b4b47; --accent: #d8322a; --accent-soft: rgba(216, 50, 42, 0.14); --knob-track: #9d9c95; color-scheme: light; }
+}
+
+/* ---- chassis and type ---- */
+body {
+  font-family: var(--display);
+  background-color: var(--bg);
+  background-image: repeating-linear-gradient(90deg, color-mix(in srgb, var(--text) 3%, transparent) 0 1px, transparent 1px 4px);
+}
+h1, h2, h3, h4, .section-head, .module h3, .scope-h, .group-h, .route-h, .pick-group h4, .pad-group h4, label, .field, .prm label, .lane-name, .card .tag {
+  font-family: var(--display);
+}
+h2.section-head, .module h3, .scope-h, .pick-group h4, .pad-group h4, .route-h, .group-h, .lib-head b, .field, .prm label, .lane-name {
+  text-transform: uppercase; letter-spacing: .1em; font-weight: 600;
+}
+.prm label, .field, .lane-name { font-size: 11px; }
+.hint, .hint.plain, .help { text-transform: none; letter-spacing: 0; font-weight: 400; font-family: var(--display); }
+
+/* ---- keys (buttons) and selects ---- */
+button, select, input[type=number], input[type=text], input:not([type]) { border-radius: 3px; }
+button { background: var(--key); box-shadow: var(--bevel); font-family: var(--display); font-weight: 500; letter-spacing: .02em; }
+button:active:not(:disabled) { box-shadow: inset 0 1px 2px rgba(0, 0, 0, .35); transform: translateY(1px); }
+button.ghost { background: transparent; box-shadow: none; }
+button.ghost:hover { background: color-mix(in srgb, var(--key) 60%, transparent); }
+button.accent { background: var(--pri); border-color: var(--pri); color: var(--on-pri); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .5), inset 0 1px 0 rgba(255, 255, 255, .12); }
+select { background: var(--key); }
+
+/* Segment switches: keys in a row, the one that's on lit. */
+.seg-btn button.on, .pats button.on, .prm .seg-btn button.on, .chip.on, .sp-chips .chip.on, .lib-types .chip.on {
+  background: var(--pri); color: var(--on-pri); border-color: var(--pri);
+}
+
+/* ---- top bar: LED tabs ---- */
+.topbar { background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: inset 0 -1px 0 rgba(255, 255, 255, .15); }
+.brand-mark { background: var(--pri); color: var(--on-pri); border-radius: 3px; box-shadow: var(--bevel); }
+.brand-name { font-family: var(--display); font-weight: 700; text-transform: uppercase; letter-spacing: .14em; }
+.app-nav { background: transparent; border: 0; gap: 4px; }
+.app-nav a {
+  position: relative; padding: 9px 12px 4px; border: 1px solid transparent; border-radius: 3px;
+  font-family: var(--display); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em;
+}
+.app-nav a::before { content: ""; position: absolute; top: 3px; left: 50%; width: 5px; height: 5px; margin-left: -2.5px; border-radius: 50%; background: var(--led-off); }
+.app-nav a[aria-current="page"] { background: var(--panel-2); color: var(--text); border-color: var(--line); box-shadow: var(--bevel); }
+.app-nav a[aria-current="page"]::before { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+
+/* ---- LCD readouts: positions, values, names ---- */
+.pos, #prog-name, .ai-name, .lcd {
+  font-family: var(--lcd-font); color: var(--lcd-text); background-color: var(--lcd); border-color: transparent;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, .6);
+  background-image: repeating-linear-gradient(0deg, rgba(0, 0, 0, .18) 0 1px, transparent 1px 3px);
+  text-shadow: 0 0 6px color-mix(in srgb, var(--lcd-text) 55%, transparent);
+}
+.pos { font-size: 20px; letter-spacing: .04em; padding: 1px 10px; border-radius: 3px; }
+#prog-name { color: var(--lcd-text); background-color: var(--lcd); font-size: 24px; }
+.prm .val, .view-pop .val, .mrow .val, .e-vel, .e-gate, .pad-edit .val {
+  font-family: var(--lcd-font); font-size: 16px; line-height: 1; color: var(--lcd-text); background: var(--lcd);
+  padding: 2px 6px 1px; border-radius: 2px; text-align: right; box-shadow: inset 0 1px 3px rgba(0, 0, 0, .6);
+  text-shadow: 0 0 4px color-mix(in srgb, var(--lcd-text) 45%, transparent);
+}
+
+/* ---- faders (range inputs) ---- */
+input[type=range] { -webkit-appearance: none; appearance: none; background: transparent; height: 18px; accent-color: var(--accent); }
+input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--lcd); box-shadow: inset 0 1px 2px rgba(0, 0, 0, .6); }
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 12px; height: 18px; margin-top: -7px; border-radius: 2px;
+  background: linear-gradient(var(--key) 0 45%, var(--text) 45% 55%, var(--key) 55%); border: 1px solid rgba(0, 0, 0, .45);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .4);
+}
+input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--lcd); }
+input[type=range]::-moz-range-thumb { width: 12px; height: 18px; border-radius: 2px; background: var(--key); border: 1px solid rgba(0, 0, 0, .45); }
+
+/* ---- panels ---- */
+.card, .module, .track, .scope-pane, .patch-view, .song, .library, .ai-panel, .ideas, .editor, .kit-from, .rack-fx, .spectro-box {
+  border-radius: 4px;
+}
+.card, .module, .track { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18), 0 1px 0 rgba(0, 0, 0, .12); }
+.card header b, .track-name input { font-family: var(--display); font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+.card .mid, .card .tag { font-family: var(--display); }
+
+/* ---- sequencer: step keys with LEDs ---- */
+.cell-bg { background: var(--key); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .22); border-radius: 2px; }
+.cell-bg.beat { background: var(--key); }
+.cell-bg.play { box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .22), 0 0 0 1px var(--lcd-text); }
+.blk { background: color-mix(in srgb, var(--lcd-text) 22%, var(--key)); border: 1px solid color-mix(in srgb, var(--lcd-text) 65%, transparent); color: var(--text); border-radius: 2px; }
+.blk .note { font-family: var(--lcd-font); font-size: 15px; }
+.blk.sel { box-shadow: 0 0 0 2px var(--accent); }
+
+.lane-num { font-family: var(--display); font-weight: 700; color: #1a1a1a; background: var(--g0); border-radius: 2px; }
+.lanes > .lane-num:nth-child(16n + 6), .lanes > .lane-num:nth-child(16n + 7), .lanes > .lane-num:nth-child(16n + 8), .lanes > .lane-num:nth-child(16n + 9) { background: var(--g1); }
+.lanes > .lane-num:nth-child(16n + 10), .lanes > .lane-num:nth-child(16n + 11), .lanes > .lane-num:nth-child(16n + 12), .lanes > .lane-num:nth-child(16n + 13) { background: var(--g2); }
+.lanes > .lane-num:nth-child(16n + 14), .lanes > .lane-num:nth-child(16n + 15), .lanes > .lane-num:nth-child(16n + 16), .lanes > .lane-num:nth-child(16n + 17) { background: var(--g3); }
+.lane-num.beyond { opacity: .4; }
+.lane-cell { position: relative; background: var(--key); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .25); border-radius: 2px; }
+.lane-cell::after { content: ""; position: absolute; top: 4px; left: 50%; margin-left: -3px; width: 6px; height: 4px; border-radius: 1px; background: var(--led-off); }
+.lane-cell { border-color: rgba(0, 0, 0, .25); color: var(--text); font-family: var(--lcd-font); font-size: 13px; padding-top: 6px; }
+.lane-cell.beat { border-left: 1px solid rgba(0, 0, 0, .25); }
+.lane-cell.on, .lane-cell.on.play { background: var(--key); border-color: rgba(0, 0, 0, .25); }
+.lane-cell.on.soft, .lane-cell.chance { opacity: 1; border-style: solid; }
+.lane-cell.play { background: color-mix(in srgb, var(--lcd-text) 22%, var(--key)); }
+.lane-cell.on::after { background: var(--accent); box-shadow: 0 0 5px var(--accent); }
+.lane-cell.on.accent { box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .25); }
+.lane-cell.on.accent::after { width: 10px; margin-left: -5px; box-shadow: 0 0 9px 2px var(--accent); }
+.lane-cell.on.soft::after { background: color-mix(in srgb, var(--accent) 45%, var(--led-off)); box-shadow: none; }
+.lane-cell.on.chance::after { background: var(--lcd-text); box-shadow: 0 0 5px var(--lcd-text); }
+.lane-cell.beyond { opacity: .35; }
+
+
+.dot { box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .35), 0 0 0 2px var(--panel-2); }
+
+/* ---- Sound Lab: pads with an LED, patch cords and jacks ---- */
+.pad { background: var(--key); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, .3), inset 0 1px 0 rgba(255, 255, 255, .12); position: relative; border-radius: 6px; }
+.pad::after { content: ""; position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--led-off); }
+.pad.on { border-color: var(--line); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, .3), 0 0 0 2px var(--accent); }
+.pad.on::after, .pad.hit::after { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.pad b { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
+.pad-wave, .scope canvas, .sample-wave { background: var(--lcd); border-color: transparent; border-radius: 3px; }
+
+.patch-view { background: var(--panel); }
+.patch-svg .box rect { fill: var(--panel-2); stroke: var(--line); stroke-width: 1.2; }
+.patch-svg .bname { font-family: var(--display); text-transform: uppercase; letter-spacing: .1em; font-weight: 700; }
+/* Cords: round-ended, a little heavier than a hairline (thinner than the mockup, as asked). */
+.patch-svg .cable .line { stroke: var(--cord); stroke-width: 2; stroke-linecap: round; }
+.patch-svg .cable:hover .line { stroke-width: 2.6; }
+.patch-svg .cable.sel .line { stroke: var(--accent); stroke-width: 2.6; }
+.patch-svg .cable.fm .line { stroke: var(--accent); }
+.patch-svg .cable.mod .line { stroke: var(--mod); stroke-width: 1.6; stroke-dasharray: none; }
+.patch-svg .port, .patch-svg .in-port { fill: #0b0b0b; stroke: var(--muted); stroke-width: 2; }
+.patch-svg .tdot { fill: var(--mod); stroke: var(--mod); }
+.patch-svg .shape { stroke: var(--mod); }
+.patch-svg .clabel, .patch-svg .tlabel { font-family: var(--lcd-font); font-size: 13px; fill: var(--mod); }
+
+.power-btn:not(.is-off) { color: var(--accent); text-shadow: 0 0 5px var(--accent); }
+.pick svg { stroke: var(--text); }
+
+/* Lists stay flat: a lit edge marks the one that's on. */
+.lib-row, .sp-row, button.recent-row, .lib-item { box-shadow: none; background: transparent; }
+.lib-row.on, .sp-row.on, button.recent-row.on { background: var(--panel-2); box-shadow: inset 3px 0 0 var(--accent); }
+.lib-row:active, .sp-row:active { transform: none; }
+#learn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ---- icons (core/icons.js) ---- */
+.ic { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: square; stroke-linejoin: miter; vertical-align: -3px; flex: none; }
+.ic .f { fill: currentColor; stroke: none; }
+button .ic + *, button .ic { margin-right: 1px; }
+.rec-go .ic { color: var(--accent); }
+.power-btn .ic { width: 13px; height: 13px; vertical-align: -2px; }
+
+/* The LCD strip in the top bar (core/topbar.js). */
+.lcd-status { font-size: 17px; line-height: 1; white-space: pre; padding: 5px 10px 4px; border-radius: 3px; min-width: 25ch; }
+@media (max-width: 900px) { .lcd-status { display: none; } }
+.brand { flex-wrap: wrap; row-gap: 6px; }
+
+/* ---- the transport deck (sequencer top bar) and the transport on other tabs ---- */
+.deck {
+  display: inline-flex; align-items: stretch; gap: 10px; padding: 6px 8px;
+  background: color-mix(in srgb, var(--bg) 70%, var(--panel));
+  border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, .18), 0 1px 0 rgba(255, 255, 255, .15);
+}
+.transport { display: inline-flex; gap: 6px; align-items: stretch; }
+/* A transport key: a square key with an icon, an engraved label, and an LED that lights when on. */
+.tkey {
+  position: relative; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  width: 52px; min-width: 0; height: 46px; padding: 8px 0 3px; border-radius: 4px;
+  background: linear-gradient(var(--key), color-mix(in srgb, var(--key) 88%, #000));
+  border: 1px solid rgba(0, 0, 0, .35); color: var(--text); cursor: pointer; list-style: none;
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, .3), inset 0 1px 0 rgba(255, 255, 255, .25), 0 1px 2px rgba(0, 0, 0, .25);
+}
+.tkey::-webkit-details-marker { display: none; }
+.tkey:hover { filter: brightness(1.04); }
+.tkey:active { transform: translateY(1px); box-shadow: inset 0 1px 3px rgba(0, 0, 0, .4); }
+.tkey .ic { width: 16px; height: 16px; }
+.tkey small { font: 600 9px/1 var(--display); text-transform: uppercase; letter-spacing: .12em; color: var(--muted); white-space: nowrap; }
+.tkey .led { position: absolute; top: 4px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--led-off); box-shadow: inset 0 1px 1px rgba(0, 0, 0, .4); }
+#play .ic, .tkey[data-t="play"] .ic { color: var(--ok); }
+#rec .ic, .tkey[data-t="rec"] .ic { color: var(--accent); }
+/* On: the LED lights; the key itself stays a key (no flood of colour). */
+.tkey.playing, .transport .tkey.playing { background: linear-gradient(var(--key), color-mix(in srgb, var(--key) 88%, #000)); color: var(--text); border-color: rgba(0, 0, 0, .35); }
+.tkey.playing .led { background: var(--ok); box-shadow: 0 0 6px var(--ok), 0 0 2px var(--ok); }
+.tkey.rec-on, #rec.tkey.rec-on { background: linear-gradient(var(--key), color-mix(in srgb, var(--key) 88%, #000)); color: var(--text); border-color: rgba(0, 0, 0, .35); }
+.tkey.rec-on .led { background: var(--accent); box-shadow: 0 0 6px var(--accent), 0 0 2px var(--accent); animation: rec-blink 1s steps(2) infinite; }
+@keyframes rec-blink { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .tkey.rec-on .led { animation: none; } }
+
+/* The metronome key opens its settings below it. */
+.click-key { position: relative; display: inline-flex; }
+.click-key .click-ic { font-size: 16px; line-height: 16px; }
+.click-key.on .led { background: var(--lcd-text); box-shadow: 0 0 6px var(--lcd-text); }
+.click-key .dropdown-body { top: calc(100% + 6px); }
+
+/* The LCD window: position, tempo and time signature behind one piece of glass. */
+.lcd-window {
+  display: inline-flex; align-items: center; gap: 14px; padding: 4px 12px; border-radius: 4px;
+  background-color: var(--lcd);
+  background-image: repeating-linear-gradient(0deg, rgba(0, 0, 0, .18) 0 1px, transparent 1px 3px);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, .7), 0 0 0 1px rgba(0, 0, 0, .4);
+  color: var(--lcd-text); text-shadow: 0 0 6px color-mix(in srgb, var(--lcd-text) 55%, transparent);
+}
+.lcd-window .pos, .top-transport .lcd-pos { text-transform: uppercase; }
+.lcd-window .pos { background: none; box-shadow: none; padding: 0; min-width: 12ch; font-size: 26px; text-align: left; }
+.lcd-field { display: inline-flex; align-items: baseline; gap: 4px; font: 600 9px var(--display); text-transform: uppercase; letter-spacing: .12em; color: color-mix(in srgb, var(--lcd-text) 70%, transparent); }
+.lcd-field input, .lcd-field select {
+  font: 22px/1 var(--lcd-font); color: var(--lcd-text); background: transparent; border: 0; box-shadow: none; padding: 0;
+  text-shadow: inherit; -moz-appearance: textfield; appearance: none;
+}
+.lcd-field input { width: 3.2ch; }
+.lcd-field select { cursor: pointer; padding-right: 2px; }
+.lcd-field select option { color: initial; background: initial; font: initial; }
+.lcd-field input::-webkit-inner-spin-button, .lcd-field input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.lcd-field input:focus, .lcd-field select:focus { outline: 1px dashed color-mix(in srgb, var(--lcd-text) 60%, transparent); outline-offset: 2px; }
+
+/* Other tabs: the same keys, a size smaller, with the position in a small LCD. */
+.top-transport { display: inline-flex; align-items: stretch; gap: 5px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 70%, var(--panel)); box-shadow: inset 0 2px 4px rgba(0, 0, 0, .18); }
+.top-transport .tkey { width: 40px; height: 34px; padding-top: 6px; }
+.top-transport .tkey small { display: none; }
+.top-transport .lcd-pos { display: inline-flex; align-items: center; font-size: 18px; min-width: 11ch; padding: 0 10px; justify-content: center; }
+.click-key #click-sum { display: none; }

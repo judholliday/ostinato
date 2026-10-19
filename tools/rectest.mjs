@@ -74,4 +74,11 @@ import { cut, encodeWav, findOnset, AudioIn } from '../js/rec/audio.js';
   const a = t.chans[0], step = 2 * Math.PI * f / sr;
   assert.ok(Math.abs(a[loop.end - 1] - a[loop.start - 1]) < 0.05 && Math.abs(a[loop.start] - a[loop.start - 1]) < Math.sin(step) * 0.5 + 0.01, 'the loop joins smoothly');
 }
+{
+  // Note names in sample-pack file names (Load multi-sample…).
+  const { noteInName } = await import('../js/rec/sampleinst.js');
+  const cases = { 'Piano_C4_mf.wav': 60, 'piano-c#3.wav': 49, 'Bb2 soft.wav': 46, 'Grand A-1.wav': 9, 'Cs3.wav': 49, 'XL Bell (C3).wav': 48, 'piano_060.wav': 60,
+    'Steinway F#5 pp.flac': 78, 'sample v127.wav': null, 'Untitled.wav': null };
+  for (const [name, note] of Object.entries(cases)) assert.equal(noteInName(name), note, name);
+}
 console.log('ok — Recorder audio');

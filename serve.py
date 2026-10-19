@@ -130,6 +130,9 @@ def pattern_schema(n, names, pool):
             'vel': {'type': 'integer', 'minimum': 1, 'maximum': 127},
             'gate': {'type': 'integer', 'minimum': 1, 'maximum': 100},
             'len': {'type': 'integer', 'minimum': 1, 'maximum': 64},
+            'vels': {'type': 'array', 'items': {'type': 'integer', 'minimum': 1, 'maximum': 127}, 'maxItems': 8},
+            'prob': {'type': 'integer', 'minimum': 1, 'maximum': 100},
+            'rat': {'type': 'integer', 'minimum': 1, 'maximum': 8},
         },
         'required': ['i', 'notes', 'vel', 'gate', 'len'],
     }
@@ -708,9 +711,9 @@ def list_clips():
 def save_clip(req):
     """Saves a clip: over its own file when it has one (editing), else as a new clips/<name>.json."""
     c = req.get('clip')
-    if not isinstance(c, dict) or not isinstance(c.get('notes'), list) or len(json.dumps(c)) > 1_000_000:
+    if not isinstance(c, dict) or not isinstance(c.get('notes'), list) or len(json.dumps(c)) > 8_000_000:
         raise ValueError('not a clip')
-    keep = ('format', 'version', 'name', 'bpm', 'length', 'notes', 'sound', 'source', 'created')
+    keep = ('format', 'version', 'name', 'bpm', 'length', 'notes', 'sound', 'source', 'created', 'backing')
     file = str(c.get('file') or '')
     c = {k: c[k] for k in keep if k in c}
     c['name'] = str(c.get('name') or 'Clip')[:60]
@@ -846,7 +849,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(403, {'error': 'forbidden'})
         try:
             length = int(self.headers.get('Content-Length') or 0)
-            req = json.loads(self.rfile.read(min(length, 2_000_000)))
+            req = json.loads(self.rfile.read(min(length, 10_000_000)))  # clips with a backing can be a few MB
         except ValueError:
             return self._json(400, {'error': 'bad request'})
         if self.path == '/api/ai-settings':

@@ -25,7 +25,7 @@ strict = p.api_schema(schema)
 s = json.dumps(strict)
 assert 'minItems' not in s and 'maximum' not in s and 'additionalProperties": false' in s
 step = strict['properties']['options']['items']['properties']['patterns']['items']['properties']['steps']['items']
-assert step['required'] == ['i', 'notes', 'vel', 'gate', 'len'] and step['additionalProperties'] is False
+assert step['required'] == ['i', 'notes', 'vel', 'gate', 'len', 'vels', 'prob', 'rat'] and step['additionalProperties'] is False
 
 # parse_answer(): finds the JSON in fenced or chatty replies, and reports what's wrong.
 item = {'type': 'object', 'required': ['a'], 'properties': {'a': {'type': 'integer'}}}

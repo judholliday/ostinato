@@ -2,10 +2,18 @@
 // a badge on Capture when new takes are waiting there (⌥R goes to Capture and back), and
 // ⇅ Transfer, which exports or imports your songs, Lab instruments, patterns and clips
 // (core/transfer.js). The travel version has no Instruments tab (the XL editor needs the server).
+import { icon, fillIcons } from './icons.js';
 import { STATIC } from './mode.js';
 import { exportBundle, readBundle, importBundle } from './transfer.js';
 
 export const VIEWS = [['sequencer', 'Sequencer'], ['lab', 'Sound Lab'], ['capture', 'Capture'], ['instruments', 'Instruments']];
+
+fillIcons(document); // <span data-icon> in the page's own HTML
+
+// The sticky top bar's height, as --bar-h, so sticky panels below it (the Sound Lab's sound list)
+// fit the rest of the window instead of running under the bar or off the bottom.
+const bar = document.querySelector('.bar');
+if (bar && 'ResizeObserver' in window) new ResizeObserver(() => document.documentElement.style.setProperty('--bar-h', `${bar.offsetHeight}px`)).observe(bar);
 
 const nav = document.querySelector('.app-nav');
 if (nav && top !== self) {
@@ -32,15 +40,55 @@ if (nav && top !== self) {
     badge.title = `${e.data.count} new take${e.data.count > 1 ? 's' : ''}`;
   });
 
-  const xfer = Object.assign(document.createElement('button'), { className: 'xfer-btn ghost', type: 'button', textContent: '⇅ Transfer',
+  const xfer = Object.assign(document.createElement('button'), { className: 'xfer-btn ghost', type: 'button', innerHTML: `${icon('transfer')} Transfer`,
     title: 'Move your songs, Lab instruments, patterns and clips between home and the travel version' });
   nav.after(xfer);
+
+  // The LCD: what the sequencer is doing, which track your keys play, and the XL's sound, from
+  // the messages the pages already send each other (asked for once at load).
+  const lcd = Object.assign(document.createElement('div'), { className: 'lcd lcd-status', title: 'Playing or stopped, the track your keys go to, and the sound on the microKORG XL' });
+  const st = { playing: false, bpm: null, mode: 'loop', track: null, pattern: null, xl: null, xlTrack: null, armed: null };
+  const pad = (t, n) => String(t).toUpperCase().slice(0, n).padEnd(n);
+  const show = () => {
+    const top = `${st.playing ? '▶' : '■'} ${st.playing ? (st.mode === 'song' ? 'SONG' : `LOOP ${st.pattern || ''}`) : 'STOPPED'}`;
+    // Keys go to the armed track (notes are added) or else play the selected one.
+    const keys = st.armed ? `REC ▸ ${pad(st.armed, 10)}` : st.track ? `KEYS ▸ ${pad(st.track, 9)}` : 'KEYS ▸ –        ';
+    const xl = STATIC ? '' : st.xlTrack ? `XL ▸ ${pad(st.xlTrack, 8)}` : st.xl ? `XL ▸ ${pad(st.xl, 8)}` : '';
+    lcd.textContent = `${pad(top, 13)} ${st.bpm ? `${st.bpm} BPM` : ''}\n${keys} ${xl}`;
+  };
+  xfer.before(lcd);
+  show();
+  // Play, Stop, Rec and the position on every tab but the Sequencer (which has its own): they
+  // drive the sequencer, so playback is never more than a click away.
+  let tp = null;
+  if (here !== 'sequencer' && ch) {
+    tp = Object.assign(document.createElement('div'), { className: 'top-transport' });
+    tp.innerHTML = `<button class="tkey" data-t="play" title="Play the sequencer"><i class="led"></i>${icon('play')}</button><button class="tkey" data-t="stop" title="Stop"><i class="led"></i>${icon('stop')}</button>
+      <button class="tkey" data-t="rec" title="Record what you play on your MIDI keyboard into the sequencer's selected track (while playing)"><i class="led"></i>${icon('rec')}</button><span class="pos lcd-pos">—</span>`;
+    tp.addEventListener('click', e => { const b = e.target.closest('[data-t]'); if (b) ch.postMessage({ type: 'transport-cmd', cmd: b.dataset.t }); });
+    lcd.before(tp);
+  }
+  ch?.addEventListener('message', e => {
+    const m = e.data;
+    if (m?.type === 'transport') {
+      st.playing = !!m.playing;
+      if (m.anchor?.bpm) st.bpm = m.anchor.bpm;
+      tp?.querySelector('[data-t="play"]').classList.toggle('playing', st.playing);
+      tp?.querySelector('[data-t="rec"]').classList.toggle('rec-on', !!m.rec);
+    } else if (m?.type === 'pos') { if (tp) tp.querySelector('.lcd-pos').textContent = m.text; return; }
+    else if (m?.type === 'seq-state') Object.assign(st, { bpm: m.bpm, mode: m.mode, track: m.track?.name, pattern: m.track?.pattern, xlTrack: m.xlTrack, armed: m.armed });
+    else if (m?.type === 'program' && m.name) st.xl = m.name;
+    else return;
+    show();
+  });
+  ch?.postMessage({ type: 'get-seq-state' });
+  if (!STATIC) ch?.postMessage({ type: 'get-program' });
 
   // The Transfer dialog.
   const dlg = document.createElement('dialog');
   dlg.className = 'xfer-dialog';
   dlg.innerHTML = `
-    <h3>⇅ Transfer</h3>
+    <h3>${icon('transfer')} Transfer</h3>
     <p>${STATIC
       ? 'This is the travel version: your work is kept in this browser. <b>Export</b> it to a file to bring home, and <b>Import</b> a file exported at home.'
       : 'Take your work with you: <b>Export</b> your songs, Lab instruments and saved patterns to a file and open it in the travel version. Back home, <b>Import</b> the file exported there.'}</p>

@@ -1,6 +1,7 @@
 // Instant pattern ideas without the AI (the 🎲 button): rhythm rules plus the song's scale,
 // shaped by the track's role. Every call gives a different idea; pass `rng` to repeat one.
 import { SCALES, NOTE_NAMES, ROLES, cleanPattern } from './model.js';
+import { STYLES, styleById, styleSteps } from './styles.js';
 
 // Small seedable random generator, so tests can repeat a result.
 export function seeded(seed) {
@@ -91,7 +92,8 @@ export function randomIdea(opts) {
   return idea;
 }
 
-function makeIdea({ role, length = 16, scale = null, density = 'medium', register = 'auto', pool = false, rng = Math.random }) {
+// style (drums): '' = the basic generator, 'any' = a random style from styles.js, or a style's id.
+function makeIdea({ role, length = 16, scale = null, density = 'medium', register = 'auto', pool = false, style = '', rng = Math.random }) {
   const r = (lo, hi) => lo + Math.floor(rng() * (hi - lo + 1));
   const pick = list => list[Math.floor(rng() * list.length)];
   const chance = p => rng() < p;
@@ -121,6 +123,13 @@ function makeIdea({ role, length = 16, scale = null, density = 'medium', registe
     const feel = pick(FEELS[density] || FEELS.medium), gate = pick([[25, 45], [40, 65], [70, 95]]);
     phrase(feel, L, d, rng).forEach((on, i) => { if (on) put(i, [], accent(i), r(...gate)); });
     return finish(`${FEEL_NAMES[feel]} rhythm, ${steps.length} hits`, 'Note-pool rhythm');
+  }
+
+  const drumStyle = role === 'drums' && (style === 'any' ? pick(STYLES) : styleById(style));
+  if (drumStyle) {
+    const out = styleSteps(drumStyle, { length: L, density, rng });
+    steps.push(...out.steps);
+    return finish(out.what, 'Drums', out.laneLen);
   }
 
   switch (role) {
@@ -240,9 +249,9 @@ function makeIdea({ role, length = 16, scale = null, density = 'medium', registe
   }
   return finish(what);
 
-  function finish(text, label = ROLES[role] || 'Lead / riff') {
+  function finish(text, label = ROLES[role] || 'Lead / riff', laneLen = null) {
     const keyName = `${NOTE_NAMES[sc.root]} ${sc.type}${scale ? '' : ' (no scale set)'}`;
-    const pattern = cleanPattern({ steps }, { length: L, onlyBelow: L });
+    const pattern = cleanPattern({ steps, ...(laneLen ? { laneLen } : {}) }, { length: L, onlyBelow: L });
     return {
       summary: `🎲 ${label}: ${text}${role === 'drums' || pool ? '' : `, in ${keyName}`}.`,
       pattern, rhythm: pattern.steps.map(s => s.i).join(','),

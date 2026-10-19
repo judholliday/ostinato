@@ -659,3 +659,18 @@ p.set-hint { grid-column: auto; }
 .sp-empty { padding: 6px 0; }
 .sp-foot { font-size: 11px; }
 .sound-btn-pick { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* the spectrogram editor (core/spectroedit.js), on any page */
+.spectro { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .55); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.spectro-box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); width: min(1200px, 100%); max-height: 100%; overflow: auto; padding: 10px 14px 12px; box-shadow: 0 12px 40px rgba(0, 0, 0, .4); }
+.spectro-head, .spectro-tools, .spectro-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.spectro-head .spacer, .spectro-tools .spacer, .spectro-foot .spacer { flex: 1; }
+.spectro-tools { margin: 8px 0; }
+.spectro-tools input[type=range] { width: 110px; vertical-align: middle; }
+.spectro-view { position: relative; height: min(56vh, 520px); border-radius: 6px; overflow: hidden; background: #0c0820; }
+.spectro-c, .spectro-o { position: absolute; inset: 0; width: 100%; height: 100%; }
+.spectro-o { cursor: crosshair; touch-action: none; }
+.spectro-y span { position: absolute; left: 4px; transform: translateY(-100%); font: 10px var(--mono); color: rgba(255, 255, 255, .7); pointer-events: none; }
+.spectro-foot { margin-top: 8px; }
+.spectro-note { font-size: 12px; color: var(--ok); }
+.spectro-note.err, .spectro .err { color: var(--err); }

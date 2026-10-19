@@ -3,6 +3,7 @@
 // one. Your own sounds are the saved instruments (data/instruments/). No DOM here.
 import { STARTERS, cleanPatch, defaultParams } from './patch.js';
 import { DEFAULT_PADS, copyPads } from './drums.js';
+import { KEYS } from './keys.js';
 
 // The types the library groups by (a sound can have any other type too; these come first).
 export const TYPES = ['Bass', 'Lead', 'Pad', 'Keys', 'Pluck', 'Bell', 'Strings', 'Brass', 'Organ', 'Drums', 'FX', 'Other'];
@@ -26,18 +27,21 @@ const mod = (type, id, params = {}) => ({ id, type, params: { ...defaultParams(t
 const chain = (...ids) => ids.slice(1).map((to, i) => ({ from: ids[i], to }));
 // A kit: the original pads with some changed ({ note: { settings } }).
 const kitPads = changes => { const pads = copyPads(DEFAULT_PADS); for (const [n, c] of Object.entries(changes)) Object.assign(pads[n], c); return pads; };
+const COMP = () => mod('compressor', 'comp1', { threshold: -30, ratio: 3, attack: 0.02, release: 0.3, gain: 7 });
+// A limiter at the end of spiky sounds (crushed FM, stuttered drums) keeps their peaks in line.
+const LIMIT = () => mod('compressor', 'limit1', { threshold: -10, ratio: 12, attack: 0.001, release: 0.1, gain: 0 });
 const tom909 = (name, f) => ({ name, t1Level: 1, t1Wave: 'sine', t1Pitch: f, t1Sweep: 7, t1Bend: 0.08, t1Decay: 0.4, nLevel: 0.12, nFilter: 'lowpass', nFreq: 3000, nDecay: 0.05 });
 
 // The starting points (patch.js) plus more, one or more of each type.
 const MORE = [
   {
-    name: 'Sub Bass', type: 'Bass', voices: 4,
+    name: 'Sub Bass', play: 'mono', glide: 0.03, type: 'Bass', voices: 4,
     modules: [mod('osc', 'osc1', { wave: 'sine', octave: -1, level: 0.9 }), mod('osc', 'osc2', { wave: 'triangle', level: 0.25 }),
       mod('amp', 'amp1', { attack: 0.004, decay: 0.3, sustain: 0.9, release: 0.12 })],
     audio: [{ from: 'osc1', to: 'amp1' }, { from: 'osc2', to: 'amp1' }, { from: 'amp1', to: 'out' }],
   },
   {
-    name: 'Acid Bass', type: 'Bass', voices: 2,
+    name: 'Acid Bass', play: 'legato', glide: 0.07, type: 'Bass', voices: 2,
     modules: [mod('osc', 'osc1', { wave: 'saw', octave: -1, level: 0.7 }), mod('filter', 'filter1', { cutoff: 260, resonance: 12, keytrack: 0.5 }),
       mod('env', 'env1', { attack: 0.002, decay: 0.22, sustain: 0, release: 0.1 }), mod('drive', 'drive1', { amount: 0.45 }),
       mod('amp', 'amp1', { attack: 0.002, decay: 0.3, sustain: 0.8, release: 0.06 })],
@@ -51,7 +55,7 @@ const MORE = [
     audio: [{ from: 'op2', to: 'op1' }, { from: 'op1', to: 'out' }],
   },
   {
-    name: 'Saw Lead', type: 'Lead', voices: 4,
+    name: 'Saw Lead', play: 'legato', glide: 0.08, type: 'Lead', voices: 4,
     modules: [mod('osc', 'osc1', { wave: 'saw', fine: -6, level: 0.5 }), mod('osc', 'osc2', { wave: 'saw', fine: 6, level: 0.5 }),
       mod('filter', 'filter1', { cutoff: 2800, resonance: 3, keytrack: 0.7 }), mod('lfo', 'lfo1', { rate: 5.5, delay: 0.3, depth: 0 }),
       mod('amp', 'amp1', { attack: 0.01, decay: 0.3, sustain: 0.85, release: 0.2 }), mod('delay', 'delay1', { time: 0.3, feedback: 0.3, mix: 0.2 })],
@@ -59,7 +63,7 @@ const MORE = [
     mod: [{ from: 'lfo1', to: 'osc1.pitch', amount: 30 }, { from: 'lfo1', to: 'osc2.pitch', amount: 30 }, { from: 'wheel', to: 'lfo1.depth', amount: 1 }],
   },
   {
-    name: 'Square Lead', type: 'Lead', voices: 4,
+    name: 'Square Lead', play: 'mono', type: 'Lead', voices: 4,
     modules: [mod('osc', 'osc1', { wave: 'pulse', pw: 0.3, level: 0.6 }), mod('osc', 'osc2', { wave: 'square', octave: -1, level: 0.25 }),
       mod('filter', 'filter1', { slope: '12', cutoff: 3500, resonance: 1.5 }), mod('lfo', 'lfo1', { wave: 'triangle', rate: 0.5 }),
       mod('amp', 'amp1', { attack: 0.005, decay: 0.2, sustain: 0.9, release: 0.15 })],
@@ -92,7 +96,7 @@ const MORE = [
     name: 'Nylon Pluck', type: 'Pluck', voices: 8,
     modules: [mod('osc', 'osc1', { wave: 'triangle', level: 0.6 }), mod('osc', 'osc2', { wave: 'saw', level: 0.2 }),
       mod('filter', 'filter1', { cutoff: 700, resonance: 1, keytrack: 0.8 }), mod('env', 'env1', { attack: 0.001, decay: 0.12, sustain: 0, release: 0.1 }),
-      mod('amp', 'amp1', { attack: 0.001, decay: 0.9, sustain: 0, release: 0.35, velocity: 0.7 }), mod('reverb', 'reverb1', { size: 1.5, mix: 0.18 })],
+      mod('amp', 'amp1', { keytrack: 0.5, attack: 0.001, decay: 0.9, sustain: 0, release: 0.35, velocity: 0.7 }), mod('reverb', 'reverb1', { size: 1.5, mix: 0.18 })],
     audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'reverb1', 'out')],
     mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 3600 }],
   },
@@ -176,6 +180,137 @@ const MORE = [
     }) }, mod('eq', 'eq1', { low: 3, high: -6 }), mod('compressor', 'comp1', { threshold: -18, ratio: 4, attack: 0.005, release: 0.15, gain: 0 })],
     audio: chain('drums1', 'eq1', 'comp1', 'out'),
   },
+
+  // ---- with the newer effects: Distortion, Bitcrusher, Stutter, Freeze ----
+  {
+    name: 'Fuzz Bass', play: 'mono', type: 'Bass', voices: 2,
+    modules: [mod('osc', 'osc1', { wave: 'saw', octave: -1, level: 0.6 }), mod('osc', 'osc2', { wave: 'square', octave: -2, level: 0.45 }),
+      mod('filter', 'filter1', { cutoff: 900, resonance: 2, keytrack: 0.4 }), mod('env', 'env1', { attack: 0.002, decay: 0.3, sustain: 0.3, release: 0.1 }),
+      mod('amp', 'amp1', { attack: 0.003, decay: 0.4, sustain: 0.85, release: 0.08 }),
+      mod('shaper', 'fuzz1', { curve: 'tube', drive: 9, tone: 3200, mix: 1, level: 0.55 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'fuzz1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 2000 }],
+  },
+  {
+    name: 'Folded Lead', play: 'legato', glide: 0.12, type: 'Lead', voices: 4,
+    modules: [mod('osc', 'osc1', { wave: 'sine', level: 0.8 }), mod('osc', 'osc2', { wave: 'triangle', octave: 1, fine: 4, level: 0.3 }),
+      mod('lfo', 'lfo1', { rate: 5.4, delay: 0.4, depth: 0 }),
+      mod('amp', 'amp1', { attack: 0.01, decay: 0.4, sustain: 0.8, release: 0.25 }),
+      mod('shaper', 'fold1', { curve: 'fold', drive: 5, tone: 7000, mix: 1, level: 0.5 }), mod('delay', 'delay1', { time: 0.33, feedback: 0.35, mix: 0.22 })],
+    audio: [{ from: 'osc1', to: 'amp1' }, { from: 'osc2', to: 'amp1' }, ...chain('amp1', 'fold1', 'delay1', 'out')],
+    mod: [{ from: 'lfo1', to: 'osc1.pitch', amount: 25 }, { from: 'wheel', to: 'lfo1.depth', amount: 1 }, { from: 'vel', to: 'osc1.level', amount: 0.3 }],
+  },
+  {
+    name: 'Octave Fuzz Lead', play: 'legato', glide: 0.06, type: 'Lead', voices: 2,
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.7 }), mod('filter', 'filter1', { cutoff: 2400, resonance: 4, keytrack: 0.6 }),
+      mod('amp', 'amp1', { attack: 0.005, decay: 0.3, sustain: 0.9, release: 0.2 }),
+      mod('shaper', 'fuzz1', { curve: 'rectify', drive: 6, tone: 4500, mix: 1, level: 0.5 }), mod('reverb', 'reverb1', { type: 'room', size: 1.2, mix: 0.18 })],
+    audio: chain('osc1', 'filter1', 'amp1', 'fuzz1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Lo-Fi Keys', type: 'Keys', voices: 8, volume: 0.6,
+    modules: [mod('fmop', 'op1', { ratio: 1, fm: 1.1, attack: 0.002, decay: 2, sustain: 0.25, release: 0.4, level: 0.7 }),
+      mod('fmop', 'op2', { ratio: 1, decay: 1.2, sustain: 0.2, release: 0.4, velocity: 0.9, level: 0.6 }),
+      mod('crusher', 'crush1', { bits: 7, hold: 3, mix: 0.75 }), mod('chorus', 'chorus1', { rate: 0.6, depth: 0.7, mix: 0.4 }),
+      mod('eq', 'eq1', { low: 2, high: -5 }), LIMIT()],
+    audio: [{ from: 'op2', to: 'op1' }, ...chain('op1', 'crush1', 'chorus1', 'eq1', 'limit1', 'out')],
+  },
+  {
+    name: 'Chip Lead', play: 'legato', glide: 0.04, type: 'Lead', voices: 1,
+    modules: [mod('osc', 'osc1', { wave: 'pulse', pw: 0.25, level: 0.6 }), mod('lfo', 'lfo1', { rate: 6.5, delay: 0.25, depth: 1 }),
+      mod('amp', 'amp1', { attack: 0.001, decay: 0.2, sustain: 0.7, release: 0.05 }),
+      mod('crusher', 'crush1', { bits: 4, hold: 6, mix: 1 }), mod('delay', 'delay1', { mode: 'ping-pong', time: 0.25, feedback: 0.3, mix: 0.25 })],
+    audio: chain('osc1', 'amp1', 'crush1', 'delay1', 'out'),
+    mod: [{ from: 'lfo1', to: 'osc1.pitch', amount: 30 }],
+  },
+  {
+    name: 'Stutter Pluck', type: 'Pluck', voices: 8, volume: 1,
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.55 }), mod('osc', 'osc2', { wave: 'square', octave: 1, level: 0.2 }),
+      mod('filter', 'filter1', { cutoff: 500, resonance: 6 }), mod('env', 'env1', { attack: 0.001, decay: 0.15, sustain: 0, release: 0.12 }),
+      mod('amp', 'amp1', { keytrack: 0.4, attack: 0.001, decay: 0.45, sustain: 0, release: 0.25 }),
+      mod('stutter', 'stut1', { size: 0.125, chance: 0.35, repeats: 3, mix: 1 }), mod('delay', 'delay1', { time: 0.375, feedback: 0.3, mix: 0.2 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'stut1', 'delay1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 5200 }],
+  },
+  {
+    name: 'Glitch Pad', type: 'Pad', voices: 8,
+    modules: [mod('osc', 'osc1', { wave: 'saw', fine: -9, level: 0.45 }), mod('osc', 'osc2', { wave: 'saw', fine: 9, level: 0.45 }),
+      mod('filter', 'filter1', { cutoff: 1600, resonance: 2, keytrack: 0.3 }), mod('lfo', 'lfo1', { rate: 0.2, depth: 1 }),
+      mod('amp', 'amp1', { attack: 0.8, decay: 1, sustain: 0.85, release: 1.8 }),
+      mod('stutter', 'stut1', { size: 0.06, chance: 0.18, repeats: 6, mix: 1 }), mod('reverb', 'reverb1', { type: 'hall', size: 3.5, mix: 0.35 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'stut1', 'reverb1', 'out')],
+    mod: [{ from: 'lfo1', to: 'filter1.cutoff', amount: 900 }],
+  },
+  {
+    name: 'Freeze Pad', type: 'Pad', voices: 8,
+    modules: [mod('osc', 'osc1', { wave: 'saw', fine: -6, level: 0.4 }), mod('osc', 'osc2', { wave: 'triangle', octave: 1, fine: 6, level: 0.35 }),
+      mod('filter', 'filter1', { cutoff: 2200, resonance: 1, keytrack: 0.4 }),
+      mod('amp', 'amp1', { attack: 0.4, decay: 1, sustain: 0.8, release: 1.2 }),
+      mod('freeze', 'freeze1', { state: 'listen', size: 0.6, mix: 1 }), mod('reverb', 'reverb1', { type: 'hall', size: 4.5, mix: 0.4 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'freeze1', 'reverb1', 'out')],
+  },
+  {
+    name: 'Dusty Kit', type: 'Drums', voices: 16, volume: 0.7,
+    modules: [{ ...mod('drums', 'drums1', { tone: 0.35, decay: 0.9 }), pads: kitPads({ 36: { drive: 0.3, click: 0.25 }, 38: { nFilter: 'bandpass', nFreq: 1800 } }) },
+      mod('crusher', 'crush1', { bits: 9, hold: 3, mix: 0.7 }), mod('shaper', 'sat1', { curve: 'soft', drive: 2.5, tone: 6000, mix: 1, level: 0.75 }),
+      mod('eq', 'eq1', { low: 2, high: -3 }), LIMIT()],
+    audio: chain('drums1', 'crush1', 'sat1', 'eq1', 'limit1', 'out'),
+  },
+  {
+    name: 'Glitch Kit', type: 'Drums', voices: 16, volume: 0.7,
+    modules: [{ ...mod('drums', 'drums1', { tone: 0.6, decay: 0.7 }), pads: kitPads({ 42: { t1Level: 0.2, t1Wave: 'metal', t1Pitch: 420, t1Decay: 0.05 } }) },
+      mod('stutter', 'stut1', { size: 0.0625, chance: 0.25, repeats: 4, mix: 1 }), mod('crusher', 'crush1', { bits: 6, hold: 2, mix: 0.35 }),
+      mod('compressor', 'comp1', { threshold: -16, ratio: 4, gain: 0 }), LIMIT()],
+    audio: chain('drums1', 'stut1', 'crush1', 'comp1', 'limit1', 'out'),
+  },
+  {
+    name: 'Broken Radio', type: 'FX', voices: 4, volume: 1,
+    modules: [mod('osc', 'osc1', { wave: 'square', level: 0.7 }), mod('noise', 'noise1', { level: 0.35 }),
+      mod('filter', 'filter1', { type: 'bandpass', cutoff: 1400, resonance: 6, keytrack: 0.3 }), mod('lfo', 'lfo1', { wave: 'random', rate: 7, depth: 1 }),
+      mod('amp', 'amp1', { attack: 0.02, decay: 0.5, sustain: 0.8, release: 0.3 }),
+      mod('shaper', 'drive1', { curve: 'soft', drive: 6, tone: 5000, mix: 1, level: 1 }),
+      mod('crusher', 'crush1', { bits: 3, hold: 12, mix: 0.8 }), mod('tremolo', 'trem1', { rate: 9, depth: 0.5 })],
+    // Driven hard before the crusher: at 3 bits a quiet signal would round to nothing.
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'noise1', to: 'filter1' }, ...chain('filter1', 'amp1', 'drive1', 'crush1', 'trem1', 'out')],
+    mod: [{ from: 'lfo1', to: 'filter1.cutoff', amount: 1100 }],
+  },
+
+  // ---- granular: clouds made from the factory samples (samples/) ----
+  // Grain clouds come out quiet (many soft overlapping grains), so a compressor lifts them.
+  {
+    name: 'Grain Choir', volume: 1, type: 'Pad', voices: 6,
+    modules: [mod('granular', 'gr1', { file: 'factory/Vowel Ah (C4).wav', root: 60, position: 0.45, spread: 0.25, scan: 0.04, size: 0.14, density: 40, jitter: 8, width: 0.9, level: 0.9 }),
+      mod('amp', 'amp1', { attack: 0.9, decay: 1, sustain: 0.9, release: 2.5, level: 0.8 }), COMP(), mod('reverb', 'reverb1', { type: 'hall', size: 4, mix: 0.35 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Glass Cloud', volume: 1, type: 'Bell', voices: 6,
+    modules: [mod('granular', 'gr1', { file: 'factory/Glass Bell (C5).wav', root: 72, position: 0.08, spread: 0.35, scan: 0.1, size: 0.06, density: 55, jitter: 12, width: 1, level: 0.8 }),
+      mod('amp', 'amp1', { attack: 0.3, decay: 1.5, sustain: 0.7, release: 3, level: 0.8 }), COMP(),
+      mod('delay', 'delay1', { mode: 'ping-pong', time: 0.42, feedback: 0.4, tone: 3500, mix: 0.3 }), mod('reverb', 'reverb1', { type: 'plate', size: 4, mix: 0.35 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'delay1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Wind Grains', volume: 1, type: 'FX', voices: 4,
+    modules: [mod('granular', 'gr1', { file: 'factory/Wind.wav', root: 60, position: 0.3, spread: 0.4, scan: 0.25, size: 0.25, density: 18, jitter: 300, width: 1, level: 1 }),
+      mod('filter', 'filter1', { type: 'bandpass', cutoff: 1200, resonance: 3, keytrack: 0.8 }),
+      mod('amp', 'amp1', { attack: 1.2, decay: 1, sustain: 1, release: 2.5, level: 0.9 }), COMP(), mod('reverb', 'reverb1', { type: 'hall', size: 5, mix: 0.4 })],
+    audio: chain('gr1', 'filter1', 'amp1', 'comp1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Slow Music Box', volume: 1, type: 'Pad', voices: 4,
+    modules: [mod('granular', 'gr1', { file: 'factory/Music Box Phrase (C5).wav', root: 72, position: 0, spread: 0.03, scan: 0.2, size: 0.18, density: 30, jitter: 0, width: 0.8, level: 0.9 }),
+      mod('amp', 'amp1', { attack: 0.5, decay: 1, sustain: 1, release: 2, level: 0.8 }), COMP(), mod('reverb', 'reverb1', { type: 'hall', size: 5, mix: 0.4 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Crushed Grains', volume: 1, type: 'FX', voices: 4,
+    modules: [mod('granular', 'gr1', { file: 'factory/Glass Bell (C5).wav', root: 72, position: 0.2, spread: 0.6, scan: 0, size: 0.02, density: 70, jitter: 500, width: 1, level: 0.9 }),
+      mod('amp', 'amp1', { attack: 0.05, decay: 0.8, sustain: 0.7, release: 1, level: 0.8 }), COMP(),
+      mod('crusher', 'crush1', { bits: 5, hold: 4, mix: 0.7 }), mod('stutter', 'stut1', { size: 0.09, chance: 0.3, repeats: 3, mix: 1 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', time: 0.27, feedback: 0.35, mix: 0.25 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'crush1', 'stut1', 'delay1', 'out'),
+  },
 ].map(cleanPatch);
 
-export const FACTORY = [...STARTERS, ...MORE];
+export const FACTORY = [...STARTERS, ...MORE, ...KEYS.map(cleanPatch)];

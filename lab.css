@@ -142,6 +142,8 @@
 .scope-pane { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px 4px; }
 .scope-h { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .scope-h .hint { text-transform: none; letter-spacing: 0; font-size: 11px; }
+.spec-mode { position: absolute; top: 4px; right: 8px; font-size: 11px; }
+.spec-mode button { padding: 1px 8px; font-size: 11px; }
 .scope canvas { display: block; width: 100%; height: 110px; }
 @media (max-width: 700px) { .scope { grid-template-columns: 1fr; } }
 
@@ -150,7 +152,7 @@
 .lab-layout.lib-hidden { grid-template-columns: minmax(0, 1fr); }
 .lab-layout.lib-hidden .library { display: none; }
 .lab-main { min-width: 0; }
-.library { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 10px 14px;
+.library { position: sticky; top: var(--bar-h, 0px); height: calc(100vh - var(--bar-h, 0px)); display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 10px 14px;
   border-right: 1px solid var(--line); background: var(--panel); }
 .lib-head { display: flex; align-items: center; gap: 6px; }
 .lib-head .spacer { flex: 1; }
@@ -163,7 +165,7 @@
 .lib-types .chip span { color: var(--muted); }
 .lib-types .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .lib-types .chip.on span { color: inherit; opacity: .8; }
-.lib-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; outline: none; margin: 0 -4px; padding: 0 4px; }
+.library .lib-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; outline: none; margin: 0 -4px; padding: 0 4px; }
 .lib-group { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0 2px; }
 .lib-group:first-child { margin-top: 0; }
 .lib-row { display: flex; align-items: center; gap: 6px; text-align: left; border: 0; background: transparent; padding: 4px 8px; border-radius: 6px; font-size: 13px; }
@@ -177,7 +179,7 @@
 #origin { font-size: 12px; }
 @media (max-width: 800px) {
   .lab-layout { grid-template-columns: minmax(0, 1fr); }
-  .library { position: static; height: auto; max-height: 360px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .library { position: static; height: auto; max-height: 75vh; border-right: 0; border-bottom: 1px solid var(--line); }
 }
 .link-bar { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); font-size: 12px; }
 .link-bar[hidden] { display: none; }
@@ -213,3 +215,22 @@
 .prm.prm-file select { min-width: 0; }
 .sample-wave { display: block; width: 100%; height: 64px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; }
 .zones { font-size: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+
+/* effect racks */
+.rack { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.rack-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rack-head .hint { font-size: 12px; }
+.rack-fx { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--panel-2); }
+.rack-fx.is-off .prms { opacity: .45; }
+.rack-fx-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.rack-add { font-size: 12px; }
+.rack-head .spacer, .rack-fx-head .spacer { flex: 1; }
+.patch-svg .box.unheard rect { stroke-dasharray: 4 3; }
+.patch-svg .box.unheard .bname, .patch-svg .box.unheard .wave, .patch-svg .box.unheard .shape { opacity: .5; }
+.patch-svg .unheard-t { fill: var(--warn); font-weight: 600; }
+.scope-pane { position: relative; }
+.scope-try { position: absolute; left: 50%; top: 58%; transform: translate(-50%, -50%); }
+.unsaved-bar { border-color: var(--warn); }
+.pad b { display: block; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pad-thumb { display: block; width: 100%; height: 22px; background: var(--lcd, transparent); border-radius: 2px; }
+.about { margin: 4px 0 0; font-size: 12px; }

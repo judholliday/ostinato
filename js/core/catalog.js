@@ -19,7 +19,7 @@ export const typeRank = t => (TYPE_ORDER.includes(t) ? TYPE_ORDER.indexOf(t) : T
 // Ostinato Synth's sounds: the factory bank and My Sounds (data/instruments/). Cheap; reload freely.
 export async function synthSounds() {
   let mine = [];
-  try { mine = await storage.list('instruments'); } catch { /* none */ }
+  try { mine = (await storage.list('instruments')).filter(x => x.patch?.kind !== 'rack'); } catch { /* none */ } // racks are effects, not sounds
   return [
     ...mine.map(x => ({ key: `synth:m:${x.file}`, instrument: 'synth', name: x.name, type: typeOf(x.patch), bank: 'My Sounds', mine: true,
       file: x.file, sound: { kind: 'lab', name: x.name, patch: x.patch } })),

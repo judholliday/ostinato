@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="sequencer.css">
   <link rel="stylesheet" href="lab.css">
+  <link rel="stylesheet" href="theme.css">
   <!-- This page runs inside index.html, next to the editor and sequencer. -->
   <script>if (top === self) location.replace('index.html' + location.search + '#lab');</script>
 </head>
@@ -20,7 +21,7 @@
     <span class="spacer"></span>
     <label class="field" title="The keyboard or controller that plays the Lab instrument (e.g. your MPK mini)">MIDI in <select id="keys-in"></select>
       <span id="keys-led" class="keys-led">●</span></label>
-    <button id="learn" class="ghost" title="Map a knob on your controller to a setting: click this, click a setting's slider, then turn the knob">🎛 Learn knob</button>
+    <button id="learn" class="ghost" title="Map a knob on your controller to a setting: click this, click a setting's slider, then turn the knob"><span data-icon="knob"></span> Learn knob</button>
     <button id="panic" class="ghost" title="Silence every note">Silence</button>
     <span id="audio-status" class="status-pill warn" title="Browsers only start sound after a click">Click to enable sound</span>
   </header>
@@ -28,6 +29,7 @@
   <div class="lab-layout" id="lab-layout">
   <aside id="library" class="library" aria-label="Sound library">
     <div id="link-bar" class="link-bar" hidden></div>
+    <div id="unsaved-bar" class="link-bar unsaved-bar" hidden></div>
     <div class="lib-head">
       <b>Ostinato Synth sounds</b><span id="lib-count" class="hint"></span><span class="spacer"></span>
       <button class="small" id="new-sound" title="Start a new sound from Init">+ New</button>
@@ -40,6 +42,7 @@
     <label class="lib-audition hint" title="Play a short note each time you pick a sound"><input type="checkbox" id="lib-audition"> Play a note when I pick one (↑ ↓ to step through)</label>
   </aside>
   <div class="lab-main">
+  <p id="about" class="about hint" hidden></p>
   <section class="filebar">
     <button class="ghost small" id="lib-show" title="Show the sound library">☰ Sounds</button>
     <input id="inst-name" maxlength="40" spellcheck="false" autocomplete="off" aria-label="Instrument name">
@@ -49,6 +52,9 @@
     <button id="save" class="accent" title="Save to My Sounds (data/instruments/, ⌘S)">Save</button>
     <button id="delete" class="ghost" title="Remove it from My Sounds (moved to data/instruments/deleted/)">Delete</button>
     <span class="spacer"></span>
+    <span class="field" title="Poly: chords. Mono: one note at a time, each starting fresh. Legato: one note; notes played while another is held slide to it without starting again (the classic lead and bass playing)">Play
+      <span class="seg-btn" id="play-mode"><button data-play="poly">Poly</button><button data-play="mono">Mono</button><button data-play="legato">Legato</button></span></span>
+    <label class="field" id="glide-field" title="How long a mono or legato note takes to slide to the next pitch (portamento)">Glide <input type="range" id="glide" min="0" max="1000" step="1"> <span id="glide-val"></span></label>
     <label class="field" title="How many notes can sound at once">Voices <input type="number" id="voices" min="1" max="16"></label>
     <label class="field">Volume <input type="range" id="volume" min="0" max="1" step="0.01"></label>
     <button id="undo" class="ghost small" title="Undo (⌘Z)">↶ Undo</button>
@@ -62,13 +68,16 @@
       <span class="hint plain">Drag from a module's dot to another module to connect them. Click a cable to change or remove it, or a module to find its settings.</span></h2>
     <div id="patch-view" class="patch-view"></div>
     <div id="scope" class="scope">
-      <div class="scope-pane"><span class="scope-h">Output wave</span><canvas id="scope-wave"></canvas></div>
-      <div class="scope-pane"><span class="scope-h">Spectrum <span class="hint">bass to treble</span></span><canvas id="scope-spec"></canvas></div>
+      <div class="scope-pane"><span class="scope-h">Output wave</span><canvas id="scope-wave"></canvas>
+        <button class="small scope-try" id="scope-try" title="Play a short note of this sound (or use your keyboard)"><span data-icon="play"></span> Play a note</button></div>
+      <div class="scope-pane"><span class="scope-h">Spectrum <span class="hint" id="spec-hint">bass to treble</span></span>
+        <span class="seg-btn spec-mode"><button data-spec="now" title="How loud each frequency is right now">Now</button><button data-spec="time" title="A spectrogram: time left to right, frequency bottom to top, brighter = louder">Over time</button></span><canvas id="scope-spec"></canvas></div>
     </div>
     <h2 class="section-head">Modules</h2>
     <div id="modules" class="modules"></div>
     <div class="add-row">
       <button class="small add-btn" data-picker title="Add a module">+ Add module</button>
+      <button class="small ghost" id="save-rack" hidden title="Save this sound's effects, in order, as a rack you can add to any sound as one module">Save effects as rack…</button>
       <span class="hint">Audio flows from each module to the ones listed under <b>Audio to</b>, and finally to the output. Envelopes, LFOs, velocity and the mod wheel move other settings through <b>Modulates</b>.</span>
     </div>
 

@@ -3,28 +3,37 @@
 //
 // A song file (data/sequences/<name>.json) looks like:
 //   { format: 'mkxl-seq', version: 1, name, bpm, swing, scale: { root, type } | null,
-//     tracks: [{ name, out, ch, voice, inst, mode, rate, pattern, mute, solo, vol, sound, program,
+//     tracks: [{ name, out, ch, voice, inst, fx, mode, rate, pattern, mute, solo, vol, sound, program,
 //                pool: { notes, order, latch },
-//                patterns: { A: { length, steps: [{ i, notes, vel, gate, len, prob?, rat? }],
-//                                 cc?: [{ cc, glide, steps: [{ i, v }] }] }, B, C, D } }],
-//     song: [{ bars, play: ['A', null, ...] }] }   // play[] has one entry per track; null = silent
+//                patterns: { A: { length, steps: [{ i, notes, vel, gate, len, prob?, rat?, nv? }],
+//                                 cc?: [{ cc, glide, steps: [{ i, v }] }], beats?, laneLen? }, B, C, D } }],
+//     meter: '4/4', song: [{ bars, play: ['A', null, ...], meter? }], masterFx }   // a section's meter overrides the song's   // play[] has one entry per track; null = silent
 //
 // Steps are stored sparsely: only steps that play a note, each with its start index `i`, the MIDI
 // notes it plays (several = a chord; empty on note-pool tracks), velocity 1-127, gate (% of its
 // last step that the note sounds for) and len (how many steps the note is held across). Optional:
-// prob (1-99: the % chance the step plays; absent = always) and rat (2-4: the note repeats that
-// many times across its length, a ratchet; absent = once).
+// prob (1-99: the % chance the step plays; absent = always) and rat (2-8: the note repeats that
+// many times across its length, a ratchet; absent = once), and nv ({ note: velocity } for notes
+// that play at their own velocity, e.g. a ghost snare under a hat; absent = all at `vel`).
+//
+// `beats` (1-16): the pattern's steps are spread evenly over that many beats instead of each being
+// one `rate` long, so 5 steps in 4 beats plays five against the other tracks' four (a polyrhythm).
+// `laneLen` ({ note: steps }): that drum loops on its own shorter length (its hits in steps below
+// it), counting on across the pattern's loops, so a 7-step hat drifts against a 16-step kick
+// (polymeter). Hits past a lane's length are kept but don't play.
 //
 // `cc` lanes send a MIDI Control Change from steps that set a value (0-127), e.g. a filter sweep.
 // With `glide`, the value moves smoothly from each set step to the next (wrapping round).
 //
 // `inst` is a Lab instrument ({ name, patch }, see lab/patch.js) a Computer track plays instead of
 // its test voice.
+// `fx` (Computer tracks) and the song's `masterFx` are effect racks from the Sound Lab, copied in:
+// { name, rack: { name, modules }, mix (0-1), off? (bypassed) }, or null for none.
 // `sound` is the XL sound a track uses ({ name, data: the program's bytes }), sent to the XL when
 // playback starts. `program` (0-127) is a Program Change sent to other gear when playback starts.
 // `vol` (0-127, 100 = normal) scales the computer sound, and is sent to MIDI gear as CC 7.
 
-import { normalizePatch } from '../lab/patch.js';
+import { normalizePatch, cleanRack } from '../lab/patch.js';
 
 export const FORMAT = 'mkxl-seq';
 export const VERSION = 1;
@@ -34,7 +43,18 @@ export const MAX_CC_LANES = 4;
 export const PROBS = [100, 87, 75, 62, 50, 37, 25, 12];
 export const PATTERNS = ['A', 'B', 'C', 'D'];
 export const TICKS_PER_BEAT = 96;
-export const TICKS_PER_BAR = TICKS_PER_BEAT * 4;
+export const TICKS_PER_BAR = TICKS_PER_BEAT * 4; // a 4/4 bar (Capture's take editor still counts these)
+
+// Time signatures: beats per bar / the note a beat is. A bar's length in ticks follows from them.
+export const METERS = ['2/4', '3/4', '4/4', '5/4', '6/4', '7/4', '5/8', '6/8', '7/8', '9/8', '10/8', '11/8', '12/8', '13/8', '15/8'];
+export const meterParts = m => { const [n, d] = String(m || '4/4').split('/').map(Number); return { n: n || 4, d: d || 4 }; };
+export const barTicks = m => { const { n, d } = meterParts(m); return n * TICKS_PER_BEAT * 4 / d; };
+// The meter in force in a song section (its own, else the song's).
+export const meterAt = (song, si) => song.song[si]?.meter || song.meter || '4/4';
+// The song's length in ticks, section by section.
+export const songTicks = song => song.song.reduce((n, sec, si) => n + sec.bars * barTicks(meterAt(song, si)), 0);
+// Steps of a rate in one bar of a meter (e.g. 14 sixteenths in 7/8), or null if it isn't whole.
+export const stepsPerBar = (m, rateTicks) => { const s = barTicks(m) / rateTicks; return Number.isInteger(s) ? s : null; };
 export const CLOCK_TICKS = TICKS_PER_BEAT / 24; // MIDI clock is 24 pulses per quarter note
 export const RATES = { '1/32': 12, '1/16T': 16, '1/16': 24, '1/8T': 32, '1/8': 48, '1/4': 96 };
 export const SWUNG_RATES = new Set(['1/16', '1/8']);
@@ -68,20 +88,23 @@ const clamp = (v, lo, hi, fallback) => {
 export const newPattern = (length = 16) => ({ length, steps: [] });
 
 export function newTrack(index = 0, fields = {}) {
-  return {
+  const t = {
     name: `Track ${index + 1}`, out: COMPUTER, ch: 2, voice: VOICES[index % VOICES.length],
-    mode: 'steps', rate: '1/16', pattern: 'A', mute: false, solo: false, vol: 100, sound: null, program: null, inst: null,
+    mode: 'steps', rate: '1/16', pattern: 'A', mute: false, solo: false, vol: 100, sound: null, program: null, inst: null, fx: null, feel: null,
     pool: { notes: [48, 51, 55], order: 'up', latch: true },
     patterns: Object.fromEntries(PATTERNS.map(p => [p, newPattern()])),
     ...fields,
   };
+  if (!ROLES[t.role]) t.role = guessRole(t);
+  return t;
 }
 
 export function newSong() {
   return {
-    format: FORMAT, version: VERSION, name: 'Untitled', bpm: 120, swing: 50, scale: null,
+    format: FORMAT, version: VERSION, name: 'Untitled', bpm: 120, swing: 50, scale: null, meter: '4/4',
     tracks: [newTrack(0, { name: 'Bass', voice: 'Bass' })],
     song: [{ bars: 4, play: ['A'] }],
+    masterFx: null,
   };
 }
 
@@ -98,6 +121,7 @@ export function normalizeSong(raw) {
       const p = Array.isArray(sec?.play) ? sec.play[ti] : 'A';
       return p === null ? null : PATTERNS.includes(p) ? p : 'A';
     }),
+    ...(METERS.includes(sec?.meter) ? { meter: sec.meter } : {}),
   }));
   if (!song.length) song.push({ bars: 4, play: tracks.map(() => 'A') });
   return {
@@ -105,7 +129,8 @@ export function normalizeSong(raw) {
     name: String(raw.name ?? 'Untitled').slice(0, 60) || 'Untitled',
     bpm: clamp(raw.bpm, 20, 300, 120),
     swing: clamp(raw.swing, 50, 75, 50),
-    scale, tracks, song,
+    scale, meter: METERS.includes(raw.meter) ? raw.meter : '4/4', tracks, song,
+    masterFx: cleanFx(raw.masterFx),
   };
 }
 
@@ -121,16 +146,27 @@ export function cleanPattern(p, { length, onlyBelow = MAX_STEPS } = {}) {
     if (i < 0 || i >= onlyBelow || steps.some(x => x.i === i)) continue;
     const step = { i, notes: [...new Set(midiNotes(s.notes))].sort((a, b) => a - b).slice(0, 8),
       vel: clamp(s.vel, 1, 127, 100), gate: clamp(s.gate, 1, 100, 60), len: clamp(s.len, 1, MAX_STEPS, 1) };
-    const prob = clamp(s.prob, 1, 100, 100), rat = clamp(s.rat, 1, 4, 1);
+    const prob = clamp(s.prob, 1, 100, 100), rat = clamp(s.rat, 1, 8, 1);
     if (prob < 100) step.prob = prob;
     if (rat > 1) step.rat = rat;
+    const nv = {};
+    if (s.nv && typeof s.nv === 'object') for (const n of step.notes) { const x = clamp(s.nv[n], 1, 127, step.vel); if (x !== step.vel) nv[n] = x; }
+    if (Object.keys(nv).length) step.nv = nv;
     steps.push(step);
   }
   steps.sort((a, b) => a.i - b.i);
   // A note can't hold over the next one.
   steps.forEach((s, k) => { if (steps[k + 1]) s.len = Math.min(s.len, steps[k + 1].i - s.i); });
   const cc = cleanLanes(p?.cc, onlyBelow);
-  return cc.length ? { length, steps, cc } : { length, steps };
+  const out = cc.length ? { length, steps, cc } : { length, steps };
+  if (p?.beats) out.beats = clamp(Math.round(p.beats), 1, 16, 4);
+  const laneLen = {};
+  if (p?.laneLen && typeof p.laneLen === 'object') for (const [n, v] of Object.entries(p.laneLen)) {
+    const note = Number(n), len = Number(v);
+    if (Number.isInteger(note) && note >= 0 && note <= 127 && Number.isInteger(len) && len >= 1 && len <= MAX_STEPS) laneLen[note] = len;
+  }
+  if (Object.keys(laneLen).length) out.laneLen = laneLen;
+  return out;
 }
 
 function cleanLanes(raw, onlyBelow = MAX_STEPS) {
@@ -171,6 +207,47 @@ export function cleanSound(s) {
   return { name: String(s.name ?? '').slice(0, 16), data: [...data] };
 }
 
+// An effect rack stored with a track or the song (null when it holds no effects).
+export function cleanFx(x) {
+  if (!x || typeof x !== 'object') return null;
+  const rack = cleanRack(x.rack);
+  if (!rack.modules.length) return null;
+  const mix = Number(x.mix);
+  return { name: String(x.name ?? rack.name).slice(0, 40) || rack.name, rack, mix: Number.isFinite(mix) ? Math.min(1, Math.max(0, mix)) : 1, ...(x.off ? { off: true } : {}) };
+}
+
+// A track's feel (humanise), or null for none: notes moved early or late and played softer or
+// harder at random, plus a fixed shift for the whole track and for single drums.
+//   { time: ±ms at random (0-40), vel: ± velocity at random (0-40), shift: ms (-60…60, + = late),
+//     push: { note: ms } (-60…60), preset?: the preset's name while unchanged }
+export const FEEL_PRESETS = {
+  Tight: null,
+  Loose: { time: 8, vel: 10, shift: 0, push: {} },
+  'Laid back': { time: 5, vel: 8, shift: 0, push: { 38: 22, 39: 22, 42: 10, 44: 10, 46: 10 } },
+  'Drunk (Dilla)': { time: 12, vel: 14, shift: 0, push: { 36: -6, 38: 30, 39: 30, 42: 16, 44: 16, 46: 16, 37: 20 } },
+  'Pushed hats': { time: 4, vel: 8, shift: 0, push: { 42: -12, 44: -12, 46: -12, 51: -12 } },
+  'Behind the beat': { time: 6, vel: 6, shift: 18, push: {} },
+};
+export function cleanFeel(f) {
+  if (!f || typeof f !== 'object') return null;
+  const push = {};
+  for (const [n, v] of Object.entries(f.push && typeof f.push === 'object' ? f.push : {})) {
+    const note = Number(n), ms = Number(v);
+    if (Number.isInteger(note) && note >= 0 && note <= 127 && Number.isFinite(ms) && ms) push[note] = Math.max(-60, Math.min(60, Math.round(ms)));
+  }
+  const out = { time: clamp(Math.round(f.time), 0, 40, 0), vel: clamp(Math.round(f.vel), 0, 40, 0), shift: clamp(Math.round(f.shift), -60, 60, 0), push };
+  if (!out.time && !out.vel && !out.shift && !Object.keys(push).length) return null;
+  if (typeof f.preset === 'string' && FEEL_PRESETS[f.preset]) out.preset = f.preset;
+  return out;
+}
+// One note's timing offset (ms) and velocity under a feel; rng() is the engine's (seeded in renders).
+export function feelNote(feel, note, vel, rng = Math.random) {
+  if (!feel) return { dt: 0, vel };
+  const dt = feel.shift + (feel.push[note] || 0) + (feel.time ? (rng() * 2 - 1) * feel.time : 0);
+  const v = feel.vel ? Math.round(vel + (rng() * 2 - 1) * feel.vel) : vel;
+  return { dt, vel: Math.max(1, Math.min(127, v)) };
+}
+
 // A Lab instrument stored with a track: its name and patch.
 export function cleanInst(x) {
   if (!x || typeof x !== 'object') return null;
@@ -187,6 +264,9 @@ function normalizeTrack(t, ti) {
   for (const name of PATTERNS) patterns[name] = cleanPattern(t?.patterns?.[name]);
   return {
     name: String(t?.name ?? d.name).slice(0, 24) || d.name,
+    // What the track is for (its editor, ideas and sound suggestions). Songs saved before tracks
+    // had one get the old guess from the name.
+    role: ROLES[t?.role] ? t.role : guessRole({ name: String(t?.name ?? d.name), mode: t?.mode, voice: t?.voice }),
     out: typeof t?.out === 'string' && t.out ? t.out.slice(0, 120) : COMPUTER,
     ch: clamp(t?.ch, 1, 16, 2),
     voice: VOICES.includes(t?.voice) ? t.voice : d.voice,
@@ -197,6 +277,8 @@ function normalizeTrack(t, ti) {
     vol: clamp(t?.vol, 0, 127, 100),
     sound: cleanSound(t?.sound),
     inst: cleanInst(t?.inst),
+    fx: cleanFx(t?.fx),
+    feel: cleanFeel(t?.feel),
     program: Number.isInteger(t?.program) && t.program >= 0 && t.program <= 127 ? t.program : null,
     pool: {
       notes: notes(t?.pool?.notes).slice(0, 16),
@@ -251,7 +333,46 @@ export function noteSteps(step, patternLength) {
   return held - 1 + step.gate / 100;
 }
 
-export const copyPattern = p => ({ length: p.length, steps: p.steps.map(s => ({ ...s, notes: [...s.notes] })),
+// How many ticks one pass of a pattern lasts at a track's rate (its `beats`, if fitted).
+export const spanOf = (pat, rate) => (pat.beats ? pat.beats * TICKS_PER_BEAT : pat.length * rate);
+
+// What plays at a pattern position: [{ s: step, notes }], the step at `pos` (minus drums that loop
+// on their own length) and, for each such drum, its step at `count` (steps played since the
+// pattern started) modulo its length.
+export function stepGroups(pat, pos, count) {
+  const ll = pat.laneLen, own = n => ll?.[n] > 0 && ll[n] < pat.length;
+  const out = [], main = stepAt(pat, pos);
+  if (main) {
+    const notes = ll ? main.notes.filter(n => !own(n)) : main.notes;
+    if (notes.length || !main.notes.length) out.push({ s: main, notes });
+  }
+  if (ll) {
+    const at = new Map();
+    for (const [key, len] of Object.entries(ll)) {
+      const n = +key;
+      if (!own(n)) continue;
+      const i = ((count % len) + len) % len, s = stepAt(pat, i);
+      if (!s?.notes.includes(n)) continue;
+      if (!at.has(i)) at.set(i, { s, notes: [] });
+      at.get(i).notes.push(n);
+    }
+    out.push(...at.values());
+  }
+  return out;
+}
+
+// A note's velocity in a step (its own, else the step's).
+export const velOf = (s, n) => s.nv?.[n] ?? s.vel;
+// A step of drums hitting together, from [note, velocity] pairs: the loudest sets the step's
+// velocity, quieter ones keep theirs in nv.
+export function drumStep(i, hits, fields = {}) {
+  const vel = Math.max(...hits.map(h => h[1])), nv = {};
+  for (const [n, v] of hits) if (v !== vel) nv[n] = v;
+  return { i, notes: [...new Set(hits.map(h => h[0]))].sort((a, b) => a - b), vel, gate: 30, len: 1, ...fields, ...(Object.keys(nv).length ? { nv } : {}) };
+}
+
+export const copyPattern = p => ({ length: p.length, ...(p.beats ? { beats: p.beats } : {}), ...(p.laneLen ? { laneLen: { ...p.laneLen } } : {}),
+  steps: p.steps.map(s => ({ ...s, notes: [...s.notes], ...(s.nv ? { nv: { ...s.nv } } : {}) })),
   ...(p.cc?.length ? { cc: p.cc.map(l => ({ ...l, steps: l.steps.map(s => ({ ...s })) })) } : {}) });
 
 // ---- note pool ----
@@ -293,18 +414,25 @@ export const audible = (song, ti) => {
   return song.tracks.some(x => x.solo) ? t.solo : !t.mute;
 };
 
-export function addTrack(song) {
+export function addTrack(song, fields = {}) {
   if (song.tracks.length >= MAX_TRACKS) return null;
-  const t = newTrack(song.tracks.length);
+  const t = newTrack(song.tracks.length, fields);
   song.tracks.push(t);
   song.song.forEach(sec => sec.play.push('A'));
   return t;
 }
 
-// A first guess at what a track is for, from its name and test sound (for the AI's Auto role).
-export const ROLES = { bass: 'Bass', lead: 'Lead / riff', chords: 'Chords', pad: 'Pad', arp: 'Arpeggio', drums: 'Drums' };
+// What a track is for. Tracks store theirs (`role`); guessRole() is the old guess from the name and
+// test sound, used only for songs saved before tracks had a role.
+export const ROLES = { drums: 'Drums', bass: 'Bass', lead: 'Lead / riff', chords: 'Chords', pad: 'Pad', arp: 'Arpeggio' };
+export const roleOf = track => (ROLES[track.role] ? track.role : guessRole(track));
+// A name not used by another track: "Drums", "Drums 2"…
+export function freeTrackName(song, base) {
+  const used = new Set(song.tracks.map(t => t.name));
+  for (let n = 1; ; n++) { const name = n === 1 ? base : `${base} ${n}`; if (!used.has(name)) return name; }
+}
 export function guessRole(track) {
-  const name = track.name.toLowerCase();
+  const name = String(track.name || '').toLowerCase();
   const hit = [
     ['drums', /drum|kick|snare|hat|perc|beat/], ['bass', /bass|sub|808/], ['pad', /pad|string|atmo|drone/],
     ['chords', /chord|stab|keys|piano|organ/], ['arp', /arp/], ['lead', /lead|riff|melod|hook|pluck|seq/],

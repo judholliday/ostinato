@@ -8,7 +8,8 @@
 //     sound, source: { take }, created, modified }
 // pos/len in ticks (96 a beat) from the clip's start; sound as in core/sounding.js (or null).
 import * as C from '../seq/capture.js';
-import { TICKS_PER_BEAT, TICKS_PER_BAR, PATTERNS, RATES } from '../seq/model.js';
+import { TICKS_PER_BEAT, TICKS_PER_BAR, PATTERNS, RATES, ROLES, normalizeSong } from '../seq/model.js';
+import { putClip, songWithClip, soundFits, outKind, guessClipRole, roleName, backingSlice, backingTracks, backingToPlay, songFromBacking } from '../seq/putclip.js';
 import { writeMidi } from '../seq/midifile.js';
 import { storage, placeOf } from '../core/storage.js';
 import { openSoundPicker, closeSoundPicker } from '../core/soundpicker.js';
@@ -21,7 +22,7 @@ const ROW_H = 8, RULER_H = 20;
 const r2 = v => Math.round(v * 100) / 100;
 
 // env (from ui.js): { channel, toast, seq(), outputs(), takeBpm(take), setTakeBpm(id, bpm),
-//   takeSound(take), download(bytes, name), clipsChanged() }
+//   takeSound(take), takeBacking(take), download(bytes, name), clipsChanged() }
 let env = null;
 let ed = null; // what's open (see openTake / openClip)
 export const editing = () => ed;
@@ -34,7 +35,7 @@ export function openTake(take) {
   const d = new Date(take.start), p = n => String(n).padStart(2, '0');
   start({
     src: { kind: 'take', id: take.id }, name: `Take ${p(d.getHours())}${p(d.getMinutes())}`, bpm,
-    free: !take.synced, notes: C.takeTicks(take, bpm).map(x => ({ ...x })), sound: env.takeSound(take),
+    free: !take.synced, notes: C.takeTicks(take, bpm).map(x => ({ ...x })), sound: env.takeSound(take), backing: env.takeBacking(take),
     about: take.synced ? `played along at ${bpm} BPM` : 'played in free time',
   });
 }
@@ -42,15 +43,17 @@ export function openClip(clip) {
   start({
     src: { kind: 'clip', file: clip.file }, name: clip.name, bpm: clip.bpm || 120, free: false,
     notes: clip.notes.map(n => ({ ...n })), sound: clip.sound || null, length: clip.length,
-    source: clip.source, created: clip.created, about: 'saved clip',
+    source: clip.source, created: clip.created, about: 'saved clip', backing: clip.backing || null,
   });
 }
+// A clip with the "Put into a song" form open.
+export function openClipToPut(clip) { openClip(clip); openPut(); }
 const endLink = () => { if (ed?.link) env.channel.postMessage({ type: 'edit-ended', link: ed.link }); };
 function start(o) {
   stop();
   endLink();
   closeSoundPicker();
-  ed = { ...o, pick: null, sel: null, picked: new Set(), undo: [], snap: 'beat', zoom: null, playing: null, put: false };
+  ed = { ...o, pick: null, sel: null, picked: new Set(), undo: [], snap: 'beat', zoom: null, playing: null, put: false, withBacking: !!o.backing };
   render();
   $('#editor').scrollIntoView({ block: 'start' });
 }
@@ -125,6 +128,7 @@ function render() {
       <button class="rec-play${ed.playing ? ' on' : ''}" data-ed="play" title="Space">${playLabel}</button>
       <label class="field">Sound <button id="ed-sound" class="sound-btn-pick" data-ed="sound" title="${esc(choiceLabel())}. Saving a clip keeps the sound chosen here.">🔊 ${esc(choiceLabel())} ▾</button></label>
       <button class="ghost small" data-ed="edit-sound" ${editable(chosenSound()) ? '' : 'disabled'} title="${editable(chosenSound()) ? 'Change this sound while it loops (an Ostinato Synth sound in the Sound Lab, an XL sound in its editor under Instruments); the loop plays your changes, and a clip saved afterwards keeps them' : 'Pick an Ostinato Synth or XL sound to edit it'}">✎ Edit sound</button>
+      ${ed.backing ? `<label class="field" title="What the Sequencer played while you played this (${esc(backingTracks(ed.backing).join(', '))}): heard with it, kept with clips saved from it, and used by Put into a song → New song from its backing"><input type="checkbox" id="ed-backing" ${ed.withBacking ? 'checked' : ''}> With backing</label>` : ''}
       <label class="field" title="${ed.free ? 'A guess from your playing. Changing it moves the bar lines, not the notes.' : ed.src.kind === 'take' ? 'The sequencer\'s tempo when you played it' : 'The clip\'s tempo'}">Tempo
         <input type="number" id="ed-bpm" min="40" max="240" value="${ed.bpm}" ${ed.src.kind === 'take' && !ed.free ? 'disabled' : ''}></label>
       ${song && song.bpm !== ed.bpm ? `<button class="ghost small" data-ed="tempo" title="Set the song's tempo to ${ed.bpm} BPM">Song to ${ed.bpm}</button>` : ''}
@@ -141,32 +145,93 @@ function render() {
       ${ed.src.kind === 'clip' ? `<button class="accent" data-ed="save" title="Save the whole clip (name, sound, tempo, removed notes)">Save</button>
         <button data-ed="save-new" title="Save ${ed.sel ? 'the selection' : 'it'} as another clip">Save ${ed.sel ? 'selection' : ''} as new clip</button>`
         : `<button class="accent" data-ed="save-new" title="Keep ${ed.sel ? 'the selection' : 'the whole take'} as a clip, with its sound">Save ${ed.sel ? 'selection' : 'take'} as clip</button>`}
-      <button data-ed="put" ${song?.tracks?.length ? '' : 'disabled title="Open the Sequencer first"'}>→ Put into a track…</button>
+      <button data-ed="put" class="${ed.put ? 'on' : ''}" title="Into a track of the song open in the Sequencer, a new track, another saved song or a new song">→ Put into a song…</button>
       <button class="ghost" data-ed="mid" title="Download ${ed.sel ? 'the selection' : 'it'} as a MIDI file">.mid</button>
     </div>
-    ${ed.put ? putForm(r) : ''}`;
+    ${ed.put ? putForm(r) : ''}
+    ${ed.putDone ? `<div class="ed-put done"><span>${esc(ed.putDone.text)}</span>
+      ${ed.putDone.file ? '<button class="accent" data-ed="put-open">Open it in the Sequencer</button>' : '<button class="ghost small" data-ed="put-show">Show it in the Sequencer</button>'}
+      <button class="ghost small" data-ed="put-ok">OK</button></div>` : ''}`;
   const roll = el.querySelector('.ed-roll');
   if (ed.zoom === null) ed.zoom = Math.max(8, Math.min(120, (roll.clientWidth - 16) / (total() / TICKS_PER_BEAT)));
   renderRoll();
   roll.scrollLeft = scroll;
 }
 
-// "Put into a track": which track and pattern, and whether the track gets the sound too.
+// "Put into a song": which song (the one open in the Sequencer, another saved one, or a new one),
+// which track (or a new one, with a role), which pattern, and whether the track gets the sound too.
+// The open song is changed by the sequencer (one undo step there); saved songs are changed in
+// their files here, so the song you're working on stays as it is.
+let songList = [];
+async function openPut() {
+  ed.put = true;
+  ed.putDone = null;
+  ed.putRole ||= guessClipRole(inRange(range()));
+  try { songList = await storage.list('sequences'); } catch { songList = []; }
+  render();
+}
+// The song the form is putting into: { tracks, name, current } (tracks as in seq-state).
+function putTarget() {
+  if (!ed.putTo) {
+    const s = env.seq();
+    return s?.tracks?.length ? { tracks: s.tracks, name: s.songName || 'Untitled', current: true } : null;
+  }
+  if (ed.putTo === '__new' || ed.putTo === '__backing') return { tracks: [], name: ed.putName || '', isNew: true, fromBacking: ed.putTo === '__backing' };
+  const song = ed.putSong?.file === ed.putTo ? ed.putSong.song : null;
+  return song && { name: song.name, tracks: song.tracks.map((t, ti) => ({ ti, name: t.name, mode: t.mode, rate: t.rate, pattern: t.pattern, out: outKind(t.out), soundName: t.inst?.name || t.sound?.name || '' })) };
+}
+async function chooseSong(v) {
+  ed.putTo = v;
+  ed.putTi = null;
+  ed.putPat = null;
+  ed.giveSound = undefined;
+  if (v && !v.startsWith('__') && ed.putSong?.file !== v) {
+    ed.putSong = null;
+    render();
+    try { ed.putSong = { file: v, song: normalizeSong(await storage.get('sequences', v)) }; }
+    catch (err) { env.toast(`Couldn't open that song: ${err.message}`, 'err'); ed.putTo = ''; }
+  }
+  if (v.startsWith('__') && !ed.putName) ed.putName = $('#ed-name')?.value.trim() || ed.name;
+  render();
+}
 function putForm([a, b]) {
-  const tracks = env.seq()?.tracks || [];
-  ed.putTi = tracks.some(t => t.ti === ed.putTi) ? ed.putTi : tracks.find(t => t.mode !== 'pool')?.ti ?? tracks[0]?.ti;
-  const t = tracks.find(x => x.ti === ed.putTi);
-  if (!t) return '';
-  ed.putPat = PATTERNS.includes(ed.putPat) ? ed.putPat : t.pattern;
-  const s = chosenSound(), fits = C.barsPerPattern(RATES[t.rate] || 24), bars = Math.ceil((b - a) / TICKS_PER_BAR);
-  const ok = s && ((s.kind === 'xl' && t.out === 'xl') || ((s.kind === 'lab' || s.kind === 'voice') && t.out === 'computer'));
-  if (ed.giveSound === undefined || !ok) ed.giveSound = !!ok;
+  const seq = env.seq(), target = putTarget();
+  const others = songList.filter(f => f.file !== seq?.file);
+  const songMenu = `<label class="field">Song <select id="put-song">
+      ${seq?.tracks?.length ? `<option value="" ${!ed.putTo ? 'selected' : ''}>${esc(seq.songName || 'Untitled')} (open in the Sequencer)</option>` : ''}
+      ${others.length ? `<optgroup label="Saved songs">${others.map(f => `<option value="${esc(f.file)}" ${f.file === ed.putTo ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</optgroup>` : ''}
+      <option value="__new" ${ed.putTo === '__new' ? 'selected' : ''}>+ New song</option>
+      ${ed.backing ? `<option value="__backing" ${ed.putTo === '__backing' ? 'selected' : ''}>+ New song from its backing</option>` : ''}</select></label>`;
+  if (!seq?.tracks?.length && !ed.putTo) { ed.putTo = '__new'; ed.putName ||= ed.name; return putForm([a, b]); }
+  if (!target) return `<div class="ed-put">${songMenu}<span class="hint">Opening the song…</span><button class="ghost small" data-ed="put-cancel">Cancel</button></div>`;
+  const tracks = target.tracks;
+  if (target.isNew || (ed.putTi !== 'new' && !tracks.some(t => t.ti === ed.putTi))) ed.putTi = target.isNew ? 'new' : tracks.find(t => t.mode !== 'pool')?.ti ?? 'new';
+  const isNew = ed.putTi === 'new', t = tracks.find(x => x.ti === ed.putTi);
+  const rate = isNew ? '1/16' : t.rate;
+  if (!PATTERNS.includes(ed.putPat)) ed.putPat = isNew ? 'A' : t.pattern;
+  const s = chosenSound(), fits = C.barsPerPattern(RATES[rate] || 24), bars = Math.ceil((b - a) / TICKS_PER_BAR);
+  // A new track takes an XL sound only if the XL is connected (it plays on the XL's port).
+  const ok = isNew ? !!s && (s.kind === 'xl' ? !!seq?.xlOut : soundFits(s, 'computer'))
+    : !!s && ((s.kind === 'xl' && t.out === 'xl') || ((s.kind === 'lab' || s.kind === 'voice') && t.out === 'computer'));
+  if (ed.giveSound === undefined || !ok) ed.giveSound = ok;
+  const trackName = isNew ? 'the new track' : t.name;
+  const why = ok ? (isNew ? '' : `${esc(t.name)} plays ${esc(t.soundName || 'its own sound')} now`)
+    : s?.kind === 'xl' && isNew ? 'The XL isn\'t connected, so a new track can\'t play its sound'
+    : 'Only an XL sound can go on an XL track, and an Ostinato Synth sound or test voice on a Computer track';
+  const roles = Object.keys(ROLES).filter(r => r !== 'arp');
   return `<div class="ed-put">
-    <label class="field">Track <select id="put-track">${tracks.map(x => `<option value="${x.ti}" ${x.ti === t.ti ? 'selected' : ''} ${x.mode === 'pool' ? 'disabled' : ''}>${esc(x.name)}${x.mode === 'pool' ? ' (note pool)' : ''}</option>`).join('')}</select></label>
-    <label class="field">Pattern <select id="put-pat">${PATTERNS.map(p => `<option ${p === ed.putPat ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
-    <label class="field" title="${ok ? `${esc(t.name)} plays ${esc(t.soundName || 'its own sound')} now` : 'Only an XL sound can go on an XL track, and a Lab instrument or test voice on a Computer track'}">
-      <input type="checkbox" id="put-sound" ${ed.giveSound ? 'checked' : ''} ${ok ? '' : 'disabled'}> Give ${esc(t.name)} this sound${s ? ` (${esc(s.name)})` : ''}</label>
-    <span class="hint">${barsText(b - a)} at ${t.rate} steps${bars > fits ? `; a pattern holds ${fits} bars, so only the first ${fits} go in` : ''}. Replaces pattern ${ed.putPat}; Undo in the sequencer brings it back.</span>
+    ${songMenu}
+    ${target.isNew ? `<label class="field">Name <input id="put-name" value="${esc(ed.putName || '')}" maxlength="60" spellcheck="false"></label>` : ''}
+    <label class="field">Track <select id="put-track">${tracks.map(x => `<option value="${x.ti}" ${x.ti === ed.putTi ? 'selected' : ''} ${x.mode === 'pool' ? 'disabled' : ''}>${esc(x.name)}${x.mode === 'pool' ? ' (note pool)' : ''}</option>`).join('')}
+      <option value="new" ${isNew ? 'selected' : ''}>+ New track</option></select></label>
+    ${isNew ? `<label class="field" title="What the new track is for: it sets its editor and the ideas it's offered">As <select id="put-role">${roles.map(r => `<option value="${r}" ${r === ed.putRole ? 'selected' : ''}>${esc(roleName(r))}</option>`).join('')}</select></label>` : ''}
+    <label class="field" ${target.fromBacking ? 'hidden' : ''}>Pattern <select id="put-pat">${PATTERNS.map(p => `<option ${p === ed.putPat ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+    <label class="field" title="${why}">
+      <input type="checkbox" id="put-sound" ${ed.giveSound ? 'checked' : ''} ${ok ? '' : 'disabled'}> Give ${esc(trackName)} this sound${s ? ` (${esc(s.name)})` : ''}</label>
+    <span class="hint">${barsText(b - a)} at ${rate} steps${bars > fits ? `; a pattern holds ${fits} bars, so only the first ${fits} go in` : ''}.
+      ${target.fromBacking ? `A new song at ${ed.bpm} BPM recreating what the Sequencer played (${esc(backingTracks(ed.backing).join(', '))}), plus yours on a new ${esc(roleName(ed.putRole).toLowerCase())} track.`
+        : isNew ? `A new ${esc(roleName(ed.putRole).toLowerCase())} track${ed.giveSound ? '' : ' with its starter sound'}${target.isNew ? ` in a new song at ${ed.bpm} BPM` : ''}.`
+        : `Replaces pattern ${ed.putPat}${target.current ? '; Undo in the sequencer brings it back' : ` in the saved song "${esc(target.name)}"`}.`}</span>
     <button class="accent" data-ed="put-go">Put in</button><button class="ghost small" data-ed="put-cancel">Cancel</button>
   </div>`;
 }
@@ -233,6 +298,11 @@ export function editorMessage(m) {
   else if (m.type === 'program' && ed.link && ed.linkKind === 'xl' && Array.isArray(m.data)) take({ kind: 'xl', name: m.name, data: m.data });
   else if (m.type === 'edit-ended' && m.link === ed.link) ed.link = null;
   else if (m.type === 'stop-audition' && ed.playing) { ed.playing = null; render(); } // stopped from the Sound Lab
+  else if (m.type === 'take-result' && ed.putDone && !ed.putDone.file && ed.putDone.text === 'Sent to the Sequencer.') {
+    // The sequencer's answer to "put into the open song".
+    if (m.ok) ed.putDone.text = m.text; else ed.putDone = null;
+    render();
+  } else if (m.type === 'take-result' && m.ok && ed.putDone?.file && /^Opened /.test(m.text)) { ed.putDone = null; render(); }
 }
 
 // ---- playing (on the sequencer page) ----
@@ -242,10 +312,11 @@ function play({ upTo = 0 } = {}) {
   stop();
   const [a, full] = range(), ms = msPerTick(), b = upTo ? Math.min(full, a + upTo / ms) : full;
   const notes = inRange([a, b]).map(n => ({ dt: (n.pos - a) * ms, dur: Math.max(20, Math.min(n.len, b - n.pos) * ms), note: n.note, vel: n.vel }));
-  if (!notes.length) { env.toast('No notes there to play.'); return; }
+  const backing = ed.withBacking ? backingToPlay(ed.backing, ms, a, b) : null;
+  if (!notes.length && !backing?.notes.length) { env.toast('No notes there to play.'); return; }
   const at = performance.timeOrigin + performance.now() + 150;
   const loop = !!ed.sel && !upTo;
-  env.channel.postMessage({ type: 'audition-take', notes, sound: chosenSound(), at, loopMs: loop ? (b - a) * ms : 0, link: ed.link || null });
+  env.channel.postMessage({ type: 'audition-take', notes, sound: chosenSound(), at, loopMs: loop ? (b - a) * ms : 0, link: ed.link || null, backing });
   ed.playing = { at, a, b, ms, loop };
   requestAnimationFrame(head);
   render();
@@ -291,7 +362,8 @@ function clipOf([a, b], name) {
   const notes = inRange([a, b]).map(n => ({ pos: r2(n.pos - a), len: r2(Math.min(n.len, b - n.pos)), note: n.note, vel: n.vel }));
   const sound = chosenSound();
   return { format: 'mkxl-clip', version: 1, name, bpm: ed.bpm, length: b - a, notes, sound: sound?.kind === 'track' ? null : sound,
-    source: ed.src.kind === 'take' ? { take: ed.src.id } : ed.source || null, ...(ed.created ? { created: ed.created } : {}) };
+    source: ed.src.kind === 'take' ? { take: ed.src.id } : ed.source || null, ...(ed.created ? { created: ed.created } : {}),
+    ...(ed.backing ? { backing: backingSlice(ed.backing, a, b) } : {}) };
 }
 async function save(asNew) {
   const name = $('#ed-name').value.trim().slice(0, 60) || 'Clip';
@@ -302,20 +374,63 @@ async function save(asNew) {
   else delete clip.created;
   try {
     const file = await storage.save('clips', clip);
-    env.toast(`Saved the clip "${name}" (${placeOf('clips', file)}).`, 'ok');
+    env.toast(`Saved the clip "${name}" in the Clips tab (${placeOf('clips', file)}). "→ Put into a song" puts it into a track.`, 'ok');
     if (whole && ed.src.kind === 'clip') { ed.src.file = file; ed.name = name; }
     env.clipsChanged();
     render();
   } catch (err) { env.toast(`Couldn't save: ${err.message}`, 'err'); }
 }
 
-function putIn() {
-  const [a, b] = range();
+async function putIn() {
+  const [a, b] = range(), bEnd = b;
   const items = inRange([a, b]).map(n => ({ note: n.note, vel: n.vel, pos: n.pos - a, len: Math.min(n.len, b - n.pos) }));
   if (!items.length) { env.toast('No notes there.'); return; }
-  env.channel.postMessage({ type: 'take-to-track', items, fromBar: 0, bpm: ed.bpm, synced: false, ti: ed.putTi, pattern: ed.putPat,
-    sound: ed.giveSound ? chosenSound() : null });
-  ed.put = false;
+  const isNew = ed.putTi === 'new' || ed.putTo === '__backing', clipName = $('#ed-name')?.value.trim() || ed.name;
+  const opts = { items, ti: isNew ? undefined : ed.putTi, newRole: isNew ? ed.putRole : null, pattern: ed.putPat,
+    name: isNew && !/^Take \d+$/.test(clipName) ? clipName.slice(0, 24) : null,
+    sound: ed.giveSound ? chosenSound() : null, xlOut: env.seq()?.xlOut || null };
+  if (!ed.putTo) {
+    // The song open in the Sequencer: it does the change (one undo step) and answers with take-result.
+    env.channel.postMessage({ type: 'take-to-track', ...opts, fromBar: 0, bpm: ed.bpm, synced: false });
+    ed.put = false;
+    ed.putDone = { text: 'Sent to the Sequencer.', file: null };
+    render();
+    return;
+  }
+  let song, r;
+  const fresh = ed.putTo === '__new' || ed.putTo === '__backing';
+  if (fresh) {
+    let name = (ed.putName || '').trim() || 'Untitled';
+    const taken = new Set(songList.map(f => f.name));
+    for (let n = 2; taken.has(name); n++) name = `${(ed.putName || '').trim() || 'Untitled'} ${n}`;
+    if (ed.putTo === '__backing') {
+      const b = backingSlice(ed.backing, a, bEnd);
+      if (!b) { env.toast('The Sequencer played nothing in that stretch.', 'err'); return; }
+      r = songFromBacking(b, { name, bpm: ed.bpm, length: bEnd - a, items, newRole: ed.putRole, trackName: opts.name, sound: opts.sound, xlOut: opts.xlOut });
+      if (!r.error) r.text = `Made the song "${name}": ${r.backingTracks} track${r.backingTracks === 1 ? '' : 's'} from the backing plus yours on ${r.track.name}${r.gave}.`
+        + (r.lost.length ? ` Too long to fit in patterns A–D: ${r.lost.join(', ')} (the rest is cut).` : '');
+    } else r = songWithClip(name, ed.bpm, opts);
+    song = r.song;
+  } else {
+    song = ed.putSong.song;
+    r = putClip(song, opts);
+  }
+  if (r.error) { env.toast(r.error, 'err'); return; }
+  try {
+    const file = await storage.save('sequences', song);
+    const bpmNote = !fresh && song.bpm !== ed.bpm ? ` It was played at ${ed.bpm} BPM; that song is at ${song.bpm}.` : '';
+    const text = r.text ? `${r.text} (${placeOf('sequences', file)})` : `Put ${r.bars} bar${r.bars > 1 ? 's' : ''} into ${r.added ? 'a new track, ' : ''}${r.track.name} pattern ${r.pattern}${r.gave}, in ${fresh ? 'the new song' : 'the saved song'} "${song.name}" (${placeOf('sequences', file)}).${bpmNote}`;
+    env.toast(text, 'ok');
+    ed.put = false;
+    ed.putDone = { text, file };
+    ed.putTo = file;
+    ed.putSong = { file, song };
+    try { songList = await storage.list('sequences'); } catch { /* keep the old list */ }
+    env.channel.postMessage({ type: 'sequences-changed' });
+  } catch (err) {
+    env.toast(`Couldn't save the song: ${err.message}`, 'err');
+    if (!fresh) ed.putSong = null; // reloaded from its file next time
+  }
   render();
 }
 
@@ -340,12 +455,22 @@ export function wireEditor() {
       case 'all': ed.sel = null; render(); restart(); break;
       case 'save': save(false); break;
       case 'save-new': save(true); break;
-      case 'put': ed.put = !ed.put; render(); break;
+      case 'put': if (ed.put) { ed.put = false; render(); } else openPut(); break;
       case 'put-cancel': ed.put = false; render(); break;
       case 'put-go': putIn(); break;
+      case 'put-ok': ed.putDone = null; render(); break;
+      case 'put-open': env.channel.postMessage({ type: 'open-song', file: ed.putDone.file }); break; // the bar stays if the Sequencer says no
+      case 'put-show': parent.postMessage({ type: 'switch-view', view: 'sequencer' }, location.origin); ed.putDone = null; render(); break;
       case 'mid': {
         const [a, c] = range(), name = $('#ed-name').value.trim() || 'Clip';
-        env.download(writeMidi({ name, bpm: ed.bpm, tracks: [{ name, ch: 1, notes: inRange([a, c]).map(n => ({ tick: n.pos - a, dur: Math.min(n.len, c - n.pos), note: n.note, vel: n.vel })) }] }), `${name}.mid`);
+        const tracks = [{ name, ch: 1, notes: inRange([a, c]).map(n => ({ tick: n.pos - a, dur: Math.min(n.len, c - n.pos), note: n.note, vel: n.vel })) }];
+        // With backing: one more MIDI track per backing track that plays here.
+        const b = ed.withBacking && backingSlice(ed.backing, a, c);
+        if (b) b.song.tracks.forEach((t, ti) => {
+          const notes = b.notes.filter(n => n.ti === ti).map(n => ({ tick: n.pos, dur: n.len, note: n.note, vel: n.vel }));
+          if (notes.length) tracks.push({ name: t.name, ch: (tracks.length % 16) + 1, notes }); // channels 1, 2, 3…
+        });
+        env.download(writeMidi({ name, bpm: ed.bpm, tracks }), `${name}.mid`);
         break;
       }
     }
@@ -368,9 +493,13 @@ export function wireEditor() {
       ed.bpm = v;
       render();
       restart();
-    } else if (t.id === 'put-track') { ed.putTi = +t.value; ed.putPat = null; ed.giveSound = undefined; render(); }
-    else if (t.id === 'put-pat') ed.putPat = t.value;
+    } else if (t.id === 'put-song') chooseSong(t.value);
+    else if (t.id === 'put-name') ed.putName = t.value.trim().slice(0, 60);
+    else if (t.id === 'put-role') { ed.putRole = t.value; render(); }
+    else if (t.id === 'put-track') { ed.putTi = t.value === 'new' ? 'new' : +t.value; ed.putPat = null; ed.giveSound = undefined; render(); }
+    else if (t.id === 'put-pat') { ed.putPat = t.value; render(); }
     else if (t.id === 'put-sound') ed.giveSound = t.checked;
+    else if (t.id === 'ed-backing') { ed.withBacking = t.checked; if (ed.playing) restart(); }
   });
   // The timeline: drag to select (snapped), click a bar number for that bar, click notes to pick them.
   el.addEventListener('pointerdown', e => {

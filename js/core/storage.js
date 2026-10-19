@@ -132,3 +132,18 @@ export const storage = STATIC ? browser : server;
 export const where = STATIC ? 'this browser' : 'data/';
 // Where a kind of file is kept, for messages ("Saved to data/sequences/x.json").
 export const placeOf = (kind, file) => (STATIC ? `this browser (${file})` : `data/${kind === 'patterns' ? 'my-patterns' : kind}/${file}`);
+
+// Factory samples: recordings that come with Ostinato (samples/, made by tools/make_samples.html),
+// used by factory sounds. They're named "factory/<file>" wherever a recording's name goes, and
+// can't be deleted or overwritten.
+export const FACTORY_PREFIX = 'factory/';
+export const FACTORY_SAMPLES = ['Vowel Ah (C4).wav', 'Glass Bell (C5).wav', 'Wind.wav', 'Music Box Phrase (C5).wav'].map(f => FACTORY_PREFIX + f);
+// A recording's audio as a Blob, whether it's yours or a factory sample.
+export async function audioBlob(file) {
+  if (String(file).startsWith(FACTORY_PREFIX)) {
+    const r = await fetch(`samples/${encodeURIComponent(file.slice(FACTORY_PREFIX.length))}`);
+    if (!r.ok) throw new Error(`${file}: ${r.statusText}`);
+    return r.blob();
+  }
+  return storage.get('audio', file);
+}

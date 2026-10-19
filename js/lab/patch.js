@@ -19,6 +19,11 @@ export const FORMAT = 'mkxl-inst';
 export const VERSION = 1;
 export const MAX_MODULES = 24;
 export const MAX_VOICES = 16;
+export const PLAY_MODES = ['poly', 'mono', 'legato'];
+// The organ's drawbars, as footages: 16' sounds an octave below the key, 8' at it, 1' three octaves up.
+export const DRAWBAR_FEET = ["16'", "5⅓'", "8'", "4'", "2⅔'", "2'", "1⅗'", "1⅓'", "1'"];
+// Each drawbar's harmonic of the 16' tone.
+export const DRAWBAR_HARMONIC = [1, 3, 2, 4, 6, 8, 10, 12, 16];
 
 const num = (key, label, min, max, def, extra = {}) => ({ key, label, kind: 'num', min, max, def, ...extra });
 // A file from your recordings (data/audio/), e.g. a reverb's impulse response. '' = none.
@@ -83,6 +88,41 @@ export const MODULES = {
     ],
     targets: { level: { min: -1, max: 1 } },
   },
+  organ: {
+    label: 'Drawbar organ', scope: 'voice', audioOut: true,
+    help: 'A tonewheel organ voice: nine drawbars (0–8) at the classic footages, 16\' (an octave below) to 1\' (three octaves above), plus percussion (a struck 2nd or 3rd harmonic on each note) and key click. One oscillator per note, however many bars are out. Put a Rotary after it.',
+    params: [
+      ...DRAWBAR_FEET.map((f, k) => num(`bar${k + 1}`, f, 0, 8, [8, 8, 8, 0, 0, 0, 0, 0, 0][k], { step: 1 })),
+      choice('perc', 'Percussion', ['off', 'second', 'third'], 'off', { help: 'A struck harmonic at each note\'s start: second (4\') or third (2⅔\')' }),
+      choice('percDecay', 'Perc. decay', ['fast', 'slow'], 'fast'),
+      num('click', 'Key click', 0, 1, 0.3),
+      num('level', 'Level', 0, 1, 0.7),
+    ],
+    targets: { pitch: { unit: 'cents', min: -4800, max: 4800 }, level: { min: -1, max: 1 } },
+  },
+  string: {
+    label: 'String', scope: 'voice', audioOut: true,
+    help: 'A physical model of a string: plucked by a finger, a pick, or struck by a felt piano hammer, ringing at the note\'s pitch. Damping darkens it as it rings, Stiffness sharpens its upper partials as on a piano, several strings per note beat against each other. For pianos, guitars, harps, harpsichords and clavs. A piano also needs a Soundboard after it.',
+    params: [
+      choice('excite', 'Played by', ['pluck', 'pick', 'hammer'], 'pluck'),
+      num('octave', 'Octave', -2, 2, 0, { step: 1 }),
+      num('position', 'Position', 0.02, 0.5, 0.13, { help: 'Where it\'s plucked or struck, from the end (0.5 = the middle: round and hollow; near 0: thin and bright). A piano\'s hammers strike at about 1/8 (0.125), nearer the end in the top octaves' }),
+      num('brightness', 'Brightness', 0, 1, 0.6, { help: 'How hard and sharp the pluck is, or how hard the hammer\'s felt (0.6 = a grand\'s)' }),
+      num('decay', 'Decay', 0.1, 30, 3, { unit: 's', curve: 'log', help: 'How long the fundamental rings while the key is held (with Coupling: its aftersound)' }),
+      num('highs', 'Highs', 0.02, 20, 1.5, { unit: 's', curve: 'log', help: 'How long the highs ring (a partial at 2 kHz; higher ones die sooner still): short = soft and woody, long = bright and ringing. A grand: about 7.6 s at C4, a nylon guitar 0.7 s' }),
+      num('keydecay', 'Key → decay', 0, 1, 0, { help: 'Decay and Highs are for C4; at 1 they change across the keyboard as on a grand: about twice as long in the bass, under a second at the top' }),
+      num('stiffness', 'Stiffness', 0, 1, 0, { help: 'How far the upper partials run sharp: 0.5 = a concert grand\'s strings (most in the treble, enough in the bass to give its growl), 0.6 an upright\'s, 1 = bell-like. Guitars: 0-0.1' }),
+      num('strings', 'Strings', 1, 3, 1, { step: 1, help: 'Strings per note (a piano has three, tuned slightly apart)' }),
+      num('detune', 'Detune', 0, 30, 2, { unit: 'cents', step: 0.5, help: 'How far apart the strings are tuned: a little beats, a lot is honky-tonk' }),
+      num('coupling', 'Coupling', 0, 1, 0, { help: 'How strongly the strings pull on the bridge they share: at 1, as on a piano, their sound first falls fast (the prompt sound) and then rings on (the aftersound) once their slight detuning sets them moving apart. Needs 2-3 strings', showIf: p => p.strings > 1 }),
+      num('phantom', 'Phantom partials', 0, 1, 0, { help: 'The extra partials a string makes as it stretches when struck hard (sums and doubles of its own): the growl of a loud piano bass. Strongest in the bass, at fortissimo' }),
+      num('knock', 'Knock', 0, 1, 0, { help: 'How much of the hammer\'s thud goes straight to the soundboard (hammer only; put a Soundboard after the string to hear it as a piano\'s knock)', showIf: p => p.excite === 'hammer' }),
+      num('release', 'Damper', 0.02, 3, 0.15, { unit: 's', curve: 'log', help: 'How fast it stops when you let go' }),
+      num('velocity', 'Velocity', 0, 1, 0.7, { help: 'How much harder playing makes it louder (and, with a hammer, brighter: the hammer moves faster and its felt squeezes harder)' }),
+      num('level', 'Level', 0, 1, 0.8),
+    ],
+    targets: { pitch: { unit: 'cents', min: -4800, max: 4800 }, level: { min: -1, max: 1 } },
+  },
   filter: {
     label: 'Filter', scope: 'voice', audioIn: true, audioOut: true,
     help: 'Shapes the tone. Lowpass makes it darker as the cutoff comes down.',
@@ -106,13 +146,14 @@ export const MODULES = {
     help: 'The note\'s loudness over time (attack, decay, sustain, release).',
     params: [time('attack', 'Attack', 0.005), time('decay', 'Decay', 0.3), num('sustain', 'Sustain', 0, 1, 0.7),
       time('release', 'Release', 0.3), num('velocity', 'Velocity', 0, 1, 0.6, { help: 'How much harder playing is louder' }),
-      num('level', 'Level', 0, 1, 0.8)],
+      num('level', 'Level', 0, 1, 0.8), num('keytrack', 'Key → time', 0, 1, 0, { help: 'Higher notes shorter, lower notes longer, like a piano or a plucked string: 1 = half as long each octave above C4' }), num('veltime', 'Velocity → time', -1, 1, 0, { help: 'Above 0: harder notes attack faster and ring longer (up to twice); below 0, the reverse' })],
     targets: { level: { min: -1, max: 1 } },
   },
   env: {
     label: 'Envelope', scope: 'voice', modOut: true,
     help: 'A shape over time (0 to 1) to modulate anything, e.g. the filter cutoff.',
-    params: [time('attack', 'Attack', 0.005), time('decay', 'Decay', 0.4), num('sustain', 'Sustain', 0, 1, 0.3), time('release', 'Release', 0.4)],
+    params: [time('attack', 'Attack', 0.005), time('decay', 'Decay', 0.4), num('sustain', 'Sustain', 0, 1, 0.3), time('release', 'Release', 0.4),
+      num('velocity', 'Velocity', 0, 1, 0, { help: 'How much harder playing makes the envelope bigger (e.g. a brighter filter sweep); 0 = always the same' }), num('keytrack', 'Key → time', 0, 1, 0, { help: 'Higher notes shorter, lower notes longer, like a piano or a plucked string: 1 = half as long each octave above C4' }), num('veltime', 'Velocity → time', -1, 1, 0, { help: 'Above 0: harder notes attack faster and ring longer (up to twice); below 0, the reverse' })],
     targets: {},
   },
   lfo: {
@@ -130,7 +171,7 @@ export const MODULES = {
       num('fine', 'Fine', -100, 100, 0, { unit: 'cents', step: 1 }),
       num('fm', 'FM depth', 0, 10, 1, { help: 'How strongly audio connected to its input bends it (roughly the FM index)' }),
       time('attack', 'Attack', 0.002), time('decay', 'Decay', 1), num('sustain', 'Sustain', 0, 1, 0.5), time('release', 'Release', 0.4),
-      num('velocity', 'Velocity', 0, 1, 0.6), num('level', 'Level', 0, 1, 0.7),
+      num('velocity', 'Velocity', 0, 1, 0.6), num('level', 'Level', 0, 1, 0.7), num('keytrack', 'Key → time', 0, 1, 0, { help: 'Higher notes shorter, lower notes longer, like a piano or a plucked string: 1 = half as long each octave above C4' }), num('veltime', 'Velocity → time', -1, 1, 0, { help: 'Above 0: harder notes attack faster and ring longer (up to twice); below 0, the reverse' }),
     ],
     targets: { pitch: { unit: 'cents', min: -4800, max: 4800 }, level: { min: -1, max: 1 }, fm: { min: -10, max: 10 } },
   },
@@ -160,7 +201,7 @@ export const MODULES = {
     label: 'Chorus', scope: 'global', audioIn: true, audioOut: true,
     help: 'Widens and thickens the sound.',
     params: [num('rate', 'Rate', 0.05, 5, 0.6, { unit: 'Hz', curve: 'log' }), num('depth', 'Depth', 0, 1, 0.5), num('mix', 'Mix', 0, 1, 0.4)],
-    targets: {},
+    targets: { rate: { unit: 'Hz', min: -5, max: 5 }, depth: { min: -1, max: 1 }, mix: { min: -1, max: 1 } },
   },
   delay: {
     label: 'Delay', scope: 'global', audioIn: true, audioOut: true,
@@ -170,6 +211,23 @@ export const MODULES = {
       num('tone', 'Tone', 500, 16000, 4500, { unit: 'Hz', curve: 'log', help: 'How bright the echoes are' }),
       num('wobble', 'Wobble', 0, 1, 0.3, { help: 'Tape speed wobble (tape mode)', showIf: p => p.mode === 'tape' }),
       num('mix', 'Mix', 0, 1, 0.25)],
+    targets: { time: { unit: 's', min: -1, max: 1 }, feedback: { min: -0.9, max: 0.9 }, mix: { min: -1, max: 1 } },
+  },
+  soundboard: {
+    label: 'Soundboard', scope: 'global', audioIn: true, audioOut: true,
+    help: 'A piano\'s soundboard: the wooden board that turns the strings\' vibration into sound. Hundreds of resonances give strings the body, bloom and thud of a real instrument. Put it straight after String modules, before any reverb.',
+    params: [choice('type', 'Board', ['grand', 'upright'], 'grand'),
+      num('size', 'Ring', 0.25, 3, 1, { curve: 'log', help: 'How long the board\'s resonances ring (1 = a piano\'s, about 0.4 s for the lowest)' }),
+      num('tone', 'Tone', 500, 8000, 2500, { unit: 'Hz', curve: 'log', help: 'Where the board starts to roll off the highs (12 dB/octave above it; 2500 Hz matched a measured grand)' }),
+      num('width', 'Width', 0, 1, 0.7, { help: 'How differently the two sides hear the board: 0 = mono' }),
+      num('mix', 'Mix', 0, 1, 1, { help: 'A real piano is all soundboard (1)' })],
+    targets: { mix: { min: -1, max: 1 } },
+  },
+  resonance: {
+    label: 'Pedal resonance', scope: 'global', audioIn: true, audioOut: true,
+    help: 'The rest of a piano\'s strings, which ring along when the sustain pedal lifts their dampers: the shimmering halo of a pedalled piano. Only heard while the sustain pedal (or Caps Lock) is down. Put it after the strings, before the Soundboard.',
+    params: [num('amount', 'Amount', 0, 1, 0.5, { help: 'How much the other strings pick up' }),
+      num('ring', 'Ring', 0.25, 3, 1, { curve: 'log', help: 'How long they ring (1 = a grand\'s strings)' })],
     targets: {},
   },
   reverb: {
@@ -181,35 +239,35 @@ export const MODULES = {
       num('predelay', 'Pre-delay', 0, 200, 20, { unit: 'ms', step: 1, help: 'A gap before the reverb starts: keeps the dry sound clear' }),
       num('damping', 'Damping', 0, 1, 0.5, { help: 'How much faster the highs die away than the lows (soft rooms: more)', showIf: p => p.type !== 'file' }),
       num('mix', 'Mix', 0, 1, 0.25)],
-    targets: {},
+    targets: { mix: { min: -1, max: 1 } },
   },
   phaser: {
     label: 'Phaser', scope: 'global', audioIn: true, audioOut: true,
     help: 'A sweeping, swirling notch sound (think classic electric pianos and guitars).',
     params: [num('rate', 'Rate', 0.02, 8, 0.4, { unit: 'Hz', curve: 'log' }), num('depth', 'Depth', 0, 1, 0.7),
       num('feedback', 'Feedback', 0, 0.9, 0.4), num('mix', 'Mix', 0, 1, 0.5)],
-    targets: {},
+    targets: { rate: { unit: 'Hz', min: -5, max: 5 }, depth: { min: -1, max: 1 }, feedback: { min: -0.9, max: 0.9 } },
   },
   flanger: {
     label: 'Flanger', scope: 'global', audioIn: true, audioOut: true,
     help: 'A jet-plane sweep from a very short, moving delay.',
     params: [num('rate', 'Rate', 0.02, 5, 0.25, { unit: 'Hz', curve: 'log' }), num('depth', 'Depth', 0, 1, 0.6),
       num('feedback', 'Feedback', -0.9, 0.9, 0.5), num('mix', 'Mix', 0, 1, 0.5)],
-    targets: {},
+    targets: { rate: { unit: 'Hz', min: -5, max: 5 }, depth: { min: -1, max: 1 }, feedback: { min: -0.9, max: 0.9 } },
   },
   tremolo: {
     label: 'Tremolo', scope: 'global', audioIn: true, audioOut: true,
     help: 'Pulses the volume up and down, or moves the sound left and right (Pan).',
     params: [num('rate', 'Rate', 0.1, 20, 5, { unit: 'Hz', curve: 'log' }), num('depth', 'Depth', 0, 1, 0.5),
       num('pan', 'Pan', 0, 1, 0, { help: '0 = volume (tremolo), 1 = left and right (auto-pan)' })],
-    targets: {},
+    targets: { rate: { unit: 'Hz', min: -20, max: 20 } },
   },
   eq: {
     label: 'EQ', scope: 'global', audioIn: true, audioOut: true,
     help: 'Tone shaping: more or less bass, middle and treble.',
     params: [num('low', 'Bass', -15, 15, 0, { unit: 'dB', step: 0.5 }), num('mid', 'Middle', -15, 15, 0, { unit: 'dB', step: 0.5 }),
       num('midfreq', 'Middle at', 200, 5000, 1000, { unit: 'Hz', curve: 'log' }), num('high', 'Treble', -15, 15, 0, { unit: 'dB', step: 0.5 })],
-    targets: {},
+    targets: { low: { unit: 'dB', min: -24, max: 24 }, mid: { unit: 'dB', min: -24, max: 24 }, high: { unit: 'dB', min: -24, max: 24 } },
   },
   compressor: {
     label: 'Compressor', scope: 'global', audioIn: true, audioOut: true,
@@ -217,9 +275,77 @@ export const MODULES = {
     params: [num('threshold', 'Threshold', -60, 0, -20, { unit: 'dB', step: 1 }), num('ratio', 'Ratio', 1, 20, 4, { unit: ':1', curve: 'log' }),
       num('attack', 'Attack', 0.001, 0.2, 0.01, { unit: 's', curve: 'log' }), num('release', 'Release', 0.02, 1, 0.2, { unit: 's', curve: 'log' }),
       num('gain', 'Make-up', 0, 24, 6, { unit: 'dB', step: 0.5 })],
+    targets: { threshold: { unit: 'dB', min: -60, max: 60 } },
+  },
+  shaper: {
+    label: 'Distortion', scope: 'global', audioIn: true, audioOut: true,
+    help: 'Bends the wave: soft is warm saturation, hard clips it flat, fold folds it back on itself (metallic, buzzy), tube is lopsided and warm, rectify flips the bottom half up (an octave-up fuzz).',
+    params: [choice('curve', 'Curve', ['soft', 'hard', 'fold', 'tube', 'rectify'], 'soft'), num('drive', 'Drive', 1, 40, 4, { curve: 'log' }),
+      num('tone', 'Tone', 500, 16000, 8000, { unit: 'Hz', curve: 'log', help: 'A low-pass after the distortion: lower is darker' }),
+      num('mix', 'Mix', 0, 1, 1), num('level', 'Level', 0, 1.5, 0.6)],
+    targets: { tone: { unit: 'Hz', min: -12000, max: 12000 }, level: { min: -1.5, max: 1.5 } },
+  },
+  crusher: {
+    label: 'Bitcrusher', scope: 'global', audioIn: true, audioOut: true,
+    help: 'Lo-fi: fewer bits makes it grainy and noisy, downsampling makes it gritty and adds metallic whistles (like old samplers and games).',
+    params: [num('bits', 'Bits', 1, 16, 6, { step: 1 }), num('hold', 'Downsample', 1, 40, 4, { step: 1, unit: '×', help: 'Each sample is held for this many: 4× = a quarter of the sample rate' }),
+      num('mix', 'Mix', 0, 1, 1)],
+    targets: { bits: { min: -15, max: 15 }, hold: { min: -39, max: 39 } },
+  },
+  stutter: {
+    label: 'Stutter', scope: 'global', audioIn: true, audioOut: true,
+    help: 'Every so often repeats the slice that just played a few times, like a DJ\'s beat-repeat or a glitchy edit. Size is the slice length (0.125 s = a 16th at 120 BPM).',
+    params: [num('size', 'Size', 0.03, 0.5, 0.125, { unit: 's', curve: 'log' }), num('chance', 'Chance', 0, 1, 0.25, { help: 'How often a slice is repeated' }),
+      num('repeats', 'Repeats', 1, 8, 3, { step: 1 }), num('mix', 'Mix', 0, 1, 1)],
+    targets: { chance: { min: -1, max: 1 } },
+  },
+  freeze: {
+    label: 'Freeze', scope: 'global', audioIn: true, audioOut: true,
+    help: 'Catches the last moment of sound and holds it as an endless drone: click Frozen while something plays, Listen to let the sound through again.',
+    params: [choice('state', 'State', ['listen', 'frozen'], 'listen'), num('size', 'Size', 0.05, 2, 0.4, { unit: 's', curve: 'log', help: 'How much of the sound is caught (set before freezing)' }),
+      num('mix', 'Mix', 0, 1, 1)],
+    targets: { frozen: { min: 0, max: 1 } },
+  },
+  rotary: {
+    label: 'Rotary', scope: 'global', audioIn: true, audioOut: true,
+    help: 'A rotating speaker cabinet (the organ\'s Leslie): a spinning horn for the highs and a drum for the lows, swirling the sound around. Slow (chorale) or fast (tremolo); it speeds up and slows down gradually, the horn quicker than the drum. Mod wheel up switches to fast.',
+    params: [choice('speed', 'Speed', ['slow', 'fast'], 'slow'), choice('wheel', 'Mod wheel', ['switches speed', 'off'], 'switches speed'),
+      num('inertia', 'Inertia', 0.2, 4, 1, { unit: 's', curve: 'log', help: 'How long the horn takes to change speed (the drum takes three times as long)' }),
+      num('depth', 'Depth', 0, 1, 0.7), num('balance', 'Horn / drum', 0, 1, 0.5, { help: '0 = all drum (lows), 1 = all horn (highs)' }),
+      num('drive', 'Drive', 0, 1, 0.15, { help: 'The cabinet\'s amp, pushed' }), num('mix', 'Mix', 0, 1, 1)],
+    targets: { speed: { min: -1, max: 1 } },
+  },
+  glfo: {
+    label: 'Global LFO', scope: 'global', modOut: true,
+    help: 'One LFO for the whole sound (not one per note), for moving effects: sweep a delay\'s mix, a phaser\'s rate, a bitcrusher\'s bits… Drag from its dot to an effect\'s setting.',
+    params: [choice('wave', 'Wave', ['sine', 'triangle', 'square', 'saw'], 'sine'), num('rate', 'Rate', 0.02, 20, 0.5, { unit: 'Hz', curve: 'log' }), num('depth', 'Depth', 0, 1, 1)],
+    targets: { rate: { unit: 'Hz', min: -10, max: 10 }, depth: { min: -1, max: 1 } },
+  },
+  rack: {
+    label: 'Effect rack', scope: 'global', audioIn: true, audioOut: true,
+    help: 'A chain of effects you saved as a rack, as one module: its effects run in order, then Mix blends the result with the dry sound. Edit them in the card; Unpack turns them back into separate modules.',
+    params: [num('mix', 'Mix', 0, 1, 1), num('level', 'Level', 0, 2, 1)],
     targets: {},
   },
 };
+// The effects a rack can hold: every global effect but a rack.
+export const RACK_EFFECTS = Object.keys(MODULES).filter(t => MODULES[t].scope === 'global' && t !== 'rack' && !MODULES[t].modOut);
+export const MAX_RACK = 8;
+// A rack's contents: { name, modules: [{ type, params, off? }] } (effects in signal order).
+export function cleanRack(raw) {
+  const modules = (Array.isArray(raw?.modules) ? raw.modules : []).filter(x => RACK_EFFECTS.includes(x?.type)).slice(0, MAX_RACK)
+    .map(x => ({ type: x.type, params: Object.fromEntries(MODULES[x.type].params.map(p => [p.key, cleanValue(p, x.params?.[p.key] ?? p.def)])), ...(x.off ? { off: true } : {}) }));
+  return { name: String(raw?.name || 'Rack').trim().slice(0, 40) || 'Rack', modules };
+}
+
+// A saved rack (a patch with kind 'rack') as a rack's contents: its effects in the order they're chained.
+export function rackOf(p) {
+  const n = normalizePatch(p).patch, order = [];
+  let at = n.audio.find(c => !n.audio.some(x => x.to === c.from))?.from;
+  while (at && !order.includes(at)) { order.push(at); at = n.audio.find(c => c.from === at)?.to; }
+  const mods = [...order.map(id => n.modules.find(m => m.id === id)).filter(Boolean), ...n.modules.filter(m => !order.includes(m.id))];
+  return cleanRack({ name: n.name, modules: mods });
+}
 
 // The settings a module shows (some only matter in one mode, like a pulse wave's width).
 export const visibleParams = m => MODULES[m.type].params.filter(p => !p.showIf || p.showIf(m.params) );
@@ -235,7 +361,7 @@ const DEFAULT_TARGET = { sampler: 'pitch', osc: 'pitch', noise: 'level', filter:
 export const defaultTarget = type => (MODULES[type]?.targets[DEFAULT_TARGET[type]] ? DEFAULT_TARGET[type] : Object.keys(MODULES[type]?.targets || {})[0] || null);
 // What a bypassed module does: effects and shapers pass the sound through; sources and
 // modulators go quiet.
-export const isSource = type => ['osc', 'noise', 'fmop', 'drums', 'sampler', 'granular'].includes(type);
+export const isSource = type => ['osc', 'noise', 'fmop', 'drums', 'sampler', 'granular', 'string', 'organ'].includes(type);
 
 function cleanValue(spec, v) {
   if (spec.kind === 'choice') return spec.choices.includes(String(v)) ? String(v) : spec.def;
@@ -272,7 +398,8 @@ export function newId(patch, type) {
 // Checks and repairs a patch from a file, the page or the AI: unknown modules and broken
 // connections are dropped, values clamped, missing settings filled in. Throws only if it isn't a
 // patch at all. Problems found are listed in `notes` (returned beside the patch, never saved).
-export function normalizePatch(raw) {
+// `nested`: a sound inside a drum pad, whose own pads can't hold sounds (no endless nesting).
+export function normalizePatch(raw, { nested = false } = {}) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.modules)) throw new Error('not a Lab instrument');
   const notes = [];
   const modules = [];
@@ -282,8 +409,12 @@ export function normalizePatch(raw) {
     let id = typeof m.id === 'string' && /^[a-z][a-z0-9_]{0,19}$/i.test(m.id) ? m.id : '';
     if (!id || id === 'out' || SOURCES[id] || modules.some(x => x.id === id)) id = newId({ modules }, m.type);
     const params = {};
-    for (const p of spec.params) params[p.key] = cleanValue(p, m.params?.[p.key] ?? p.def);
-    modules.push({ id, type: m.type, params, ...(m.type === 'drums' ? { pads: cleanPads(m.pads) } : {}),
+    const given = m.type === 'string' && m.params && m.params.highs == null && m.params.damping != null
+      ? { ...m.params, highs: (+m.params.decay || 3) / (1 + 30 * (+m.params.damping || 0)) } // saved before Highs replaced Damping: the same ring at 2 kHz
+      : m.params;
+    for (const p of spec.params) params[p.key] = cleanValue(p, given?.[p.key] ?? p.def);
+    modules.push({ id, type: m.type, params, ...(m.type === 'drums' ? { pads: cleanPads(m.pads, nested ? null : p => normalizePatch(p, { nested: true }).patch) } : {}),
+      ...(m.type === 'rack' ? { rack: cleanRack(m.rack) } : {}),
       ...(m.type === 'sampler' && Array.isArray(m.zones) && m.zones.length ? { zones: cleanZones(m.zones) } : {}), ...(m.off ? { off: true } : {}) });
     if (modules.length >= MAX_MODULES) break;
   }
@@ -310,7 +441,10 @@ export function normalizePatch(raw) {
     const src = SOURCES[c?.from] ? c.from : byId.get(c?.from)?.type && MODULES[byId.get(c.from).type].modOut ? c.from : null;
     const [tid, tkey] = String(c?.to ?? '').split('.');
     const t = byId.get(tid), target = t && MODULES[t.type].targets[tkey];
-    if (!src || !target || src === tid || mod.some(x => x.from === src && x.to === c.to)) {
+    // An effect (one for all notes) can only be moved by something global: the wheel or a Global LFO.
+    const srcScope = SOURCES[src]?.scope || (src && MODULES[byId.get(src).type].scope);
+    const crossed = t && MODULES[t.type].scope === 'global' && srcScope !== 'global';
+    if (!src || !target || src === tid || crossed || mod.some(x => x.from === src && x.to === c.to)) {
       notes.push(`Modulation ${c?.from} → ${c?.to} left out.`);
       continue;
     }
@@ -328,7 +462,14 @@ export function normalizePatch(raw) {
     format: FORMAT, version: VERSION,
     name: String(raw.name ?? 'Untitled').trim().slice(0, 40) || 'Untitled',
     ...(typeof raw.type === 'string' && raw.type.trim() ? { type: raw.type.trim().slice(0, 24) } : {}),
+    ...(raw.kind === 'rack' ? { kind: 'rack' } : {}), // a saved effect rack, not a sound
+    ...(typeof raw.about === 'string' && raw.about.trim() ? { about: raw.about.trim().slice(0, 400) } : {}), // a line about the sound (how to play it)
     voices: Math.round(clampN(raw.voices, 1, MAX_VOICES, 8)),
+    // How notes overlap: poly (chords), mono (one note; each restarts the envelopes) or legato (one
+    // note; notes played while another is held slide to it without restarting). Glide: seconds a
+    // mono or legato note takes to slide to the next pitch.
+    ...(PLAY_MODES.includes(raw.play) && raw.play !== 'poly' ? { play: raw.play } : {}),
+    ...(clampN(raw.glide, 0, 2, 0) > 0 ? { glide: clampN(raw.glide, 0, 2, 0) } : {}),
     volume: clampN(raw.volume, 0, 1, 0.8),
     modules, audio, mod, cc,
   };

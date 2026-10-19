@@ -1,17 +1,17 @@
 // Standard MIDI Files (.mid), for taking songs and captured playing into a DAW such as Ableton Live.
 // No DOM here. Times are in ticks at 96 per beat, the sequencer's own resolution, so the file's
 // division is 96 and nothing needs scaling.
-import { TICKS_PER_BEAT, TICKS_PER_BAR } from './model.js';
+import { TICKS_PER_BEAT, barTicks, meterAt, meterParts, songTicks } from './model.js';
 import { Engine } from './engine.js';
 
 // Writes a type-1 file: a tempo track, then one track per entry in `tracks`.
-//   { name, bpm, tracks: [{ name, ch (1-16), program?, notes: [{ tick, dur, note, vel }], ccs?: [{ tick, cc, v }] }] }
-export function writeMidi({ name = '', bpm, tracks }) {
+//   { name, bpm, meters?: [{ tick, meter: '7/8' }] (default 4/4), tracks: [{ name, ch (1-16), program?, notes: [{ tick, dur, note, vel }], ccs?: [{ tick, cc, v }] }] }
+export function writeMidi({ name = '', bpm, meters = [{ tick: 0, meter: '4/4' }], tracks }) {
   const chunks = [chunk('MThd', [0, 1, ...u16(tracks.length + 1), ...u16(TICKS_PER_BEAT)])];
   const usPerBeat = Math.round(60e6 / bpm);
   chunks.push(chunk('MTrk', trackData([
     { tick: 0, data: meta(0x03, text(name)) },
-    { tick: 0, data: meta(0x58, [4, 2, 24, 8]) }, // 4/4
+    ...meters.map(m => { const { n, d } = meterParts(m.meter); return { tick: m.tick, data: meta(0x58, [n, Math.log2(d), 96 * 4 / d / 4, 8]) }; }), // time signatures
     { tick: 0, data: meta(0x51, [usPerBeat >> 16 & 255, usPerBeat >> 8 & 255, usPerBeat & 255]) },
   ])));
   for (const t of tracks) {
@@ -70,12 +70,15 @@ export function renderSong(song, { seed = 1 } = {}) {
   engine.mode = 'song';
   engine.play();
   const bars = copy.song.reduce((n, s) => n + s.bars, 0);
-  const end = bars * TICKS_PER_BAR;
+  const end = songTicks(copy);
+  // A time signature at the start of each section whose meter differs from the one before.
+  const meters = [];
+  copy.song.reduce((tick, sec, si) => { const m = meterAt(copy, si); if (meters.at(-1)?.meter !== m) meters.push({ tick, meter: m }); return tick + sec.bars * barTicks(m); }, 0);
   const endMs = t0 + end * tickMs;
   while (now < endMs) { now += 500; engine.pump(); }
   engine.stop();
   return {
-    name: song.name, bpm: song.bpm, bars,
+    name: song.name, bpm: song.bpm, bars, meters,
     tracks: copy.tracks.map((t, ti) => ({
       name: t.name, ch: t.ch, program: t.program,
       notes: out[ti].filter(n => Math.round(n.tick) < end)

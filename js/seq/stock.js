@@ -7,7 +7,7 @@
 //             C3+Eb3+G3~16  held for 16 steps   suffix ! accent, ? soft
 //             x  a hit with no note (note-pool rhythms)
 //   drums:    a string per drum, one character per step: X accent, x hit, o ghost, . rest
-import { cleanPattern } from './model.js';
+import { cleanPattern, drumStep } from './model.js';
 
 const DRUMS = { kick: 36, rim: 37, snare: 38, clap: 39, hat: 42, pedal: 44, open: 46, crash: 49, ride: 51, cowbell: 56, shaker: 70, conga: 63 };
 const NOTE = /^([A-G])(#|b)?(-?\d)$/;
@@ -42,13 +42,11 @@ function drums(parts) {
     length = Math.max(length, line.length);
     [...line].forEach((c, i) => {
       if (c === '.') return;
-      const h = hits.get(i) || { i, notes: [], vel: 0, gate: 30, len: 1 };
-      h.notes.push(DRUMS[drum]);
-      h.vel = Math.max(h.vel, c === 'X' ? 120 : c === 'x' ? 100 : 55);
-      hits.set(i, h);
+      if (!hits.has(i)) hits.set(i, []);
+      hits.get(i).push([DRUMS[drum], c === 'X' ? 120 : c === 'x' ? 100 : 55]);
     });
   }
-  return { steps: [...hits.values()].map(h => ({ ...h, notes: h.notes.sort((a, b) => a - b) })), length };
+  return { steps: [...hits].map(([i, h]) => drumStep(i, h)), length };
 }
 
 const minor = { root: 0, type: 'minor' }, major = { root: 0, type: 'major' };

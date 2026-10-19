@@ -62,6 +62,15 @@ assert.equal(snapToScale(61, { root: 2, type: 'major' }), 61); // C# is in D maj
   assert.equal(withSound.tracks[0].program, 12);
   assert.equal(withSound.tracks[1].sound, null);
   assert.equal(withSound.tracks[1].program, null);
+  // Effect racks on tracks and the master: copies kept, junk dropped, empty racks are none.
+  const withFx = normalizeSong({ masterFx: { name: 'Glue', rack: { name: 'Glue', modules: [{ type: 'delay', params: {} }, { type: 'nope' }] }, mix: 3 },
+    tracks: [{ fx: { name: 'Wide', rack: { modules: [{ type: 'chorus', params: { rate: 0.5 } }] }, off: true } }, { fx: { rack: { modules: [] } } }] });
+  assert.equal(withFx.masterFx.rack.modules.length, 1);
+  assert.equal(withFx.masterFx.mix, 1);
+  assert.equal(withFx.tracks[0].fx.off, true);
+  assert.equal(withFx.tracks[0].fx.rack.modules[0].params.rate, 0.5);
+  assert.equal(withFx.tracks[1].fx, null);
+  assert.deepEqual(normalizeSong(JSON.parse(JSON.stringify(withFx))), withFx, 'effect racks survive a round trip');
   const fresh = newSong();
   assert.deepEqual(normalizeSong(JSON.parse(JSON.stringify(fresh))), fresh, 'a new song survives a round trip');
   addTrack(fresh);
@@ -263,7 +272,7 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
     cc: [{ cc: 74, glide: 1, steps: [{ i: 0, v: 0 }, { i: 4, v: 200 }, { i: 9, v: 5 }] }, { cc: 74 }, { cc: 300 }] });
   assert.deepEqual(p.steps[0], { i: 0, notes: [60], vel: 100, gate: 60, len: 1, prob: 50, rat: 3 });
   assert.deepEqual(p.steps[1], { i: 2, notes: [62], vel: 100, gate: 60, len: 1 }, 'defaults are left out');
-  assert.deepEqual([p.steps[2].prob, p.steps[2].rat], [1, 4]);
+  assert.deepEqual([p.steps[2].prob, p.steps[2].rat], [1, 8]);
   assert.deepEqual(p.cc, [{ cc: 74, glide: true, steps: [{ i: 0, v: 0 }, { i: 4, v: 127 }, { i: 9, v: 5 }] }]);
   assert.equal(cleanPattern({ steps: [] }).cc, undefined);
   const c = copyPattern(p);
@@ -420,6 +429,219 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
   assert.equal(perf[0].id, -10);
   // Played across two runs: not synced.
   assert.ok(!splitTakes(notesOf([sync(0, 'on', 60, 10), { ...sync(50, 'on', 62, 10), run: 2 }]))[0].synced);
+}
+
+{
+  // Drum styles: templates fit their length, every style makes clean patterns at any length and
+  // density, and ghost notes keep their own velocity beside louder drums on the same step.
+  const { STYLES, DRUM_NOTES } = await import('../js/seq/styles.js');
+  const { cleanPattern, drumStep, velOf, copyPattern } = await import('../js/seq/model.js');
+  const kit = new Set(Object.values(DRUM_NOTES));
+  for (const st of STYLES) {
+    for (const [lane, list] of Object.entries(st.lanes)) {
+      assert.ok(DRUM_NOTES[lane], `${st.id}: ${lane} is a drum`);
+      if (Array.isArray(list)) for (const t of list) assert.equal(t.length, st.steps, `${st.id} ${lane} template is ${st.steps} steps`);
+    }
+    for (const length of [12, 16, 20, 32, 64]) for (const density of ['sparse', 'medium', 'busy']) {
+      const idea = randomIdea({ role: 'drums', style: st.id, length, density, rng: seeded(length * 7 + density.length) });
+      assert.deepEqual(cleanPattern(idea.pattern), idea.pattern, `${st.id} at ${length} is clean`);
+      assert.ok(idea.pattern.steps.length && idea.pattern.steps.every(x => x.i < length && x.notes.every(n => kit.has(n))), `${st.id} at ${length} fits`);
+    }
+  }
+  assert.ok(randomIdea({ role: 'drums', style: 'any', rng: seeded(3) }).summary.startsWith('🎲 Drums:'), 'any style');
+  const s = drumStep(4, [[42, 90], [38, 45]]);
+  assert.deepEqual(s, { i: 4, notes: [38, 42], vel: 90, gate: 30, len: 1, nv: { 38: 45 } });
+  assert.equal(velOf(s, 38), 45);
+  assert.equal(velOf(s, 42), 90);
+  assert.equal(drumStep(0, [[36, 100], [42, 100]]).nv, undefined, 'no nv when all agree');
+  assert.deepEqual(cleanPattern({ steps: [{ i: 0, notes: [36, 42], vel: 100, nv: { 36: 100, 42: 300, 50: 20 } }] }).steps[0].nv, { 42: 127 }, 'nv cleaned');
+  const copy = copyPattern({ length: 16, steps: [s] });
+  copy.steps[0].nv[38] = 1;
+  assert.equal(s.nv[38], 45, 'copies own their nv');
+  // The engine plays each drum at its own velocity.
+  const song = newSong();
+  song.tracks[0].patterns.A = { length: 16, steps: [s] };
+  const played = [];
+  let now = 0;
+  const eng = new Engine({ song: () => song, now: () => now, sink: { note: (ti, n, vel) => played.push([n, vel]) } });
+  eng.play();
+  now = 2000; eng.pump();
+  assert.deepEqual(played.slice(0, 2).sort((a, b) => a[0] - b[0]), [[38, 45], [42, 90]], 'engine uses nv');
+}
+
+{
+  // Breeding: mutations change something and stay clean; crosses take from both parents.
+  const { mutate, cross } = await import('../js/seq/breed.js');
+  const { cleanPattern, velOf } = await import('../js/seq/model.js');
+  const a = randomIdea({ role: 'drums', style: 'breaks', rng: seeded(1) }).pattern, b = randomIdea({ role: 'drums', style: 'skitter', rng: seeded(2) }).pattern;
+  for (let k = 0; k < 40; k++) {
+    const rng = seeded(100 + k);
+    const m = mutate(a, { drums: true, amount: 0.2, rng });
+    assert.deepEqual(cleanPattern(m.pattern), m.pattern, 'mutation is clean');
+    assert.notDeepEqual(m.pattern, a, `mutation ${k} changes something (${m.what})`);
+    assert.ok(m.pattern.steps.some(s => s.i === 0 && s.notes.includes(36)), 'kick on 1 kept');
+    const x = cross(a, b, { drums: true, rng });
+    assert.deepEqual(cleanPattern(x.pattern), x.pattern, 'cross is clean');
+    assert.match(x.what, /[1-9] lanes? from the first, [1-9] from the second/, `cross ${k} uses both (${x.what})`);
+    const key = (p, i, n) => { const s = p.steps.find(z => z.i === i); return s?.notes.includes(n) ? velOf(s, n) : null; };
+    for (const s of x.pattern.steps) for (const n of s.notes) assert.ok(key(a, s.i, n) === velOf(s, n) || key(b, s.i, n) === velOf(s, n), 'hits come from a parent');
+  }
+  const scale = { root: 0, type: 'minor' }, inScale = n => [0, 2, 3, 5, 7, 8, 10].includes(n % 12);
+  const m1 = randomIdea({ role: 'bass', scale, rng: seeded(5) }).pattern, m2 = randomIdea({ role: 'bass', scale, rng: seeded(6) }).pattern;
+  for (let k = 0; k < 20; k++) {
+    const m = mutate(m1, { amount: 0.3, scale, rng: seeded(k) });
+    assert.ok(m.pattern.steps.every(s => s.notes.every(inScale)), 'melodic mutations stay in the scale');
+    const x = cross(m1, m2, { rng: seeded(k) });
+    assert.deepEqual(cleanPattern(x.pattern), x.pattern);
+  }
+}
+
+{
+  // Polyrhythm: a pattern fitted into some beats spreads its steps evenly; a drum with its own
+  // lane length keeps counting across the pattern's loops.
+  const { cleanPattern, stepGroups, spanOf } = await import('../js/seq/model.js');
+  assert.deepEqual(cleanPattern({ length: 5, beats: 4, laneLen: { 42: 3, x: 2, 36: 0 }, steps: [] }), { length: 5, steps: [], beats: 4, laneLen: { 42: 3 } });
+  assert.equal(cleanPattern({ length: 5, beats: 40, steps: [] }).beats, 16);
+  assert.equal(spanOf({ length: 5, beats: 4 }, 24), 384);
+  assert.equal(spanOf({ length: 5 }, 24), 120);
+  const pat = { length: 8, laneLen: { 42: 3 }, steps: [{ i: 0, notes: [36, 42], vel: 100, gate: 30, len: 1 }, { i: 4, notes: [38], vel: 100, gate: 30, len: 1 }] };
+  const at = count => stepGroups(pat, count % 8, count).flatMap(g => g.notes).sort((a, b) => a - b);
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(at), [[36, 42], [], [], [42], [38], [], [42], [], [36], [42]], 'hat every 3 steps, across the loop');
+
+  const song = newSong();
+  song.bpm = 120;
+  song.tracks[0].rate = '1/16';
+  song.tracks[0].patterns.A = { length: 5, beats: 4, steps: [0, 1, 2, 3, 4].map(i => ({ i, notes: [60 + i], vel: 100, gate: 50, len: 1 })) };
+  const times = [];
+  let now = 0;
+  const eng = new Engine({ song: () => song, now: () => now, sink: { note: (ti, n, vel, t) => { if (ti === 0) times.push([n, t]); } } });
+  eng.play();
+  for (now = 0; now < 4200; now += 25) eng.pump();
+  const t0 = times[0][1], beat = 500;
+  const got = times.slice(0, 11).map(([n, t]) => [n, Math.round((t - t0) / beat * 96)]);
+  assert.deepEqual(got, [[60, 0], [61, 77], [62, 154], [63, 230], [64, 307], [60, 384], [61, 461], [62, 538], [63, 614], [64, 691], [60, 768]], '5 in 4 beats');
+}
+
+{
+  // Feel: cleaned (empty = null), presets valid, and the engine moves notes by it.
+  const { cleanFeel, feelNote, FEEL_PRESETS } = await import('../js/seq/model.js');
+  assert.equal(cleanFeel({ time: 0, vel: 0, shift: 0, push: { 38: 0 } }), null);
+  assert.deepEqual(cleanFeel({ time: 99, vel: -3, shift: 70, push: { 38: 25.4, x: 3, 42: 0 }, preset: 'nope' }), { time: 40, vel: 0, shift: 60, push: { 38: 25 } });
+  for (const [name, p] of Object.entries(FEEL_PRESETS)) if (p) assert.equal(cleanFeel({ ...p, preset: name }).preset, name, `${name} is clean`);
+  assert.deepEqual(feelNote({ time: 0, vel: 0, shift: 10, push: { 38: 20 } }, 38, 100), { dt: 30, vel: 100 });
+  for (let k = 0; k < 50; k++) { const f = feelNote({ time: 10, vel: 10, shift: 0, push: {} }, 36, 120); assert.ok(Math.abs(f.dt) <= 10 && f.vel >= 110 && f.vel <= 127); }
+  const song = newSong();
+  song.bpm = 120;
+  song.tracks[0].feel = cleanFeel({ shift: 0, push: { 38: 25 } });
+  song.tracks[0].patterns.A = { length: 16, steps: [{ i: 0, notes: [36, 38], vel: 100, gate: 30, len: 1 }] };
+  const got = [];
+  let now = 0;
+  const eng = new Engine({ song: () => song, now: () => now, sink: { note: (ti, n, vel, t) => { if (ti === 0) got.push([n, t]); } } });
+  eng.play();
+  for (now = 0; now < 500; now += 25) eng.pump();
+  const t36 = got.find(x => x[0] === 36)[1], t38 = got.find(x => x[0] === 38)[1];
+  assert.equal(Math.round(t38 - t36), 25, 'the snare plays 25 ms late');
+}
+
+{
+  // Time signatures: bar lengths, sections with their own meter, and the .mid file's events.
+  const { barTicks, meterAt, songTicks, stepsPerBar, normalizeSong: norm } = await import('../js/seq/model.js');
+  assert.equal(barTicks('4/4'), 384);
+  assert.equal(barTicks('7/8'), 336);
+  assert.equal(stepsPerBar('7/8', 24), 14);
+  assert.equal(stepsPerBar('5/8', 48), 5);
+  assert.equal(stepsPerBar('7/8', 96), null);
+  const song = norm({ ...newSong(), meter: '7/8', song: [{ bars: 2, play: ['A'] }, { bars: 1, play: ['A'], meter: '4/4' }, { bars: 1, play: ['A'], meter: 'bogus' }] });
+  assert.equal(song.meter, '7/8');
+  assert.deepEqual(song.song.map((x, i) => meterAt(song, i)), ['7/8', '4/4', '7/8']);
+  assert.equal(songTicks(song), 2 * 336 + 384 + 336);
+  assert.equal(norm({ ...newSong(), meter: '9/7' }).meter, '4/4');
+  // The engine's bars follow the meter (loop mode: the song's; song mode: each section's).
+  song.bpm = 120;
+  const bars = [];
+  let now = 0;
+  const eng = new Engine({ song: () => song, now: () => now, sink: { bar: (sec, bar, at) => bars.push(at) } });
+  eng.mode = 'song';
+  eng.play();
+  for (now = 0; now < 9000; now += 25) eng.pump();
+  const gaps = bars.slice(1, 5).map((t, k) => Math.round(t - bars[k]));
+  assert.deepEqual(gaps, [1750, 1750, 2000, 1750], 'bars of 7/8, 7/8, 4/4, 7/8 at 120 BPM');
+  // .mid export: a time signature at each change.
+  const r = renderSong(song);
+  assert.deepEqual(r.meters, [{ tick: 0, meter: '7/8' }, { tick: 672, meter: '4/4' }, { tick: 1056, meter: '7/8' }]);
+  const bytes = writeMidi(r);
+  const ts = [];
+  for (let i = 0; i < bytes.length - 6; i++) if (bytes[i] === 0xff && bytes[i + 1] === 0x58 && bytes[i + 2] === 4) ts.push([bytes[i + 3], bytes[i + 4]]);
+  assert.deepEqual(ts, [[7, 3], [4, 2], [7, 3]]);
+}
+
+{
+  // Track roles: stored; songs without them get the old guess; renaming doesn't change a role.
+  const { roleOf, freeTrackName, normalizeSong: norm, addTrack: add } = await import('../js/seq/model.js');
+  const old = norm({ ...newSong(), tracks: [{ name: 'Kick + hats' }, { name: 'Thing', voice: 'Pad' }, { name: 'Lead', role: 'chords' }] });
+  assert.deepEqual(old.tracks.map(t => t.role), ['drums', 'pad', 'chords']);
+  old.tracks[0].name = 'Bass line';
+  assert.equal(roleOf(old.tracks[0]), 'drums', 'renaming keeps the role');
+  assert.equal(norm({ ...newSong(), tracks: [{ name: 'x', role: 'nope' }] }).tracks[0].role, 'lead');
+  const song = newSong();
+  assert.equal(freeTrackName(song, 'Bass'), 'Bass 2');
+  const t = add(song, { role: 'arp', name: 'Arp', mode: 'pool' });
+  assert.deepEqual([t.role, t.mode, song.song[0].play.length], ['arp', 'pool', 2]);
+}
+
+// A clip into a song: an existing track, a new track, a new song.
+{
+  const { putClip, songWithClip, guessClipRole } = await import('../js/seq/putclip.js');
+  const items = [0, 96, 192, 288].map((pos, k) => ({ note: 60 + k, vel: 100, pos, len: 48 }));
+  const song = normalizeSong(newSong());
+  let r = putClip(song, { items, ti: 0, pattern: 'B' });
+  assert.equal(r.error, undefined);
+  assert.deepEqual([r.ti, r.pattern, r.added, song.tracks[0].patterns.B.steps.length], [0, 'B', false, 4]);
+  r = putClip(song, { items, newRole: 'lead', name: 'Hook', sound: { kind: 'voice', name: 'Pad', voice: 'Pad' } });
+  assert.deepEqual([r.ti, r.added, r.track.name, r.track.role, r.track.voice, r.track.inst, song.song[0].play.length], [1, true, 'Hook', 'lead', 'Pad', null, 2]);
+  r = putClip(song, { items: [], newRole: 'bass' });
+  assert.ok(r.error && song.tracks.length === 2, 'no notes: no track added');
+  const n = songWithClip('Sketch', 97, { items, newRole: 'chords', sound: { kind: 'xl', name: 'X', data: [1] } });
+  assert.deepEqual([n.song.name, n.song.bpm, n.song.tracks.length, n.song.song[0].play, n.song.song[0].bars], ['Sketch', 97, 1, ['A'], 1]);
+  assert.equal(n.song.tracks[0].out, 'computer', 'no XL port: the starter sound on the computer');
+  assert.ok(normalizeSong(JSON.parse(JSON.stringify(n.song))).tracks[0].patterns.A.steps.length === 4);
+  assert.equal(guessClipRole([36, 38, 40].map((note, k) => ({ note, vel: 90, pos: k * 96, len: 48 }))), 'bass');
+  assert.equal(guessClipRole([60, 64, 67, 62, 65, 69].map((note, k) => ({ note, vel: 90, pos: (k >> 1 >> 0) * 0 + (k < 3 ? 0 : 384), len: 96 }))), 'chords');
+}
+
+// Backing: slicing what the sequencer played, and a new song recreating it.
+{
+  const { backingSlice, songFromBacking, backingTracks } = await import('../js/seq/putclip.js');
+  const base = normalizeSong(newSong());
+  base.tracks[0].name = 'Bass';
+  base.tracks.push(normalizeSong(newSong()).tracks[0]); base.tracks[1].name = 'Hats'; base.song[0].play.push('A');
+  base.tracks.push(normalizeSong(newSong()).tracks[0]); base.tracks[2].name = 'Silent'; base.song[0].play.push('A');
+  // A one-bar bass riff and hats on every 8th, looped for 8 bars from tick 384 (bar 2).
+  const notes = [];
+  for (let bar = 0; bar < 8; bar++) {
+    const t0 = 384 + bar * 384;
+    [0, 96, 192, 288].forEach((d, k) => notes.push({ ti: 0, pos: t0 + d, note: [36, 39, 43, 41][k], vel: 100, len: 48 }));
+    for (let e = 0; e < 8; e++) notes.push({ ti: 1, pos: t0 + e * 48, note: 42, vel: 80, len: 12 });
+  }
+  notes.push({ ti: 0, pos: 300, note: 30, vel: 90, len: 30 }); // before the slice, short: dropped
+  notes.push({ ti: 0, pos: 200, note: 31, vel: 90, len: 400 }); // before the slice, held: kept from 0
+  const b = backingSlice({ song: base, notes, ccs: [{ ti: 0, pos: 100, cc: 74, v: 50 }, { ti: 0, pos: 500, cc: 74, v: 60 }] }, 384, 384 + 8 * 384);
+  assert.equal(b.notes.filter(n => n.ti === 0 && n.note === 30).length, 0, 'short note before the slice dropped');
+  const held = b.notes.find(n => n.note === 31);
+  assert.deepEqual([held.pos, held.len], [0, 216], 'held note cut to start at 0');
+  assert.deepEqual(b.ccs.map(c => [c.pos, c.v]), [[0, 50], [116, 60]], 'the controller value in force is kept');
+  assert.deepEqual(backingTracks(b), ['Bass', 'Hats']);
+  b.notes = b.notes.filter(n => n.note !== 31);
+  const mine = [{ note: 72, vel: 100, pos: 0, len: 96 }, { note: 74, vel: 100, pos: 7 * 384, len: 96 }];
+  const r = songFromBacking(b, { name: 'Jam', bpm: 110, length: 8 * 384, items: mine, newRole: 'lead', trackName: 'Me' });
+  assert.equal(r.error, undefined);
+  assert.deepEqual(r.song.tracks.map(t => t.name), ['Bass', 'Hats', 'Me'], 'silent tracks left out, yours added');
+  assert.equal(r.song.bpm, 110);
+  // Two 4-bar chunks: the backing repeats (pattern A both times), the new part differs (A, B).
+  assert.deepEqual(r.song.song.map(sec => [sec.bars, ...sec.play]), [[4, 'A', 'A', 'A'], [4, 'A', 'A', 'B']]);
+  assert.equal(r.song.tracks[0].patterns.A.steps.length, 16, 'bass riff 4 bars');
+  assert.equal(r.song.tracks[1].patterns.A.length, 64);
+  assert.deepEqual(r.lost, []);
 }
 
 console.log('ok — sequencer model and engine');

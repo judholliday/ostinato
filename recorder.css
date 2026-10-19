@@ -18,16 +18,58 @@ body { padding-bottom: 24px; }
 .rec-go { font-weight: 700; min-width: 96px; }
 .rec-go.on { background: var(--err); border-color: var(--err); color: #fff; }
 
-.takes { display: flex; flex-direction: column; gap: 8px; }
-.takes .take { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.takes { display: flex; flex-direction: column; gap: 4px; }
+/* A take: one compact row (tick, play, notes, what it is, actions); wraps when narrow. */
+.takes .take.row { display: grid; grid-template-columns: auto auto minmax(80px, 180px) minmax(0, 1fr) auto; align-items: center; gap: 4px 10px;
+  padding: 4px 8px; border: 1px solid transparent; border-bottom-color: var(--line); border-radius: 6px; }
+.takes .take.row:not(.live) { cursor: pointer; }
+.takes .take.row:hover { background: var(--panel); }
+.takes .take.row input[type=checkbox] { width: 16px; height: 16px; margin: 0 2px; }
+.takes .take.row.picked { background: var(--accent-soft); border-color: var(--accent); }
 .takes .take.live { border-color: var(--err); }
 .takes .take.perf { border-left: 3px solid var(--err); }
-.take-top { display: flex; align-items: center; gap: 8px; }
-.takes .roll { flex: 1 1 0; min-width: 0; width: 0; height: 34px; }
-.takes .take-info { display: block; min-width: 0; font-size: 13px; }
-.take-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.takes .take.row .roll { flex: 1 1 0; min-width: 0; width: 0; height: 26px; }
+.takes .take.row .take-info { display: block; min-width: 0; font-size: 13px; }
+.takes .take-info .take-sound { display: block; font-size: 12px; }
+.take-sound .kept { color: var(--ok); }
+.take-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .take-actions .spacer { flex: 1; }
-.takes > .hint { display: flex; align-items: center; gap: 10px; }
+.takes .take-info .hint { display: inline; }
+.takes .take-info .take-sound.hint { display: block; }
+@media (max-width: 1100px) {
+  .takes .take.row { grid-template-columns: auto auto minmax(0, 1fr) auto; }
+  .takes .take.row .roll-open { grid-column: 3; grid-row: 1; }
+  .takes .take.row .take-actions { grid-column: 4; grid-row: 1; }
+  .takes .take.row .take-info { grid-column: 3 / -1; grid-row: 2; }
+}
+.takes-foot { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.takes-foot .spacer { flex: 1; }
+.take-top { display: flex; align-items: center; gap: 8px; }
+.sel-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 8px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); font-size: 13px; }
+.sel-bar .spacer { flex: 1; }
+.sel-bar[hidden] { display: none; }
+
+/* Takes / Clips / Recordings */
+.lib-tabs { display: flex; gap: 4px; padding: 10px 14px 0; border-bottom: 1px solid var(--line); }
+.lib-tabs button { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: -1px; font-weight: 600; }
+.lib-tabs button.on { background: var(--pri); border-color: var(--pri); color: var(--on-pri); }
+.lib-tabs .count { font: 12px var(--mono); opacity: .75; margin-left: 4px; }
+.lib-tabs .count:empty { display: none; }
+.lib-tabs button.flash { animation: tab-flash 1.2s ease-out 2; }
+@keyframes tab-flash { 50% { box-shadow: 0 0 0 3px var(--ok); } }
+.pane-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 10px; font-size: 13px; }
+.pane-head .spacer { flex: 1; }
+.pane-head .hint { max-width: 70ch; }
+#clip-search { width: 180px; }
+
+/* Clips: cards in a grid */
+.clip-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.clip-grid > .hint { grid-column: 1 / -1; }
+.clip-card { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.clip-card .clip-name { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
+.clip-card .clip-name b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clip-card .roll { flex: 1 1 0; min-width: 0; width: 0; height: 40px; }
+.clip-card .take-info { font-size: 12px; }
 
 /* audio */
 .audio-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 6px 0; }
@@ -47,7 +89,7 @@ body { padding-bottom: 24px; }
 .take-sound { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .roll-open { flex: 1 1 0; min-width: 0; display: flex; cursor: pointer; border-radius: 4px; }
 .roll-open:hover { background: var(--panel-2); }
-.takes .roll-open .roll { flex: 1 1 0; }
+.takes .roll-open .roll, .clip-card .roll-open .roll { flex: 1 1 0; }
 
 /* the take editor (editor.js) */
 .rec-editor { background: var(--panel-2); scroll-margin-top: 8px; }
@@ -79,3 +121,6 @@ body { padding-bottom: 24px; }
 .sample-panel input[type=number] { width: 64px; }
 .sample-panel input[data-smp=name] { width: 160px; }
 .other-in { background: var(--warn); border-color: var(--warn); color: #111; font-weight: 600; }
+.makes { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
+.ed-put.done { border-color: var(--ok, var(--accent)); }
+.backing-tag { color: var(--ok); font-size: 12px; white-space: nowrap; }

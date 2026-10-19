@@ -22,6 +22,20 @@
         "MKXL_PORT": "8766",
         "MKXL_DATA": "test-data"
       }
+    },
+    {
+      "name": "editor-test-2",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "run",
+        "serve.py"
+      ],
+      "port": 8767,
+      "env": {
+        "MKXL_PORT": "8767",
+        "MKXL_DATA": "test-data",
+        "MKXL_NO_BROWSER": "1"
+      }
     }
   ]
 }

@@ -1,6 +1,6 @@
-// The Capture tab (recorder.html): keeps everything played for an hour (the chosen MIDI input, the
-// computer keyboard on any page, the Sound Lab's on-screen keys),
-// split into takes, and records performances with the sequencer. It makes no sound itself: the
+// The Capture tab (recorder.html): keeps everything played (the chosen MIDI input, the computer
+// keyboard on any page, the Sound Lab's on-screen keys), split into takes, the newest
+// prefs.keepTakes of them kept in this browser (IndexedDB, core/kv.js); shows clips and recordings; and records performances with the sequencer. It makes no sound itself: the
 // sequencer plays takes back on its selected track, and receives takes into patterns, through the
 // shared BroadcastChannel('mkxl'):
 //   from the sequencer:  transport { playing, anchor: { wall, tick, bpm }, run } · seq-state { track, mode, songBars, bpm }
@@ -10,15 +10,18 @@
 //                        take-to-track { items, fromBar, bpm, synced, ti, pattern, sound }
 //                        set-tempo { bpm } · record-performance { bars, countIn } · stop-sequencer
 //                        print-stem { ti, tail }  (answered by stem { state: 'start' | 'end', wall, ms })
+import { icon } from '../core/icons.js';
 import * as C from '../seq/capture.js';
-import { TICKS_PER_BEAT } from '../seq/model.js';
+import { TICKS_PER_BEAT, TICKS_PER_BAR } from '../seq/model.js';
+import { backingSlice, backingTracks, backingToPlay } from '../seq/putclip.js';
 import { writeMidi } from '../seq/midifile.js';
 import { portLabel, looksLikeSynthOut, looksLikeSynthIn } from '../core/midiports.js';
 import { soundKey } from '../core/sounding.js';
-import { initEditor, wireEditor, openTake, openClip, editing, editorKey, refreshEditor, closeEditor, editorMessage } from './editor.js';
+import { initEditor, wireEditor, openTake, openClip, openClipToPut, editing, editorKey, refreshEditor, closeEditor, editorMessage } from './editor.js';
 import { AudioIn, cut, encodeWav, findOnset } from './audio.js';
 import { notesToSample, zonesFor, tidy, releaseTime, makeLoop, buildPatch, noteName } from './sampleinst.js';
 import { storage, placeOf } from '../core/storage.js';
+import { kv } from '../core/kv.js';
 import { STATIC } from '../core/mode.js';
 import { QWERTY, QWERTY_LABEL, attachQwerty } from '../core/qwerty.js';
 
@@ -28,12 +31,17 @@ const store = {
   get(key, fallback) { try { const v = localStorage.getItem(`mkxl.rec.${key}`); return v === null ? fallback : JSON.parse(v); } catch { return fallback; } },
   set(key, value) { try { localStorage.setItem(`mkxl.rec.${key}`, JSON.stringify(value)); } catch { /* storage unavailable */ } },
 };
-function toast(text, kind = '') {
+function toast(text, kind = '', undo = null) {
   const el = Object.assign(document.createElement('div'), { className: `toast ${kind}`, textContent: text });
+  if (undo) {
+    const b = Object.assign(document.createElement('button'), { className: 'small', textContent: 'Undo' });
+    b.onclick = () => { el.remove(); undo(); };
+    el.append(' ', b);
+  }
   $('#toasts').append(el);
-  setTimeout(() => el.remove(), kind === 'err' ? 7000 : 3500);
+  setTimeout(() => el.remove(), undo ? 10000 : kind === 'err' ? 7000 : 3500);
 }
-const prefs = { midiIn: null, perfLen: 'song', countIn: true, perfAudio: false, audioIn: null, ...store.get('prefs', {}) };
+const prefs = { midiIn: null, keepTakes: 50, tab: 'takes', clipSort: 'new', perfLen: 'song', countIn: true, perfAudio: false, audioIn: null, ...store.get('prefs', {}) };
 // Per audio device: which input to record ('0', '1' or 'both') and its measured delay (ms).
 prefs.devices ||= {};
 const dev = () => (prefs.devices[prefs.audioIn] ||= {});
@@ -61,6 +69,7 @@ channel.onmessage = e => {
   // The computer keyboard (any page) and the Sound Lab's on-screen keys are always captured, as
   // well as the MIDI keyboard chosen under Capture from.
   if (m.type === 'qwerty' || m.type === 'played') { captureEvent(m.data, m.wall - performance.timeOrigin); return; }
+  if (m.type === 'run-start' || m.type === 'run-song' || m.type === 'run-notes') { onRun(m); return; }
   if (m.type === 'transport') {
     transport = m;
     // Bar 1 of a performance being recorded with audio: where its audio file starts.
@@ -89,20 +98,80 @@ channel.onmessage = e => {
 // ---------------------------------------------------------------------------------------------
 // Capture: every note, pedal and the times they happened (see seq/capture.js)
 
-const KEEP_MS = 60 * 60 * 1000, MAX_EVENTS = 20000;
-const cap = { events: [], ranges: [], bpm: new Map(), est: new Map(), auditioning: null };
-{
-  // Takes used to be kept by the sequencer page; bring them over once.
-  const old = localStorage.getItem('mkxl.seq.capture');
-  if (old && !localStorage.getItem('mkxl.rec.capture')) { localStorage.setItem('mkxl.rec.capture', old); localStorage.removeItem('mkxl.seq.capture'); }
-  cap.events = store.get('capture', []);
-  cap.ranges = store.get('ranges', []).map(r => ({ ...r, end: r.end ?? Infinity }));
+const MAX_EVENTS = 200000; // a guard: takes are kept by count (prefs.keepTakes), not by age
+const cap = { events: [], ranges: [], bpm: new Map(), est: new Map(), auditioning: null, loaded: false,
+  // What the sequencer played in each playback run (its backing), by run id: { run, song, notes, ccs }
+  // with notes { ti, pos (= the run's tick), note, vel, len }. Each run is stored under its own key.
+  runs: new Map(), dirtyRuns: new Set() };
+// Takes live in IndexedDB (core/kv.js), so many fit and they outlast closing the browser. Until
+// Oct 2026 they were kept in localStorage for an hour; those are moved over once.
+const LEGACY = ['mkxl.rec.capture', 'mkxl.rec.ranges', 'mkxl.rec.sounds', 'mkxl.rec.soundlog', 'mkxl.seq.capture'];
+(async () => {
+  let events = await kv.get('rec.capture', null), ranges = await kv.get('rec.ranges', []);
+  let sounds = await kv.get('rec.sounds', {}), log = await kv.get('rec.soundlog', []);
+  const legacy = events === null;
+  if (legacy) {
+    const old = localStorage.getItem('mkxl.seq.capture');
+    events = store.get('capture', null) ?? (old ? JSON.parse(old) : []);
+    ranges = store.get('ranges', []); sounds = store.get('sounds', {}); log = store.get('soundlog', []);
+  }
+  ranges = ranges.map(r => ({ ...r, end: r.end ?? Infinity }));
   // A performance left open by a reload ends at its last note.
-  for (const r of cap.ranges) if (r.end === Infinity) r.end = cap.events.at(-1)?.t ?? r.start;
+  for (const r of ranges) if (r.end === Infinity) r.end = events.at(-1)?.t ?? r.start;
+  for (const id of await kv.get('rec.runlist', [])) {
+    if (cap.runs.has(id)) continue;
+    const r = await kv.get(`rec.run.${id}`, null);
+    if (r) cap.runs.set(id, r);
+  }
+  // Anything played while loading comes after.
+  cap.events = [...events, ...cap.events];
+  cap.ranges = [...ranges, ...cap.ranges];
+  snd.byKey = { ...sounds, ...snd.byKey };
+  snd.log = [...log, ...snd.log];
+  cap.loaded = true;
+  prune();
+  await saveNow();
+  saveSounds();
+  if (legacy && await kv.get('rec.capture', null)) for (const k of LEGACY) localStorage.removeItem(k);
+  renderTakes();
+})();
+// The sequencer's report of a playback run (see "Backing" in seq/ui.js).
+function onRun(m) {
+  if (!m.run) return;
+  let r = cap.runs.get(m.run);
+  if (!r) { r = { run: m.run, song: null, notes: [], ccs: [] }; cap.runs.set(m.run, r); }
+  if (m.song) r.song = m.song;
+  for (const n of m.notes || []) r.notes.push({ ti: n.ti, pos: n.tick, note: n.note, vel: n.vel, len: n.len });
+  for (const c of m.ccs || []) r.ccs.push({ ti: c.ti, pos: c.tick, cc: c.cc, v: c.v });
+  cap.dirtyRuns.add(m.run);
+  saveSoon();
+}
+// What the sequencer played under a take played along with it, from the bar the take starts in to
+// the end of its last bar, in the take's own ticks (as C.takeTicks). Null for free-time takes.
+function takeBacking(take) {
+  if (!take.synced) return null;
+  const r = cap.runs.get(take.notes[0].run);
+  if (!r?.song || !r.notes.length) return null;
+  const bar0 = Math.floor(take.notes[0].tick / TICKS_PER_BAR) * TICKS_PER_BAR;
+  const items = C.takeTicks(take, take.bpm), end = Math.ceil(Math.max(...items.map(x => x.pos + x.len)) / TICKS_PER_BAR) * TICKS_PER_BAR;
+  return backingSlice({ song: r.song, notes: r.notes, ccs: r.ccs }, bar0, bar0 + Math.max(end, TICKS_PER_BAR));
+}
+// Forgets the oldest takes beyond prefs.keepTakes.
+function prune() {
+  const takes = C.splitTakes(C.notesOf(cap.events, Date.now()), C.GAP_MS, cap.ranges);
+  if (takes.length > prefs.keepTakes) {
+    const from = takes[takes.length - prefs.keepTakes].start;
+    cap.events = cap.events.filter(x => x.t >= from);
+    cap.ranges = cap.ranges.filter(r => r.end >= from);
+  }
+  if (cap.events.length > MAX_EVENTS) cap.events = cap.events.slice(-MAX_EVENTS);
+  // Runs no take was played over are dropped (but not the one playing now).
+  const used = new Set(cap.events.map(e => e.run).filter(Boolean));
+  for (const id of cap.runs.keys()) if (!used.has(id) && id !== transport.run) { cap.runs.delete(id); cap.dirtyRuns.delete(id); kv.del(`rec.run.${id}`); }
 }
 // The sounds takes were played on: pages report what the keyboard plays through (sounding); the
 // log says from when each was in use. Kept beside the capture, for as long as it.
-const snd = { byKey: store.get('sounds', {}), log: store.get('soundlog', []) }; // log: [{ t, k }]
+const snd = { byKey: {}, log: [] }; // log: [{ t, k }]; loaded with the takes
 let xlNow = null; // the XL editor's sound: what the XL's own keys play
 let soundTimer = null;
 function noteSound(m) {
@@ -121,8 +190,9 @@ function saveSounds() {
   snd.log = snd.log.slice(first).slice(-500);
   const used = new Set(snd.log.map(e => e.k));
   for (const k of Object.keys(snd.byKey)) if (!used.has(k)) delete snd.byKey[k];
-  store.set('sounds', snd.byKey);
-  store.set('soundlog', snd.log);
+  if (!cap.loaded) return;
+  kv.set('rec.sounds', snd.byKey);
+  kv.set('rec.soundlog', snd.log);
 }
 // A take's sound: the one in use when it started (reports can arrive just after the first note).
 function takeSound(take) {
@@ -138,7 +208,15 @@ const soundName = s => (!s ? '' : s.kind === 'xl' ? `${s.name} (XL)` : s.kind ==
 let saveTimer = null, renderTimer = null, endTimer = null;
 function saveSoon() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { store.set('capture', cap.events); store.set('ranges', cap.ranges.map(r => ({ ...r, end: r.end === Infinity ? null : r.end }))); }, 1000);
+  saveTimer = setTimeout(saveNow, 1000);
+}
+async function saveNow() {
+  if (!cap.loaded) return; // would overwrite the saved takes
+  await kv.set('rec.capture', cap.events);
+  await kv.set('rec.ranges', cap.ranges.map(r => ({ ...r, end: r.end === Infinity ? null : r.end })));
+  for (const id of cap.dirtyRuns) if (cap.runs.has(id)) await kv.set(`rec.run.${id}`, cap.runs.get(id));
+  cap.dirtyRuns.clear();
+  await kv.set('rec.runlist', [...cap.runs.keys()]);
 }
 
 function captureEvent(d, at) {
@@ -151,15 +229,11 @@ function captureEvent(d, at) {
   e.t = Math.round(performance.timeOrigin + (at ?? performance.now()));
   if (transport.playing && transport.anchor) Object.assign(e, { tick: Math.round(tickAt(e.t) * 10) / 10, run: transport.run, bpm: transport.anchor.bpm });
   cap.events.push(e);
-  const old = e.t - KEEP_MS;
-  if (cap.events[0].t < old || cap.events.length > MAX_EVENTS) {
-    cap.events = cap.events.filter(x => x.t >= old).slice(-MAX_EVENTS);
-    cap.ranges = cap.ranges.filter(r => r.end >= old);
-  }
+  if (cap.events.length > MAX_EVENTS) cap.events = cap.events.slice(-MAX_EVENTS);
   saveSoon();
   if (!renderTimer) renderTimer = setTimeout(() => { renderTimer = null; renderTakes(); }, 400);
   clearTimeout(endTimer);
-  endTimer = setTimeout(renderTakes, C.GAP_MS + 300); // the take is finished: show it as such
+  endTimer = setTimeout(() => { prune(); saveSoon(); renderTakes(); }, C.GAP_MS + 300); // the take is finished: show it as such
 }
 
 // Newest first. A take is still going (`live`) until the silence that ends it has passed.
@@ -182,7 +256,12 @@ function takeBpm(take) {
 
 const ago = ms => {
   const s = Math.round((Date.now() - ms) / 1000);
-  return s < 10 ? 'just now' : s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : 'an hour ago';
+  if (s < 10) return 'just now';
+  if (s < 60) return `${s} s ago`;
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  const d = new Date(ms), now = new Date(), hm = `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const day = new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  return day === 0 ? `today ${hm}` : day === 864e5 ? `yesterday ${hm}` : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${hm}`;
 };
 const clock = ms => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const stamp = ms => { const d = new Date(ms), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}${p(d.getMinutes())}`; };
@@ -195,36 +274,107 @@ function rollSVG(take) {
     `<rect x="${((n.t - take.start) / span * 1000).toFixed(1)}" y="${top - n.note}" width="${Math.max(4, n.dur / span * 1000).toFixed(1)}" height="1"/>`).join('')}</svg>`;
 }
 
+const SHOW_TAKES = 5;
+let showAllTakes = false;
+const picked = new Set(); // ids of takes ticked for Keep / Forget
+const takeName = take => { const d = new Date(take.start), p = n => String(n).padStart(2, '0'); return `Take ${p(d.getHours())}${p(d.getMinutes())}`; };
+// The clip made from a take, if any (Keep, or saved from the editor).
+const clipOfTake = take => clips.find(c => c.source?.take === take.id);
+
 function renderTakes() {
   countNews();
   const el = $('#takes');
-  const takes = allTakes();
+  const takes = allTakes(), done = takes.filter(t => !t.live);
+  for (const id of picked) if (!done.some(t => t.id === id)) picked.delete(id);
   const input = inputs().find(p => p.name === prefs.midiIn);
-  $('#takes-sum').textContent = !prefs.midiIn || prefs.midiIn === QWERTY ? '· everything played on the computer keyboard (and the Sound Lab\'s keys) is kept for an hour; choose your MIDI keyboard under Capture from to keep that too'
-    : `· everything played on ${prefs.midiIn === QWERTY ? '' : `${input ? portLabel(input) : prefs.midiIn} and `}the computer keyboard is kept for an hour`;
+  $('#takes-count').textContent = done.length || '';
+  $('#takes-keep').value = String(prefs.keepTakes);
+  $('#takes-sum').textContent = (!prefs.midiIn || prefs.midiIn === QWERTY ? 'Everything played on the computer keyboard (and the Sound Lab\'s keys) becomes a take; choose your MIDI keyboard under Capture from to include it.'
+    : `Everything played on ${input ? portLabel(input) : prefs.midiIn} and the computer keyboard becomes a take.`)
+    + ' Takes are kept in this browser, not backed up: Keep one to save it as a clip.';
+  renderPicked(done);
   if (el.contains(document.activeElement) && document.activeElement.matches('input, select')) return;
   if (!takes.length) {
-    el.innerHTML = '<div class="hint">Nothing yet. Play anything, in any view, with or without the sequencer, and it shows up here as a take.</div>';
+    el.innerHTML = `<div class="hint">${cap.loaded ? 'Nothing yet. Play anything, in any view, with or without the sequencer, and it shows up here as a take.' : 'Loading takes…'}</div>`;
     return;
   }
-  el.innerHTML = takes.map(take => {
-    const bpm = takeBpm(take), bars = C.takeBars(C.takeTicks(take, bpm)), sound = takeSound(take);
+  const shown = showAllTakes ? takes : takes.slice(0, SHOW_TAKES);
+  el.innerHTML = shown.map(take => {
+    const bpm = takeBpm(take), bars = C.takeBars(C.takeTicks(take, bpm)), sound = takeSound(take), clip = clipOfTake(take);
     const auditioning = cap.auditioning?.id === take.id;
-    return `<div class="take${take.live ? ' live' : ''}${take.kind ? ' perf' : ''}" data-id="${take.id}">
-      <div class="take-top"><button class="ghost play-take" data-act="play" title="${auditioning ? 'Stop' : `Play it on ${sound ? esc(soundName(sound)) : 'the sequencer\'s selected track'}`}">${auditioning ? '■' : '▶'}</button>
-        <span class="roll-open" data-act="open" title="Open it in the editor">${rollSVG(take)}</span></div>
+    return `<div class="take row${take.live ? ' live' : ''}${take.kind ? ' perf' : ''}${picked.has(take.id) ? ' picked' : ''}" data-id="${take.id}">
+      <input type="checkbox" data-act="pick" ${picked.has(take.id) ? 'checked' : ''} ${take.live ? 'disabled' : ''} aria-label="Select this take" title="Select it (then Keep or Forget several at once)">
+      <button class="ghost play-take" data-act="play" title="${auditioning ? 'Stop' : `Play it on ${sound ? esc(soundName(sound)) : 'the sequencer\'s selected track'}`}">${auditioning ? '■' : '▶'}</button>
+      <span class="roll-open" data-act="open" title="Open it in the editor">${rollSVG(take)}</span>
       <div class="take-info"><b>${take.live ? (take.kind ? 'Recording…' : 'Playing now…') : ago(take.end)}</b>
         · ${clock(take.end - take.start)} · ${take.notes.length} note${take.notes.length > 1 ? 's' : ''}
-        · <span class="hint">${take.kind ? 'performance, ' : ''}${take.synced ? `played along at ${bpm} BPM` : 'free time'} · ${bars} bar${bars > 1 ? 's' : ''}</span></div>
+        · <span class="hint">${take.kind ? 'performance, ' : ''}${take.synced ? `with the sequencer at ${bpm} BPM` : 'free time'} · ${bars} bar${bars > 1 ? 's' : ''}</span>
+        ${take.synced && cap.runs.get(take.notes[0].run)?.notes.length ? '<span class="backing-tag" title="What the Sequencer played was recorded too: Open it to hear them together, Keep keeps both">+ backing</span>' : ''}
+        <div class="take-sound hint" title="The sound it was played on">🔊 ${sound ? esc(soundName(sound)) : 'sound not known'}${clip ? ` · <span class="kept" title="A clip was saved from it">★ ${esc(clip.name)}</span>` : ''}</div></div>
       <div class="take-actions">
-        <span class="take-sound hint" title="The sound it was played on">🔊 ${sound ? esc(soundName(sound)) : 'sound not known'}</span>
-        <span class="spacer"></span>
-        <button data-act="open" ${take.live ? 'disabled' : ''} title="See it all on a timeline: select part of it, loop it, save it as a clip or put it into a track">✎ Open</button>
-        <button class="ghost" data-act="mid" title="Download this take as a MIDI file, as played (not quantized)">.mid</button>
-        <button class="ghost small" data-act="del" title="Forget this take">✕</button>
+        <button data-act="keep" ${take.live ? 'disabled' : ''} title="Save the whole take as a clip (Clips tab), with its sound. To keep only part of it, Open it.">★ Keep</button>
+        <button data-act="open" ${take.live ? 'disabled' : ''} title="See it all on a timeline: select part of it, loop it, save it as a clip or put it into a song">${icon('edit')} Open</button>
+        <button class="ghost small" data-act="mid" title="Download this take as a MIDI file, as played (not quantized)">.mid</button>
+        <button class="ghost small" data-act="del" ${take.live ? 'disabled' : ''} title="Forget this take (Undo brings it back)">✕</button>
       </div>
     </div>`;
-  }).join('') + `<div class="hint">Open a take to pick out the part you want. <button class="ghost small" data-act="clear">Forget all</button></div>`;
+  }).join('') + `<div class="takes-foot">${takes.length > SHOW_TAKES ? `<button class="ghost" data-act="more">${showAllTakes ? 'Show the newest 5' : `Show all ${takes.length} takes`}</button>` : ''}
+      <span class="spacer"></span>${done.length ? `<button class="ghost small" data-act="clear" title="Forget every take (Undo brings them back)">Forget all</button>` : ''}</div>`;
+}
+// The bar shown while takes are ticked.
+function renderPicked(done) {
+  const bar = $('#take-sel');
+  bar.hidden = !picked.size;
+  if (!picked.size) return;
+  bar.innerHTML = `<b>${picked.size} selected</b>
+    <button data-sel="keep" title="Save each as a clip">★ Keep as clips</button>
+    <button data-sel="del" title="Forget them (Undo brings them back). Delete or Backspace does the same.">✕ Forget</button>
+    <span class="spacer"></span>
+    ${picked.size < done.length ? `<button class="ghost small" data-sel="all">Select all ${done.length}</button>` : ''}
+    <button class="ghost small" data-sel="none">Clear</button>`;
+}
+
+// Forgets takes, with an Undo.
+function forget(takes) {
+  if (!takes.length) return;
+  const gone = { events: [], ranges: [] };
+  for (const take of takes) {
+    const isIn = x => x.t >= take.start && x.t <= take.end;
+    gone.events.push(...cap.events.filter(isIn));
+    cap.events = cap.events.filter(x => !isIn(x));
+    gone.ranges.push(...cap.ranges.filter(r => r.start === take.id));
+    cap.ranges = cap.ranges.filter(r => r.start !== take.id);
+    picked.delete(take.id);
+  }
+  saveSoon();
+  renderTakes();
+  toast(`Forgot ${takes.length === 1 ? 'the take' : `${takes.length} takes`}.`, '', () => {
+    cap.events = [...cap.events, ...gone.events].sort((a, b) => a.t - b.t);
+    cap.ranges = [...cap.ranges, ...gone.ranges].sort((a, b) => a.start - b.start);
+    saveSoon();
+    renderTakes();
+  });
+}
+// Saves whole takes as clips (Clips tab).
+async function keepTakes(takes) {
+  let n = 0;
+  for (const take of takes) {
+    const bpm = takeBpm(take), r2 = v => Math.round(v * 100) / 100;
+    const notes = C.takeTicks(take, bpm).map(x => ({ pos: r2(x.pos), len: r2(x.len), note: x.note, vel: x.vel }));
+    const bar = TICKS_PER_BEAT * 4, length = Math.max(bar, Math.ceil(Math.max(...notes.map(x => x.pos + x.len)) / bar) * bar);
+    const sound = takeSound(take);
+    try {
+      const backing = takeBacking(take);
+      await storage.save('clips', { format: 'mkxl-clip', version: 1, name: takeName(take), bpm, length, notes, sound: sound || null, source: { take: take.id }, ...(backing ? { backing } : {}) });
+      n++;
+    } catch (err) { toast(`Couldn't save ${takeName(take)}: ${err.message}`, 'err'); }
+  }
+  if (!n) return;
+  picked.clear();
+  await refreshClips();
+  channel.postMessage({ type: 'clips-changed' });
+  flashTab('clips');
+  toast(`Kept ${n === 1 ? `"${takeName(takes[0])}"` : `${n} takes`} in Clips${STATIC ? '' : ' (data/clips/)'}.`, 'ok');
 }
 
 // ---- clips: saved selections of takes (data/clips/, see editor.js) ----
@@ -233,6 +383,7 @@ let clips = [], clipPlaying = null;
 async function refreshClips() {
   try { clips = await storage.list('clips'); } catch { clips = []; }
   renderClips();
+  renderTakes();
 }
 function clipRoll(c) {
   const span = Math.max(1, c.length || 1), ns = c.notes.map(n => n.note);
@@ -240,32 +391,63 @@ function clipRoll(c) {
   return `<svg class="roll" viewBox="0 0 1000 ${rows}" preserveAspectRatio="none" aria-hidden="true">${c.notes.map(n =>
     `<rect x="${(n.pos / span * 1000).toFixed(1)}" y="${top - n.note}" width="${Math.max(4, n.len / span * 1000).toFixed(1)}" height="1"/>`).join('')}</svg>`;
 }
+const dateOf = c => (c.created || c.modified || '').slice(0, 10);
 function renderClips() {
   const el = $('#clips');
-  if (!clips.length) { el.innerHTML = '<div class="hint">None yet. Open a take, select the part you want and save it as a clip.</div>'; return; }
-  el.innerHTML = clips.map(c => {
+  $('#clips-count').textContent = clips.length || '';
+  $('#clip-sort').value = prefs.clipSort;
+  if (!clips.length) { el.innerHTML = '<div class="hint">None yet. ★ Keep a take, or open one, select the part you want and save it as a clip.</div>'; return; }
+  const q = $('#clip-search').value.trim().toLowerCase();
+  const list = clips.filter(c => !q || `${c.name} ${c.sound ? soundName(c.sound) : ''}`.toLowerCase().includes(q));
+  const when = c => c.created || c.modified || '';
+  list.sort(prefs.clipSort === 'name' ? (a, b) => a.name.localeCompare(b.name)
+    : prefs.clipSort === 'old' ? (a, b) => when(a).localeCompare(when(b)) : (a, b) => when(b).localeCompare(when(a)));
+  if (!list.length) { el.innerHTML = `<div class="hint">No clip matches "${esc(q)}".</div>`; return; }
+  el.innerHTML = list.map(c => {
     const bars = Math.round((c.length || 0) / (TICKS_PER_BEAT * 4) * 100) / 100;
-    return `<div class="take clip" data-file="${esc(c.file)}">
+    return `<div class="clip-card" data-file="${esc(c.file)}">
+      <div class="clip-name"><b>${esc(c.name)}</b><span class="hint">${dateOf(c)}</span></div>
       <div class="take-top"><button class="ghost play-take" data-act="play" title="${clipPlaying === c.file ? 'Stop' : `Play it on ${c.sound ? esc(soundName(c.sound)) : 'the sequencer\'s selected track'}`}">${clipPlaying === c.file ? '■' : '▶'}</button>
         <span class="roll-open" data-act="open" title="Open it in the editor">${clipRoll(c)}</span></div>
-      <div class="take-info"><b>${esc(c.name)}</b> · ${bars} bar${bars === 1 ? '' : 's'} · ${c.bpm} BPM · ${c.notes.length} notes</div>
-      <div class="take-actions"><span class="take-sound hint">🔊 ${c.sound ? esc(soundName(c.sound)) : 'no sound kept'}</span><span class="spacer"></span>
-        <button data-act="open" title="Open it in the editor: loop it, trim it, rename it, put it into a track">✎ Open</button>
+      <div class="take-info hint">${bars} bar${bars === 1 ? '' : 's'} · ${c.bpm} BPM · ${c.notes.length} notes · 🔊 ${c.sound ? esc(soundName(c.sound)) : 'no sound kept'}${c.backing ? ` · <span class="backing-tag" title="▶ plays it with what the Sequencer played">+ backing: ${esc(backingTracks(c.backing).join(', '))}</span>` : ''}</div>
+      <div class="take-actions">
+        <button data-act="put" title="Put it into a track: of the song open in the Sequencer, a new track, another saved song or a new song">→ Song…</button>
+        <button data-act="open" title="Open it in the editor: loop it, trim it, rename it">${icon('edit')} Open</button>
+        <span class="spacer"></span>
         <button class="ghost small" data-act="del" title="Remove this clip (moved to data/clips/deleted/)">✕</button></div>
     </div>`;
   }).join('');
 }
+$('#clip-search').addEventListener('input', renderClips);
+$('#clip-sort').onchange = e => { prefs.clipSort = e.target.value; savePrefs(); renderClips(); };
+
+// ---- the Takes / Clips / Recordings tabs ----
+function showTab(tab) {
+  prefs.tab = ['takes', 'clips', 'recordings'].includes(tab) ? tab : 'takes';
+  savePrefs();
+  document.querySelectorAll('.lib-tabs [data-tab]').forEach(b => { b.classList.toggle('on', b.dataset.tab === prefs.tab); b.setAttribute('aria-selected', b.dataset.tab === prefs.tab); });
+  document.querySelectorAll('.lib-pane').forEach(p => { p.hidden = p.dataset.pane !== prefs.tab; });
+}
+// A tab that just got something new: a short highlight.
+function flashTab(tab) {
+  const b = document.querySelector(`.lib-tabs [data-tab="${tab}"]`);
+  b?.classList.remove('flash'); void b?.offsetWidth; b?.classList.add('flash');
+}
+document.querySelector('.lib-tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) showTab(b.dataset.tab); });
+showTab(prefs.tab);
+
 $('#clips').addEventListener('click', async e => {
   const el = e.target.closest('[data-act]'), c = clips.find(x => x.file === el?.closest('[data-file]')?.dataset.file);
   if (!c) return;
   if (el.dataset.act === 'open') openClip(c);
+  else if (el.dataset.act === 'put') openClipToPut(c);
   else if (el.dataset.act === 'play') {
     channel.postMessage({ type: 'stop-audition' });
     clearTimeout(cap.auditionTimer);
     if (clipPlaying === c.file) clipPlaying = null;
     else {
       const ms = 60000 / (c.bpm * TICKS_PER_BEAT);
-      channel.postMessage({ type: 'audition-take', sound: c.sound, notes: c.notes.map(n => ({ dt: n.pos * ms, dur: n.len * ms, note: n.note, vel: n.vel })) });
+      channel.postMessage({ type: 'audition-take', sound: c.sound, notes: c.notes.map(n => ({ dt: n.pos * ms, dur: n.len * ms, note: n.note, vel: n.vel })), backing: backingToPlay(c.backing, ms) });
       clipPlaying = c.file;
       cap.auditionTimer = setTimeout(() => { clipPlaying = null; renderClips(); }, c.length * ms + 400);
     }
@@ -275,6 +457,7 @@ $('#clips').addEventListener('click', async e => {
     try { await storage.remove('clips', c.file); toast(`Removed "${c.name}".`); } catch (err) { toast(`Couldn't remove it: ${err.message}`, 'err'); }
     if (editing()?.src.file === c.file) closeEditor();
     refreshClips();
+    channel.postMessage({ type: 'clips-changed' });
   }
 });
 
@@ -295,16 +478,19 @@ function renderPerf() {
 
 $('#takes').addEventListener('click', e => {
   const el = e.target.closest('[data-act]');
-  if (!el) return;
-  if (el.dataset.act === 'clear') {
-    if (!confirm('Forget every captured take?')) return;
-    cap.events = []; cap.ranges = []; saveSoon(); renderTakes();
+  if (!el) {
+    // A click on a row's empty space ticks it, like its checkbox.
+    const row = e.target.closest('.take.row:not(.live)');
+    if (row) { const id = +row.dataset.id; if (picked.has(id)) picked.delete(id); else picked.add(id); renderTakes(); }
     return;
   }
+  if (el.dataset.act === 'clear') { forget(allTakes().filter(t => !t.live)); return; }
+  if (el.dataset.act === 'more') { showAllTakes = !showAllTakes; renderTakes(); return; }
   const id = +el.closest('[data-id]')?.dataset.id, take = findTake(id);
   if (!take) return;
   const bpm = takeBpm(take);
   switch (el.dataset.act) {
+    case 'pick': if (el.checked) picked.add(id); else picked.delete(id); break;
     case 'play':
       if (cap.auditioning?.id === id) { channel.postMessage({ type: 'stop-audition' }); cap.auditioning = null; clearTimeout(cap.auditionTimer); }
       else {
@@ -315,17 +501,29 @@ $('#takes').addEventListener('click', e => {
       }
       break;
     case 'open': if (!take.live) openTake(take); break;
+    case 'keep': if (!take.live) keepTakes([take]); return;
     case 'mid':
       download(writeMidi({ name: 'Captured take', bpm, tracks: [{ name: 'Take', ch: seq?.track?.ch || 1, notes: C.takeMidiNotes(take, bpm) }] }), `Take ${stamp(take.start)}.mid`);
       break;
-    case 'del':
-      cap.events = cap.events.filter(x => x.t < take.start || x.t > take.end);
-      cap.ranges = cap.ranges.filter(r => r.start !== take.id);
-      saveSoon();
-      break;
+    case 'del': forget([take]); return;
   }
   renderTakes();
 });
+$('#take-sel').addEventListener('click', e => {
+  const b = e.target.closest('[data-sel]');
+  if (!b) return;
+  const done = allTakes().filter(t => !t.live), chosen = done.filter(t => picked.has(t.id));
+  if (b.dataset.sel === 'keep') { keepTakes(chosen); return; }
+  if (b.dataset.sel === 'del') { forget(chosen); return; }
+  if (b.dataset.sel === 'all') { done.forEach(t => picked.add(t.id)); showAllTakes = true; }
+  if (b.dataset.sel === 'none') picked.clear();
+  renderTakes();
+});
+$('#takes-keep').onchange = e => {
+  const n = +e.target.value, count = allTakes().filter(t => !t.live).length;
+  if (n < count && !confirm(`Keep only the newest ${n}? The ${count - n} older takes would be forgotten.`)) { e.target.value = String(prefs.keepTakes); return; }
+  prefs.keepTakes = n; savePrefs(); prune(); saveSoon(); renderTakes();
+};
 function download(bytes, name) {
   const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/midi' }));
   const a = Object.assign(document.createElement('a'), { href: url, download: name });
@@ -349,7 +547,14 @@ $('#perf-go').onclick = () => {
   channel.postMessage({ type: 'record-performance', bars, countIn: prefs.countIn, ownAudio: prefs.perfAudio && isOwn() });
 };
 
-addEventListener('keydown', e => { if (editorKey(e)) e.preventDefault(); });
+addEventListener('keydown', e => {
+  if (editorKey(e)) { e.preventDefault(); return; }
+  // Delete or Backspace forgets the ticked takes (with Undo).
+  if ((e.key === 'Delete' || e.key === 'Backspace') && picked.size && prefs.tab === 'takes' && !e.target.closest?.('input:not([type=checkbox]), select, textarea')) {
+    e.preventDefault();
+    forget(allTakes().filter(t => !t.live && picked.has(t.id)));
+  }
+});
 
 // New takes while another tab shows: a count on the Capture tab (core/topbar.js) until you look.
 let showing = false, seenTakes = null, news = 0;
@@ -540,7 +745,7 @@ function showChannel() {
 function renderAudio() {
   const on = audioReady();
   $('#audio-rec').disabled = !on || !!stems;
-  $('#audio-rec').textContent = freeRec ? '■ Stop' : '● Record audio';
+  $('#audio-rec').innerHTML = freeRec ? `${icon('stop')} Stop` : `${icon('rec')} Record audio`;
   $('#audio-rec').classList.toggle('on', !!freeRec);
   // Delay and stems are about the XL coming back in through an interface.
   $('#measure').disabled = !audio.open || !!freeRec || !!stems;
@@ -777,9 +982,11 @@ function onStem(m) {
 async function refreshRecordings() {
   let list = [];
   try { list = await storage.list('audio'); } catch { /* server down */ }
+  $('#rec-count').textContent = list.length || '';
   $('#recordings').innerHTML = list.length ? list.map(x => `<div class="recording" data-file="${esc(x.file)}">
       <span class="rname" title="${esc(x.file)}">${esc(x.name)}</span><span class="hint">${clock(x.seconds * 1000)} · ${(x.size / 1e6).toFixed(1)} MB</span>
       <a download="${esc(x.file)}" title="Download (or drag into Ableton)">⬇</a>
+      <button class="ghost small" data-act="rspec" title="See its frequencies over time and paint on them (erase, quieter, louder, smear); saves a new recording">Spectrogram</button>
       <button class="ghost small" data-act="rdel" title="${STATIC ? 'Delete' : 'Move to data/audio/deleted/'}">✕</button>
       <audio controls preload="none"></audio>
     </div>`).join('') : '<div class="hint">No recordings yet.</div>';
@@ -791,6 +998,11 @@ async function refreshRecordings() {
   }
 }
 $('#recordings').addEventListener('click', async e => {
+  if (e.target.dataset.act === 'rspec') {
+    const { openSpectroEditor } = await import('../core/spectroedit.js');
+    openSpectroEditor({ file: e.target.closest('[data-file]').dataset.file, onSaved: () => refreshRecordings() });
+    return;
+  }
   if (e.target.dataset.act !== 'rdel') return;
   const file = e.target.closest('[data-file]').dataset.file;
   if (!confirm(STATIC ? `Delete "${file}"?` : `Move "${file}" to data/audio/deleted/?`)) return;
@@ -805,15 +1017,15 @@ attachQwerty({ active: () => prefs.midiIn === QWERTY, from: 'recorder', channel,
 // Keeps "2 min ago" current.
 setInterval(() => { if (!document.hidden) renderTakes(); }, 15000);
 
-if (STATIC) document.querySelector('#audio-sec .sub .hint').textContent = '· kept in this browser: download the ones you want to keep';
+if (STATIC) document.querySelector('[data-pane="recordings"] .hint').textContent = 'Audio you recorded, kept in this browser: download the ones you want to keep.';
 // The take editor (editor.js) and what it needs from here.
 initEditor({
   channel, toast, download,
   seq: () => seq,
   outputs: () => (midi ? [...midi.outputs.values()] : []),
   takeBpm, setTakeBpm: (id, bpm) => { cap.bpm.set(id, bpm); renderTakes(); },
-  takeSound,
-  clipsChanged: () => { refreshClips(); channel.postMessage({ type: 'clips-changed' }); },
+  takeSound, takeBacking,
+  clipsChanged: () => { refreshClips(); flashTab('clips'); channel.postMessage({ type: 'clips-changed' }); },
 });
 wireEditor();
 

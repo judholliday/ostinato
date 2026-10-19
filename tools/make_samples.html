@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Make factory samples</title>
+<p>Renders Ostinato's factory samples (for <code>samples/</code>) with the Sound Lab's engine.</p>
+<button id="go">Make them</button>
+<ul id="out"></ul>
+<script type="module">
+  import { makeSamples } from './make_samples.js';
+  document.getElementById('go').onclick = async () => {
+    for (const s of await makeSamples()) {
+      const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([s.wav], { type: 'audio/wav' })), download: s.name, textContent: `${s.name} (${s.seconds.toFixed(1)} s)` });
+      const li = document.createElement('li');
+      li.append(a);
+      document.getElementById('out').append(li);
+    }
+  };
+</script>

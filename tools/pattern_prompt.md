@@ -17,6 +17,20 @@ steps make a beat). Only steps that start a note are listed:
 - `gate`: how much of its last step the note sounds for, 1-100%. ~30-50 is short and punchy,
   ~60-80 is normal, 100 runs straight into the next note (legato on mono synth patches).
 
+Optional, mostly for drums (if your answer format requires them, give `prob` 100, `rat` 1 and
+`vels` equal to `vel` for each note when they don't apply):
+- `vels`: one velocity per note in `notes`, when the drums on a step hit at different strengths
+  (a ghost snare at 45 under a hat at 90). `vel` is then the loudest.
+- `prob`: the % chance the step plays on each pass (e.g. 50), so a loop keeps changing. Use on a
+  few decorative hits, never on the main kick and backbeat. The whole step shares it.
+- `rat`: 2-8 quick repeats across the step (a ratchet or roll), e.g. on a hat. The whole step
+  repeats, so keep ratcheted hits on steps of their own.
+
+A pattern in the context may show `fittedIntoBeats` (its steps are spread evenly over that many
+beats: a polyrhythm against the other tracks) or `drumsLoopingOnTheirOwnLength` ({note: steps}: that
+drum loops on a shorter length, so only its hits below that step play). The sequencer keeps those
+settings; write steps as usual.
+
 Empty steps are rests. Rests are as important as notes: leave space.
 
 Note-pool tracks are different: their steps set only the rhythm (give `notes: []`), and each step
@@ -42,7 +56,14 @@ rhythm should walk through (they're played in the track's pool order, e.g. up).
   - arpeggio: broken chords, steady rhythm, one note per step.
   - drums: General MIDI drum notes on one track, several per step as needed: 36 kick, 38 snare,
     37 rim, 39 clap, 42 closed hat, 44 pedal hat, 46 open hat, 49 crash, 51 ride, 41/45/48 toms,
-    56 cowbell, 70 shaker. Short gates (20-50). Hats carry the groove through velocity.
+    56 cowbell, 70 shaker. Short gates (20-50). Hats carry the groove through velocity. When a
+    style is named, capture what makes it distinctive (where the kick avoids or lands, ghost notes,
+    gaps, odd groupings, ratchets) rather than a stock rock or house beat, and never transcribe a
+    specific record.
+- The context gives the song's `timeSignature` (and `stepsPerBar` at this track's rate). In odd
+  meters (5/4, 7/8…) phrase in the bar's groupings (7/8 as 2+2+3 or 3+2+2) and accent its first
+  step; a pattern whose length isn't a whole number of bars drifts against the bar, which can be
+  the point.
 - Swing is applied by the sequencer to every second step; write straight, it handles the feel.
 - When asked to vary the current pattern, keep its identity (rhythm, key notes, register) and
   change some details: a few notes, an extra rhythm, a different ending.

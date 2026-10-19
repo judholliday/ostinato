@@ -5,8 +5,10 @@
 //   const synth = new LabSynth(audioContext, destinationNode);
 //   synth.setPatch(patch);
 //   synth.play(60, 100, synth.atTime(performance.now()), 0.5);   // or noteOn / noteOff
-import { MODULES, isSource, zoneFor } from './patch.js';
-import { ALIASES } from './drums.js';
+import { MODULES, isSource, zoneFor, DRAWBAR_HARMONIC } from './patch.js';
+import { ALIASES, padSoundKey } from './drums.js';
+import { ensureFx, fxReady, WORKLET_FX, WORKLET_VOICES } from './fxworklet.js';
+import { fft } from '../core/spectral.js';
 
 const OSC_TYPES = { saw: 'sawtooth', square: 'square', triangle: 'triangle', sine: 'sine' };
 const LFO_TYPES = { sine: 'sine', triangle: 'triangle', square: 'square', saw: 'sawtooth' };
@@ -75,6 +77,86 @@ export function reverbImpulse(sampleRate, { type = 'hall', size = 2.5, predelay 
   for (const d of chans) for (let i = 0; i < len; i++) d[i] *= k;
   return makeBuffer ? makeBuffer(chans, len) : chans;
 }
+// A piano soundboard's impulse response (or an upright's smaller board), made up: hundreds of
+// resonances (modes) spaced fairly evenly, as on a plate, from the board's lowest mode up to 10 kHz,
+// each ringing at its own frequency with a Q of 25-60 up to 100 Hz, falling as 100/f above (Q 10 at
+// 1 kHz; at least 6), so low modes ring for a few tenths of a second and high ones for a few
+// milliseconds (a real board's response lasts about 0.3-0.4 s). Plus a direct part as strong as
+// all the resonances: with sharp resonances only (Q 25-60 everywhere, no direct part), every note
+// swelled for 50-80 ms after the strike (a tone on a resonance takes Q/πf to build up) and the
+// attack sounded soft; measured now, notes peak 1-11 ms after the strike, as a piano does.
+// The modes' levels are random (each partial of a string lands on a different mix of them), but
+// set per third-octave band so that, on average, a tone passes at the same level at any pitch:
+// rising to the lowest mode, a broad bump around 300 Hz (the upright's boxier), falling above
+// `tone`. The two sides differ above 300 Hz (a board radiates each mode in its own direction), so
+// it's wide; the bass stays in the middle. A string played into it gets the board's
+// colour and bloom, and the thud of the hammer (which hammered strings send as their knock).
+const BOARDS = {
+  grand: { lowest: 45, spacing: 13, bump: 1.4, radiates: 300 },
+  upright: { lowest: 85, spacing: 22, bump: 2.2, radiates: 400 }, // a smaller board: sparser modes, boxier
+};
+export function soundboardImpulse(sampleRate, { type = 'grand', size = 1, tone = 2500, width = 0.7, direct = 0.3, qfall = 1, radiates } = {}, makeBuffer, rnd = Math.random) {
+  const b = { ...(BOARDS[type] || BOARDS.grand), ...(radiates ? { radiates } : {}) }, len = Math.round(sampleRate * 0.6 * Math.max(0.25, size));
+  const top = Math.min(10000, sampleRate * 0.45);
+  // The board radiates the bass poorly (a piano's bass fundamentals are weaker than their upper
+  // partials): rising ~10 dB/oct to `radiates` Hz; falling 12 dB/oct above Tone. Fitted to the
+  // University of Iowa grand's recordings (C2, C4, C6 at pp and ff; tools in recordings/piano/):
+  // radiates 300 Hz and Tone 2.5 kHz gave the closest partial levels (mean error 13 dB, was 20).
+  const rise = f => (f / b.radiates) ** 3.5 / (1 + (f / b.radiates) ** 3.5);
+  const target = f => rise(f) * (f / b.lowest) ** 4 / (1 + (f / b.lowest) ** 4) / (1 + (f / tone) ** 4) * (1 + (b.bump - 1) * Math.exp(-((Math.log2(f / 300) / 1.2) ** 2)));
+  // One set of modes: their levels set per band (a mode's energy goes with level² × ring time) so
+  // the set follows the target curve from `from` Hz up.
+  const board = from => {
+    const d = new Float32Array(len), modes = [], energy = new Map();
+    for (let f = Math.max(from, b.lowest) * (0.9 + 0.2 * rnd()); f < top; f += b.spacing * (0.4 + 1.2 * rnd()) * (1 + f / 4000)) {
+      const q = Math.max(6, (25 + 35 * rnd()) * Math.min(1, (100 / f) ** qfall)), m = { f, t60: Math.min(0.45 * size, 2.2 * q / f), r: Math.sqrt(-2 * Math.log(1 - rnd() * 0.999)), band: Math.round(3 * Math.log2(f / 20)), ph: (rnd() < 0.5 ? 1 : -1) * Math.PI / 2 }; // ±cosine: a band-pass (a random phase leaves a floor below each mode, ~20 dB under its peak, that filled in the bass)
+      modes.push(m);
+      energy.set(m.band, (energy.get(m.band) || 0) + m.r * m.r * m.t60);
+    }
+    for (const m of modes) {
+      const fc = 20 * 2 ** (m.band / 3), bw = fc * (2 ** (1 / 6) - 2 ** (-1 / 6)), g = m.r * Math.sqrt(target(m.f) * bw / energy.get(m.band));
+      // A decaying sine by recursion: two multiplies a sample.
+      const n = Math.min(len, Math.round(m.t60 * sampleRate)), w = 2 * Math.PI * m.f / sampleRate, r = 10 ** (-3 / (m.t60 * sampleRate)), c = 2 * r * Math.cos(w);
+      let y1 = g * Math.sin(m.ph), y2 = g * Math.sin(m.ph - w) / r;
+      for (let i = 0; i < n; i++) { const y = c * y1 - r * r * y2; d[i] += y1; y2 = y1; y1 = y; }
+    }
+    return d;
+  };
+  // Middle and sides: two different boards, left = mid + side, right = mid − side, so the sides
+  // differ (wide) but always add up to the middle in mono. The sides start above 300 Hz.
+  const mid = board(0), side = board(300), w = width * 0.8;
+  // The direct part: what the board radiates at once, before its resonances build up (a tone
+  // landing on a resonance otherwise swells for tens of ms). An impulse shaped by the same curve's
+  // ends (rising to the lowest mode, falling above Tone), as loud as `direct` × the resonances.
+  if (direct > 0) {
+    let e = 0; for (let i = 0; i < len; i++) e += mid[i] * mid[i];
+    const imp = new Float32Array(len), wl = 2 * Math.PI * b.radiates * 0.8 / sampleRate, wh = 2 * Math.PI * tone / sampleRate;
+    const ah = Math.exp(-wh), al = Math.exp(-wl);
+    let x = 1, l1 = 0, l2 = 0, h1 = 0, p1 = 0, h2 = 0, p2 = 0, ed = 0;
+    for (let i = 0; i < Math.min(len, 4096); i++) {
+      l1 = (1 - ah) * x + ah * l1; l2 = (1 - ah) * l1 + ah * l2; // two low-pass poles at Tone
+      h1 = al * (h1 + l2 - p1); p1 = l2; h2 = al * (h2 + h1 - p2); p2 = h1; // two high-pass poles: the rise
+      imp[i] = h2; ed += h2 * h2; x = 0;
+    }
+    const k = Math.sqrt(direct * e / (ed || 1));
+    for (let i = 0; i < len; i++) mid[i] += imp[i] * k;
+  }
+  const chans = [mid.map((x, i) => x + w * side[i]), mid.map((x, i) => x - w * side[i])];
+  // Levelled so a tone between 100 Hz and 5 kHz passes at about its own level: the mean of |H(f)|²
+  // there (both sides together) is 2, since a tone lands on a mode's slope more often than its peak
+  // (measured on strings: about 3 dB below the mean).
+  let n2 = 1; while (n2 < len) n2 *= 2;
+  let sum = 0, bins = 0;
+  for (const d of chans) {
+    const re = new Float64Array(n2), im = new Float64Array(n2);
+    re.set(d);
+    fft(re, im);
+    for (let i = Math.ceil(100 * n2 / sampleRate); i < 5000 * n2 / sampleRate; i++) { sum += re[i] * re[i] + im[i] * im[i]; bins += 0.5; }
+  }
+  const k = Math.SQRT2 / Math.sqrt(sum / bins || 1);
+  for (const d of chans) for (let i = 0; i < len; i++) d[i] *= k;
+  return makeBuffer ? makeBuffer(chans, len) : chans;
+}
 function impulse(ac, params) {
   return reverbImpulse(ac.sampleRate, params, (chans, len) => {
     const buf = ac.createBuffer(2, len, ac.sampleRate);
@@ -88,10 +170,38 @@ export function fileBuffer(ac, file) {
   let m = fileIRs.get(ac);
   if (!m) fileIRs.set(ac, m = new Map());
   if (!m.has(file)) {
-    m.set(file, import('../core/storage.js').then(({ storage }) => storage.get('audio', file))
+    m.set(file, import('../core/storage.js').then(({ audioBlob }) => audioBlob(file))
       .then(blob => blob.arrayBuffer()).then(b => ac.decodeAudioData(b)).catch(() => { m.delete(file); return null; }));
   }
   return m.get(file);
+}
+// The Distortion module's curves, at a drive (1 = barely, 40 = a lot).
+function shaperCurve(type, drive) {
+  const n = 2048, c = new Float32Array(n), d = Math.max(1, drive);
+  for (let i = 0; i < n; i++) {
+    const x = i / (n - 1) * 2 - 1, y = x * d;
+    c[i] = type === 'hard' ? Math.max(-1, Math.min(1, y))
+      : type === 'fold' ? Math.sin(y * Math.PI / 2)
+      : type === 'tube' ? (y >= 0 ? Math.tanh(y) : 0.8 * Math.tanh(y * 0.6) / 0.6) * 0.9
+      : type === 'rectify' ? Math.tanh(Math.abs(y))
+      : Math.tanh(y) / Math.tanh(Math.min(d, 3));
+  }
+  return c;
+}
+// A drawbar registration as one waveform: each bar is a harmonic of the 16' tone (16' = 1,
+// 5 1/3' = 3, 8' = 2 … 1' = 16), 3 dB quieter per step below 8, not normalised (more bars, louder,
+// as on the organ). Cached per context and registration.
+const organWaves = new WeakMap();
+function organWave(ac, p) {
+  let m = organWaves.get(ac);
+  if (!m) organWaves.set(ac, m = new Map());
+  const bars = Array.from({ length: 9 }, (_, k) => Math.round(p[`bar${k + 1}`] || 0)), key = bars.join('');
+  if (!m.has(key)) {
+    const imag = new Float32Array(17), real = new Float32Array(17);
+    bars.forEach((d, k) => { if (d > 0) imag[DRAWBAR_HARMONIC[k]] += 0.28 * 10 ** ((d - 8) * 3 / 20); });
+    m.set(key, ac.createPeriodicWave(real, imag, { disableNormalization: true }));
+  }
+  return m.get(key);
 }
 // Soft saturation for the tape echo's feedback.
 let tapeCurve = null;
@@ -102,12 +212,20 @@ const rad = d => d * Math.PI / 180;
 // Modulation amounts are in the target's units; pulse width is scaled to the comparator offset.
 const modScale = key => (key === 'pw' ? 2 : 1);
 
-// Attack-decay-sustain on an AudioParam from t0, up to `peak`.
-function envOn(param, t0, p, peak = 1) {
+// Attack-decay-sustain on an AudioParam from t0, up to `peak`. `k` scales the times (see envTimes).
+function envOn(param, t0, p, peak = 1, k = { attack: 1, decay: 1 }) {
+  const attack = p.attack * k.attack;
   param.cancelScheduledValues(t0);
   param.setValueAtTime(0, t0);
-  param.linearRampToValueAtTime(peak, t0 + p.attack);
-  param.setTargetAtTime(p.sustain * peak, t0 + p.attack, p.decay / 4);
+  param.linearRampToValueAtTime(peak, t0 + attack);
+  param.setTargetAtTime(p.sustain * peak, t0 + attack, p.decay * k.decay / 4);
+}
+// How an envelope's times change with the note: Key → time shortens them up the keyboard (1 =
+// half as long each octave above C4, twice as long each octave below), Velocity → time makes
+// harder notes ring longer and attack faster (or, below 0, the reverse), up to twice / half.
+function envTimes(p, note, vel) {
+  const key = 2 ** (-(note - 60) / 12 * (p.keytrack || 0)), v = 2 ** ((p.veltime || 0) * (vel - 64) / 63);
+  return { attack: key / v, decay: key * v, release: key * v };
 }
 function envOff(param, t, release) {
   if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(t); else param.cancelScheduledValues(t);
@@ -180,20 +298,54 @@ function drumHit(ac, a, note, vel, t0, kit, pads, out, src, keep, samples = new 
     }
   }
   if (p.click > 0) noiseLayer(p.click * bright, 'bandpass', 2500, 0.8, 0.015);
-  // The sample: at its own pitch (plus the pad's and the kit's tuning), faded over its decay.
-  const buf = p.sFile && p.sLevel > 0 && samples.get(p.sFile);
-  if (buf) {
-    const s = src(ac.createBufferSource()), rate = 2 ** (p.sTune / 12) * tune, from = Math.min(p.sStart, 0.999) * buf.duration;
+  // A recording (the sample, or the pad's sound rendered to audio), faded over its decay.
+  const bufferLayer = (buf, level, rate, from, decay) => {
+    const s = src(ac.createBufferSource());
     s.buffer = buf;
     s.playbackRate.value = rate;
-    const natural = (buf.duration - from) / rate, d = Math.min(natural, p.sDecay * dk), g = keep(ac.createGain());
-    g.gain.setValueAtTime(p.sLevel * v, t0);
+    const natural = (buf.duration - from) / rate, d = Math.min(natural, decay * dk), g = keep(ac.createGain());
+    g.gain.setValueAtTime(level * v, t0);
     if (d < natural) g.gain.exponentialRampToValueAtTime(0.0005, t0 + d);
     s._start = [from];
     s.connect(g).connect(into);
     longest = Math.max(longest, d + 0.05);
-  }
+  };
+  // The sample: at its own pitch (plus the pad's and the kit's tuning), trimmed at its start.
+  const buf = p.sFile && p.sLevel > 0 && samples.get(p.sFile);
+  if (buf) bufferLayer(buf, p.sLevel, 2 ** (p.sTune / 12) * tune, Math.min(p.sStart, 0.999) * buf.duration, p.sDecay);
+  // The pad's sound, once rendered (see LabSynth.loadSamples); the kit's tuning still applies.
+  const lbuf = p.lSound && p.lLevel > 0 && samples.get(padSoundKey(p));
+  if (lbuf) bufferLayer(lbuf, p.lLevel, tune, 0, p.lDecay);
   return longest;
+}
+
+// The drum pads with a sound, by padSoundKey.
+function padSoundsOf(patch) {
+  const out = new Map();
+  for (const m of patch?.modules || []) for (const p of Object.values(m.pads || {})) if (p.lSound) out.set(padSoundKey(p), p);
+  return out;
+}
+
+// A sound played once, rendered to audio: the note held for `hold` seconds, then up to `tail`
+// seconds of release (trailing silence cut off, with a short fade at the end).
+export async function renderSound(patch, note, hold, sampleRate = 44100, tail = 4) {
+  const ctx = new OfflineAudioContext(2, Math.ceil(sampleRate * (hold + tail)), sampleRate), s = new LabSynth(ctx, ctx.destination);
+  s.setPatch(patch);
+  s.out.gain.cancelScheduledValues(0);
+  s.out.gain.value = s.patch.volume;
+  await s.ready();
+  s.play(note, 110, 0, hold);
+  const buf = await ctx.startRendering(), chans = [buf.getChannelData(0), buf.getChannelData(1)];
+  let end = Math.ceil(hold * sampleRate);
+  for (const d of chans) for (let i = d.length - 1; i > end; i--) if (Math.abs(d[i]) > 1e-4) { end = i; break; }
+  const len = Math.min(buf.length, end + Math.round(0.01 * sampleRate)), fade = Math.min(len, Math.round(0.01 * sampleRate));
+  const out = new AudioBuffer({ numberOfChannels: 2, length: Math.max(1, len), sampleRate });
+  chans.forEach((d, ch) => {
+    const c = d.slice(0, len);
+    for (let i = 0; i < fade; i++) c[len - 1 - i] *= i / fade;
+    out.copyToChannel(c, ch);
+  });
+  return out;
 }
 
 export class LabSynth {
@@ -220,20 +372,50 @@ export class LabSynth {
     this.scopes = null; // module id (or 'out') -> AnalyserNode, once enableScopes() is called
     this.samples = new Map(); // file -> AudioBuffer: the recordings the patch's samplers and pads use
     this.onSample = null; // called with a file name when it has loaded
+    this.loading = Promise.resolve(); // settles when everything loadSamples() started has loaded
+    this.padWait = []; // ready() calls waiting for pad sounds to render
   }
 
   // Loads every recording the patch uses, so notes can start them at once (a note played before
-  // its sample has loaded is silent).
+  // its sample has loaded is silent). Drum pads' sounds are rendered to audio here too, kept
+  // under padSoundKey() beside the recordings, a moment after their settings stop changing.
   loadSamples() {
-    const files = new Set();
+    const files = new Set(), sounds = padSoundsOf(this.patch);
     for (const m of this.patch?.modules || []) {
       if ((m.type === 'sampler' || m.type === 'granular') && m.params.file) files.add(m.params.file);
       for (const z of m.zones || []) files.add(z.file);
       for (const p of Object.values(m.pads || {})) if (p.sFile) files.add(p.sFile);
     }
+    const loads = [];
     for (const f of files) if (!this.samples.has(f)) {
-      fileBuffer(this.ac, f).then(b => { if (b) { this.samples.set(f, b); this.onSample?.(f); } });
+      loads.push(fileBuffer(this.ac, f).then(b => { if (b) { this.samples.set(f, b); this.onSample?.(f); } }));
     }
+    for (const k of this.samples.keys()) if (k.startsWith('sound:') && !sounds.has(k)) this.samples.delete(k);
+    if ([...sounds.keys()].some(k => !this.samples.has(k))) loads.push(this.renderPadSounds());
+    // Effects that need the worklet: load it, then rebuild the effects that waited for it.
+    const usesFx = (this.patch?.modules || []).some(m => WORKLET_FX.includes(m.type) || WORKLET_VOICES.includes(m.type) || m.rack?.modules.some(e => WORKLET_FX.includes(e.type)));
+    if (usesFx && !fxReady(this.ac)) loads.push(ensureFx(this.ac).then(ok => { if (ok && this.fxPending) { this.fxPending = false; this.buildGlobals(); } }));
+    this.loading = Promise.all(loads);
+  }
+  renderPadSounds() {
+    clearTimeout(this.padTimer);
+    const done = new Promise(res => this.padWait.push(res));
+    this.padTimer = setTimeout(async () => {
+      const wait = this.padWait.splice(0);
+      for (;;) {
+        const [k, p] = [...padSoundsOf(this.patch)].find(([key]) => !this.samples.has(key)) || [];
+        if (!k) break;
+        const buf = await renderSound(p.lSound.patch, p.lNote, p.lHold, this.ac.sampleRate).catch(() => null);
+        if (!buf) break;
+        if (padSoundsOf(this.patch).has(k)) { this.samples.set(k, buf); this.onSample?.(k); }
+      }
+      wait.forEach(res => res());
+    }, 120);
+    return done;
+  }
+  // Settles once every recording and pad sound the patch uses has loaded (or failed to).
+  async ready() {
+    for (let last; last !== this.loading;) { last = this.loading; await last; }
   }
 
   // Taps for drawing waveforms: every audio module's output (all its notes summed) and the
@@ -264,12 +446,17 @@ export class LabSynth {
   setPatch(input) {
     const patch = JSON.parse(JSON.stringify(input)); // our own copy; change it with setParam / setMod
     // Settings marked `rebuild` (an oscillator's wave, a filter's slope...) change which nodes a note uses.
-    const shape = p => JSON.stringify([p.modules.map(m => [m.id, m.type, !!m.off, ...MODULES[m.type].params.filter(x => x.rebuild).map(x => m.params[x.key])]), p.audio, p.mod.map(m => [m.from, m.to])]);
+    const fx = m => [m.type, !!m.off, ...MODULES[m.type].params.filter(x => x.rebuild).map(x => m.params[x.key])];
+    const shape = p => JSON.stringify([p.modules.map(m => [m.id, ...fx(m), m.rack?.modules.map(fx)]), p.audio, p.mod.map(m => [m.from, m.to])]);
     const old = this.patch;
     this.patch = patch;
     this.loadSamples();
     if (old && shape(old) === shape(patch)) {
-      for (const m of patch.modules) for (const [k, v] of Object.entries(m.params)) if (old.modules.find(x => x.id === m.id)?.params[k] !== v) this.applyParam(m.id, k, v);
+      for (const m of patch.modules) {
+        const was = old.modules.find(x => x.id === m.id);
+        for (const [k, v] of Object.entries(m.params)) if (was?.params[k] !== v) this.applyParam(m.id, k, v);
+        m.rack?.modules.forEach((e, i) => { for (const [k, v] of Object.entries(e.params)) if (was?.rack?.modules[i]?.params[k] !== v) this.applyParam(m.id, `${i}.${k}`, v); });
+      }
       patch.mod.forEach((c, i) => { if (old.mod[i]?.amount !== c.amount) this.applyMod(c); });
       this.setVolume();
       return;
@@ -288,7 +475,8 @@ export class LabSynth {
   setParam(id, key, value) {
     const m = this.patch?.modules.find(x => x.id === id);
     if (!m) return;
-    m.params[key] = value;
+    const [k, inner] = key.split('.'); // "<index>.<key>": an effect inside a rack
+    if (inner !== undefined) { const e = m.rack?.modules[+k]; if (e) e.params[inner] = value; } else m.params[key] = value;
     this.applyParam(id, key, value);
   }
   setMod(index, amount) {
@@ -301,7 +489,11 @@ export class LabSynth {
     for (const v of this.voices) v.set[`${id}.${key}`]?.(value);
     this.globals.get(id)?.set[key]?.(value);
   }
-  applyMod(c) { for (const v of this.voices) v.set[`mod:${c.from}>${c.to}`]?.(c.amount); }
+  applyMod(c) {
+    for (const v of this.voices) v.set[`mod:${c.from}>${c.to}`]?.(c.amount);
+    const gm = this.globalMods?.get(`${c.from}>${c.to}`);
+    if (gm) gm.amt.gain.setTargetAtTime(c.amount * gm.k, this.ac.currentTime, 0.01);
+  }
 
   // ---- effects ----
   buildGlobals() {
@@ -310,183 +502,378 @@ export class LabSynth {
     const ac = this.ac, t = ac.currentTime;
     for (const m of this.patch.modules) {
       if (MODULES[m.type].scope !== 'global') continue;
-      const p = m.params, input = ac.createGain(), output = ac.createGain(), dry = ac.createGain(), wet = ac.createGain();
-      if (m.off) { // bypassed: straight through
-        input.connect(output);
-        this.globals.set(m.id, { input, output, nodes: [input, output], set: {} });
-        continue;
-      }
-      input.connect(dry).connect(output);
-      wet.connect(output);
-      const g = { input, output, nodes: [input, output, dry, wet], set: {} };
       const now = () => this.patch.modules.find(x => x.id === m.id)?.params || m.params; // its settings as they are now
-      const mix = (wetAmount, dryAmount = 1 - wetAmount) => { wet.gain.setTargetAtTime(wetAmount, ac.currentTime, 0.02); dry.gain.setTargetAtTime(dryAmount, ac.currentTime, 0.02); };
-      if (m.type === 'chorus') {
-        const lfo = ac.createOscillator(), depth = ac.createGain();
-        lfo.frequency.value = p.rate;
-        depth.gain.value = p.depth * 0.004;
-        lfo.connect(depth);
-        for (const [base, pan] of [[0.012, -0.7], [0.019, 0.7]]) {
-          const d = ac.createDelay(0.1), panner = ac.createStereoPanner(), inv = ac.createGain();
-          d.delayTime.value = base;
-          panner.pan.value = pan;
-          inv.gain.value = pan < 0 ? 1 : -1; // the two sides move opposite ways
-          depth.connect(inv).connect(d.delayTime);
-          input.connect(d).connect(panner).connect(wet);
-          g.nodes.push(d, panner, inv);
-        }
-        lfo.start(t);
-        g.nodes.push(lfo, depth);
-        g.set = { rate: v => lfo.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: v => depth.gain.setTargetAtTime(v * 0.004, ac.currentTime, 0.05), mix: v => mix(v, 1 - v * 0.5) };
-        mix(p.mix, 1 - p.mix * 0.5);
-      } else if (m.type === 'delay') {
-        // Normal: one echo line. Ping-pong: two, crossing, one each side. Tape: one with a
-        // wobbling time and a little saturation in the loop.
-        const line = pan => {
-          const d = ac.createDelay(2.5), tone = ac.createBiquadFilter(), fb = ac.createGain();
-          d.delayTime.value = p.time;
-          tone.type = 'lowpass';
-          tone.frequency.value = p.tone;
-          fb.gain.value = p.feedback;
-          d.connect(tone).connect(fb);
-          if (pan === null) tone.connect(wet);
-          else { const pn = ac.createStereoPanner(); pn.pan.value = pan; tone.connect(pn).connect(wet); g.nodes.push(pn); }
-          g.nodes.push(d, tone, fb);
-          return { d, tone, fb };
-        };
-        const lines = p.mode === 'ping-pong' ? [line(-0.85), line(0.85)] : [line(null)];
-        input.connect(lines[0].d);
-        if (lines.length === 2) { lines[0].fb.connect(lines[1].d); lines[1].fb.connect(lines[0].d); }
-        else if (p.mode === 'tape') {
-          const sat = ac.createWaveShaper(), slow = ac.createOscillator(), fast = ac.createOscillator(), wob = ac.createGain();
-          sat.curve = tapeSat();
-          lines[0].fb.connect(sat).connect(lines[0].d);
-          slow.frequency.value = 0.6; fast.frequency.value = 3.1;
-          wob.gain.value = p.wobble * 0.004;
-          slow.connect(wob); fast.connect(wob);
-          wob.connect(lines[0].d.delayTime);
-          slow.start(t); fast.start(t);
-          g.nodes.push(sat, slow, fast, wob);
-          g.set.wobble = v => wob.gain.setTargetAtTime(v * 0.004, ac.currentTime, 0.05);
-        } else lines[0].fb.connect(lines[0].d);
-        Object.assign(g.set, {
-          time: v => lines.forEach(l => l.d.delayTime.setTargetAtTime(v, ac.currentTime, 0.05)),
-          feedback: v => lines.forEach(l => l.fb.gain.setTargetAtTime(v, ac.currentTime, 0.02)),
-          tone: v => lines.forEach(l => l.tone.frequency.setTargetAtTime(v, ac.currentTime, 0.02)),
-          mix: v => mix(v, 1),
-        });
-        mix(p.mix, 1);
-      } else if (m.type === 'reverb') {
-        const conv = ac.createConvolver();
-        // The response is remade (or the file loaded) a moment after its settings stop changing.
-        let timer = null, made = 0;
-        const remake = () => {
-          const q = now(), n = ++made;
-          if (q.type === 'file' && q.file) {
-            fileBuffer(ac, q.file).then(buf => {
-              if (n !== made) return;
-              if (!buf) { conv.buffer = impulse(ac, { ...q, type: 'hall' }); return; }
-              // The pre-delay goes in front of the file's own response.
-              const pre = Math.round(ac.sampleRate * q.predelay / 1000), b = ac.createBuffer(2, buf.length + pre, ac.sampleRate);
-              // Levelled like the made-up ones, so a loud recording doesn't jump out.
-              let e = 0;
-              for (let ch = 0; ch < buf.numberOfChannels; ch++) for (const x of buf.getChannelData(ch)) e += x * x;
-              const k = 0.5 / Math.sqrt((e * 2 / buf.numberOfChannels) / ac.sampleRate || 1);
-              for (let ch = 0; ch < 2; ch++) b.copyToChannel(buf.getChannelData(Math.min(ch, buf.numberOfChannels - 1)).map(x => x * k), ch, pre);
-              conv.buffer = b;
-            });
-          } else conv.buffer = impulse(ac, q.type === 'file' ? { ...q, type: 'hall' } : q);
-        };
-        remake();
-        input.connect(conv).connect(wet);
-        g.nodes.push(conv);
-        const later = () => { clearTimeout(timer); timer = setTimeout(remake, 150); };
-        g.set = { type: later, file: later, size: later, predelay: later, damping: later, mix: v => mix(v, 1 - v * 0.4) };
-        mix(p.mix, 1 - p.mix * 0.4);
-      } else if (m.type === 'phaser') {
-        // Four all-pass filters swept together by an LFO; mixed with the dry sound they cut moving notches.
-        const lfo = ac.createOscillator(), depth = ac.createGain(), fb = ac.createGain(), aps = [];
-        for (let k = 0; k < 4; k++) { const f = ac.createBiquadFilter(); f.type = 'allpass'; f.frequency.value = 700; f.Q.value = 0.6; aps.push(f); }
-        aps.reduce((a, b) => a.connect(b));
-        input.connect(aps[0]);
-        aps[3].connect(wet);
-        aps[3].connect(fb).connect(aps[0]);
-        fb.gain.value = p.feedback;
-        lfo.frequency.value = p.rate;
-        depth.gain.value = p.depth * 2400; // cents: up to ±2 octaves
-        lfo.connect(depth);
-        aps.forEach(f => depth.connect(f.detune));
-        lfo.start(t);
-        g.nodes.push(lfo, depth, fb, ...aps);
-        g.set = { rate: v => lfo.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: v => depth.gain.setTargetAtTime(v * 2400, ac.currentTime, 0.05),
-          feedback: v => fb.gain.setTargetAtTime(v, ac.currentTime, 0.02), mix: v => mix(v, 1) };
-        mix(p.mix, 1);
-      } else if (m.type === 'flanger') {
-        const d = ac.createDelay(0.05), lfo = ac.createOscillator(), depth = ac.createGain(), fb = ac.createGain();
-        d.delayTime.value = 0.004;
-        lfo.frequency.value = p.rate;
-        depth.gain.value = p.depth * 0.0035;
-        lfo.connect(depth).connect(d.delayTime);
-        fb.gain.value = p.feedback;
-        input.connect(d).connect(wet);
-        d.connect(fb).connect(d);
-        lfo.start(t);
-        g.nodes.push(d, lfo, depth, fb);
-        g.set = { rate: v => lfo.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: v => depth.gain.setTargetAtTime(v * 0.0035, ac.currentTime, 0.05),
-          feedback: v => fb.gain.setTargetAtTime(v, ac.currentTime, 0.02), mix: v => mix(v, 1) };
-        mix(p.mix, 1);
-      } else if (m.type === 'tremolo') {
-        // The depth is shared between volume (pan 0) and left-right movement (pan 1).
-        const vca = ac.createGain(), pn = ac.createStereoPanner(), lfo = ac.createOscillator(), vol = ac.createGain(), side = ac.createGain();
-        const apply = () => {
-          const q = now(), at = ac.currentTime;
-          vca.gain.setTargetAtTime(1 - q.depth * (1 - q.pan) * 0.5, at, 0.02);
-          vol.gain.setTargetAtTime(q.depth * (1 - q.pan) * 0.5, at, 0.02);
-          side.gain.setTargetAtTime(q.depth * q.pan, at, 0.02);
-        };
-        lfo.frequency.value = p.rate;
-        lfo.connect(vol).connect(vca.gain);
-        lfo.connect(side).connect(pn.pan);
-        input.connect(vca).connect(pn).connect(wet);
-        lfo.start(t);
-        apply();
-        g.nodes.push(vca, pn, lfo, vol, side);
-        g.set = { rate: v => lfo.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: apply, pan: apply };
-        mix(1, 0);
-      } else if (m.type === 'eq') {
-        const lo = ac.createBiquadFilter(), mid = ac.createBiquadFilter(), hi = ac.createBiquadFilter();
-        lo.type = 'lowshelf'; lo.frequency.value = 120; lo.gain.value = p.low;
-        mid.type = 'peaking'; mid.frequency.value = p.midfreq; mid.Q.value = 0.9; mid.gain.value = p.mid;
-        hi.type = 'highshelf'; hi.frequency.value = 8000; hi.gain.value = p.high;
-        input.connect(lo).connect(mid).connect(hi).connect(wet);
-        g.nodes.push(lo, mid, hi);
-        const to = (param, v) => param.setTargetAtTime(v, ac.currentTime, 0.02);
-        g.set = { low: v => to(lo.gain, v), mid: v => to(mid.gain, v), midfreq: v => to(mid.frequency, v), high: v => to(hi.gain, v) };
-        mix(1, 0);
-      } else if (m.type === 'compressor') {
-        const c = ac.createDynamicsCompressor(), make = ac.createGain();
-        c.threshold.value = p.threshold; c.ratio.value = p.ratio; c.attack.value = p.attack; c.release.value = p.release; c.knee.value = 6;
-        make.gain.value = 10 ** (p.gain / 20);
-        input.connect(c).connect(make).connect(wet);
-        g.nodes.push(c, make);
-        const to = (param, v) => param.setTargetAtTime(v, ac.currentTime, 0.02);
-        g.set = { threshold: v => to(c.threshold, v), ratio: v => to(c.ratio, v), attack: v => to(c.attack, v), release: v => to(c.release, v),
-          gain: v => to(make.gain, 10 ** (v / 20)) };
-        mix(1, 0);
-      }
-      this.globals.set(m.id, g);
+      this.globals.set(m.id, m.type === 'glfo' ? this.buildGlobalLfo(m) : m.type === 'rack' ? this.buildRack(m) : this.buildEffect(m, now));
     }
-    if (this.scopes) for (const [id, g] of this.globals) g.output.connect(this.scope(id));
+    // Modulation of effects: from the mod wheel or a Global LFO (global sources only; patch.js).
+    this.globalMods = new Map();
+    for (const c of this.patch.mod) {
+      const [tid, key] = c.to.split('.'), target = this.globals.get(tid), params = target?.targets?.[key];
+      const from = c.from === 'wheel' ? this.wheel : this.globals.get(c.from)?.out;
+      if (!from || !params?.length) continue;
+      const amt = ac.createGain(), k = target.scales?.[key] ?? 1;
+      amt.gain.value = c.amount * k;
+      from.connect(amt);
+      params.forEach(pm => amt.connect(pm));
+      target.nodes.push(amt, { disconnect: () => { try { from.disconnect(amt); } catch { /* gone */ } } });
+      this.globalMods.set(`${c.from}>${c.to}`, { amt, k });
+    }
+    if (this.scopes) for (const [id, g] of this.globals) g.output?.connect(this.scope(id));
     for (const c of this.patch.audio) {
       const from = this.globals.get(c.from);
-      if (!from) continue;
+      if (!from?.output) continue;
       from.output.connect(c.to === 'out' ? this.bus : this.globals.get(c.to).input);
     }
+  }
+
+  // A Global LFO: one for the whole sound, for modulating effects. Its `out` feeds modulations.
+  buildGlobalLfo(m) {
+    const ac = this.ac, p = m.params, osc = ac.createOscillator(), depth = ac.createGain();
+    osc.type = { sine: 'sine', triangle: 'triangle', square: 'square', saw: 'sawtooth' }[p.wave] || 'sine';
+    osc.frequency.value = p.rate;
+    depth.gain.value = p.depth;
+    osc.connect(depth);
+    if (!m.off) osc.start();
+    return { out: depth, nodes: [osc, depth], set: { rate: v => osc.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: v => depth.gain.setTargetAtTime(v, ac.currentTime, 0.05) },
+      targets: { rate: [osc.frequency], depth: [depth.gain] } };
+  }
+
+  // One effect: input → dry and wet → output, with `set` functions for its settings. `now()` gives
+  // its settings as they are now (the page swaps the patch object as you edit).
+  buildEffect(m, now) {
+    const ac = this.ac, t = ac.currentTime;
+    const p = m.params, input = ac.createGain(), output = ac.createGain(), dry = ac.createGain(), wet = ac.createGain();
+    if (m.off) { // bypassed: straight through
+      input.connect(output);
+      return { input, output, nodes: [input, output], set: {} };
+    }
+    input.connect(dry).connect(output);
+    wet.connect(output);
+    const g = { input, output, nodes: [input, output, dry, wet], set: {} };
+    const mix = (wetAmount, dryAmount = 1 - wetAmount) => { wet.gain.setTargetAtTime(wetAmount, ac.currentTime, 0.02); dry.gain.setTargetAtTime(dryAmount, ac.currentTime, 0.02); };
+    if (m.type === 'chorus') {
+      const lfo = ac.createOscillator(), depth = ac.createGain();
+      lfo.frequency.value = p.rate;
+      depth.gain.value = p.depth * 0.004;
+      lfo.connect(depth);
+      for (const [base, pan] of [[0.012, -0.7], [0.019, 0.7]]) {
+        const d = ac.createDelay(0.1), panner = ac.createStereoPanner(), inv = ac.createGain();
+        d.delayTime.value = base;
+        panner.pan.value = pan;
+        inv.gain.value = pan < 0 ? 1 : -1; // the two sides move opposite ways
+        depth.connect(inv).connect(d.delayTime);
+        input.connect(d).connect(panner).connect(wet);
+        g.nodes.push(d, panner, inv);
+      }
+      lfo.start(t);
+      g.nodes.push(lfo, depth);
+      g.set = { rate: v => lfo.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: v => depth.gain.setTargetAtTime(v * 0.004, ac.currentTime, 0.05), mix: v => mix(v, 1 - v * 0.5) };
+      mix(p.mix, 1 - p.mix * 0.5);
+      Object.assign(g, { targets: { rate: [lfo.frequency], depth: [depth.gain], mix: [wet.gain] }, scales: { depth: 0.004 } });
+    } else if (m.type === 'delay') {
+      // Normal: one echo line. Ping-pong: two, crossing, one each side. Tape: one with a
+      // wobbling time and a little saturation in the loop.
+      const line = pan => {
+        const d = ac.createDelay(2.5), tone = ac.createBiquadFilter(), fb = ac.createGain();
+        d.delayTime.value = p.time;
+        tone.type = 'lowpass';
+        tone.frequency.value = p.tone;
+        fb.gain.value = p.feedback;
+        d.connect(tone).connect(fb);
+        if (pan === null) tone.connect(wet);
+        else { const pn = ac.createStereoPanner(); pn.pan.value = pan; tone.connect(pn).connect(wet); g.nodes.push(pn); }
+        g.nodes.push(d, tone, fb);
+        return { d, tone, fb };
+      };
+      const lines = p.mode === 'ping-pong' ? [line(-0.85), line(0.85)] : [line(null)];
+      input.connect(lines[0].d);
+      if (lines.length === 2) { lines[0].fb.connect(lines[1].d); lines[1].fb.connect(lines[0].d); }
+      else if (p.mode === 'tape') {
+        const sat = ac.createWaveShaper(), slow = ac.createOscillator(), fast = ac.createOscillator(), wob = ac.createGain();
+        sat.curve = tapeSat();
+        lines[0].fb.connect(sat).connect(lines[0].d);
+        slow.frequency.value = 0.6; fast.frequency.value = 3.1;
+        wob.gain.value = p.wobble * 0.004;
+        slow.connect(wob); fast.connect(wob);
+        wob.connect(lines[0].d.delayTime);
+        slow.start(t); fast.start(t);
+        g.nodes.push(sat, slow, fast, wob);
+        g.set.wobble = v => wob.gain.setTargetAtTime(v * 0.004, ac.currentTime, 0.05);
+      } else lines[0].fb.connect(lines[0].d);
+      Object.assign(g.set, {
+        time: v => lines.forEach(l => l.d.delayTime.setTargetAtTime(v, ac.currentTime, 0.05)),
+        feedback: v => lines.forEach(l => l.fb.gain.setTargetAtTime(v, ac.currentTime, 0.02)),
+        tone: v => lines.forEach(l => l.tone.frequency.setTargetAtTime(v, ac.currentTime, 0.02)),
+        mix: v => mix(v, 1),
+      });
+      mix(p.mix, 1);
+      g.targets = { time: lines.map(l => l.d.delayTime), feedback: lines.map(l => l.fb.gain), mix: [wet.gain] };
+    } else if (m.type === 'reverb') {
+      const conv = ac.createConvolver();
+      // The response is remade (or the file loaded) a moment after its settings stop changing.
+      let timer = null, made = 0;
+      const remake = () => {
+        const q = now(), n = ++made;
+        if (q.type === 'file' && q.file) {
+          fileBuffer(ac, q.file).then(buf => {
+            if (n !== made) return;
+            if (!buf) { conv.buffer = impulse(ac, { ...q, type: 'hall' }); return; }
+            // The pre-delay goes in front of the file's own response.
+            const pre = Math.round(ac.sampleRate * q.predelay / 1000), b = ac.createBuffer(2, buf.length + pre, ac.sampleRate);
+            // Levelled like the made-up ones, so a loud recording doesn't jump out.
+            let e = 0;
+            for (let ch = 0; ch < buf.numberOfChannels; ch++) for (const x of buf.getChannelData(ch)) e += x * x;
+            const k = 0.5 / Math.sqrt((e * 2 / buf.numberOfChannels) / ac.sampleRate || 1);
+            for (let ch = 0; ch < 2; ch++) b.copyToChannel(buf.getChannelData(Math.min(ch, buf.numberOfChannels - 1)).map(x => x * k), ch, pre);
+            conv.buffer = b;
+          });
+        } else conv.buffer = impulse(ac, q.type === 'file' ? { ...q, type: 'hall' } : q);
+      };
+      remake();
+      input.connect(conv).connect(wet);
+      g.nodes.push(conv);
+      const later = () => { clearTimeout(timer); timer = setTimeout(remake, 150); };
+      g.set = { type: later, file: later, size: later, predelay: later, damping: later, mix: v => mix(v, 1 - v * 0.4) };
+      mix(p.mix, 1 - p.mix * 0.4);
+      g.targets = { mix: [wet.gain] };
+    } else if (m.type === 'soundboard') {
+      const conv = ac.createConvolver();
+      conv.normalize = false;
+      let timer = null;
+      const remake = () => {
+        conv.buffer = soundboardImpulse(ac.sampleRate, now(), (chans, len) => {
+          const buf = ac.createBuffer(2, len, ac.sampleRate);
+          chans.forEach((d, ch) => buf.copyToChannel(d, ch));
+          return buf;
+        });
+      };
+      remake();
+      input.connect(conv).connect(wet);
+      g.nodes.push(conv);
+      const later = () => { clearTimeout(timer); timer = setTimeout(remake, 150); };
+      g.set = { type: later, size: later, tone: later, width: later, mix: v => mix(v) };
+      mix(p.mix);
+      g.targets = { mix: [wet.gain] };
+    } else if (m.type === 'phaser') {
+      // Four all-pass filters swept together by an LFO; mixed with the dry sound they cut moving notches.
+      const lfo = ac.createOscillator(), depth = ac.createGain(), fb = ac.createGain(), aps = [];
+      for (let k = 0; k < 4; k++) { const f = ac.createBiquadFilter(); f.type = 'allpass'; f.frequency.value = 700; f.Q.value = 0.6; aps.push(f); }
+      aps.reduce((a, b) => a.connect(b));
+      input.connect(aps[0]);
+      aps[3].connect(wet);
+      aps[3].connect(fb).connect(aps[0]);
+      fb.gain.value = p.feedback;
+      lfo.frequency.value = p.rate;
+      depth.gain.value = p.depth * 2400; // cents: up to ±2 octaves
+      lfo.connect(depth);
+      aps.forEach(f => depth.connect(f.detune));
+      lfo.start(t);
+      g.nodes.push(lfo, depth, fb, ...aps);
+      g.set = { rate: v => lfo.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: v => depth.gain.setTargetAtTime(v * 2400, ac.currentTime, 0.05),
+        feedback: v => fb.gain.setTargetAtTime(v, ac.currentTime, 0.02), mix: v => mix(v, 1) };
+      mix(p.mix, 1);
+      Object.assign(g, { targets: { rate: [lfo.frequency], depth: [depth.gain], feedback: [fb.gain] }, scales: { depth: 2400 } });
+    } else if (m.type === 'flanger') {
+      const d = ac.createDelay(0.05), lfo = ac.createOscillator(), depth = ac.createGain(), fb = ac.createGain();
+      d.delayTime.value = 0.004;
+      lfo.frequency.value = p.rate;
+      depth.gain.value = p.depth * 0.0035;
+      lfo.connect(depth).connect(d.delayTime);
+      fb.gain.value = p.feedback;
+      input.connect(d).connect(wet);
+      d.connect(fb).connect(d);
+      lfo.start(t);
+      g.nodes.push(d, lfo, depth, fb);
+      g.set = { rate: v => lfo.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: v => depth.gain.setTargetAtTime(v * 0.0035, ac.currentTime, 0.05),
+        feedback: v => fb.gain.setTargetAtTime(v, ac.currentTime, 0.02), mix: v => mix(v, 1) };
+      mix(p.mix, 1);
+      Object.assign(g, { targets: { rate: [lfo.frequency], depth: [depth.gain], feedback: [fb.gain] }, scales: { depth: 0.0035 } });
+    } else if (m.type === 'tremolo') {
+      // The depth is shared between volume (pan 0) and left-right movement (pan 1).
+      const vca = ac.createGain(), pn = ac.createStereoPanner(), lfo = ac.createOscillator(), vol = ac.createGain(), side = ac.createGain();
+      const apply = () => {
+        const q = now(), at = ac.currentTime;
+        vca.gain.setTargetAtTime(1 - q.depth * (1 - q.pan) * 0.5, at, 0.02);
+        vol.gain.setTargetAtTime(q.depth * (1 - q.pan) * 0.5, at, 0.02);
+        side.gain.setTargetAtTime(q.depth * q.pan, at, 0.02);
+      };
+      lfo.frequency.value = p.rate;
+      lfo.connect(vol).connect(vca.gain);
+      lfo.connect(side).connect(pn.pan);
+      input.connect(vca).connect(pn).connect(wet);
+      lfo.start(t);
+      apply();
+      g.nodes.push(vca, pn, lfo, vol, side);
+      g.set = { rate: v => lfo.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: apply, pan: apply };
+      g.targets = { rate: [lfo.frequency] };
+      mix(1, 0);
+    } else if (m.type === 'eq') {
+      const lo = ac.createBiquadFilter(), mid = ac.createBiquadFilter(), hi = ac.createBiquadFilter();
+      lo.type = 'lowshelf'; lo.frequency.value = 120; lo.gain.value = p.low;
+      mid.type = 'peaking'; mid.frequency.value = p.midfreq; mid.Q.value = 0.9; mid.gain.value = p.mid;
+      hi.type = 'highshelf'; hi.frequency.value = 8000; hi.gain.value = p.high;
+      input.connect(lo).connect(mid).connect(hi).connect(wet);
+      g.nodes.push(lo, mid, hi);
+      const to = (param, v) => param.setTargetAtTime(v, ac.currentTime, 0.02);
+      g.set = { low: v => to(lo.gain, v), mid: v => to(mid.gain, v), midfreq: v => to(mid.frequency, v), high: v => to(hi.gain, v) };
+      g.targets = { low: [lo.gain], mid: [mid.gain], high: [hi.gain] };
+      mix(1, 0);
+    } else if (m.type === 'shaper') {
+      const sh = ac.createWaveShaper(), dc = ac.createBiquadFilter(), tone = ac.createBiquadFilter(), lvl = ac.createGain();
+      sh.curve = shaperCurve(p.curve, p.drive);
+      sh.oversample = '4x';
+      dc.type = 'highpass'; dc.frequency.value = 20; // the lopsided curves add a DC offset
+      tone.type = 'lowpass'; tone.frequency.value = p.tone; tone.Q.value = 0.5;
+      lvl.gain.value = p.level;
+      input.connect(sh).connect(dc).connect(tone).connect(lvl).connect(wet);
+      g.nodes.push(sh, dc, tone, lvl);
+      const reshape = () => { const q = now(); sh.curve = shaperCurve(q.curve, q.drive); };
+      g.set = { curve: reshape, drive: reshape, tone: v => tone.frequency.setTargetAtTime(v, ac.currentTime, 0.02), level: v => lvl.gain.setTargetAtTime(v, ac.currentTime, 0.02), mix: v => mix(v) };
+      g.targets = { tone: [tone.frequency], level: [lvl.gain] };
+      mix(p.mix);
+    } else if (m.type === 'resonance') {
+      // Pedal resonance (fxworklet.js): the other strings, ringing while the sustain pedal is down.
+      // It hears the pedal and which notes are sounding from setPedal() and the voices (port).
+      if (!fxReady(ac)) { this.fxPending = true; mix(0, 1); return g; }
+      const node = new AudioWorkletNode(ac, 'ost-resonance', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit' });
+      const to = (key, v) => node.parameters.get(key)?.setValueAtTime(v, ac.currentTime);
+      to('amount', p.amount); to('ring', p.ring); to('pedal', this.pedals?.sustain ? 1 : 0);
+      g.pedal = node.parameters.get('pedal');
+      g.held = [0, 1, 2, 3].map(i => node.parameters.get('held' + i));
+      this.tellResonance(ac.currentTime);
+      input.connect(node).connect(wet);
+      g.nodes.push(node);
+      g.set = { amount: v => to('amount', v), ring: v => to('ring', v) };
+      mix(1, 1); // added to the strings, not instead of them
+    } else if (WORKLET_FX.includes(m.type)) {
+      // Bitcrusher, Stutter, Freeze (fxworklet.js). Until the worklet has loaded they pass the
+      // sound through; loadSamples() rebuilds the effects once it has.
+      if (!fxReady(ac)) { this.fxPending = true; mix(0, 1); return g; }
+      const name = { crusher: 'ost-crush', stutter: 'ost-stutter', freeze: 'ost-freeze' }[m.type];
+      const node = new AudioWorkletNode(ac, name, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit' });
+      const to = (key, v) => node.parameters.get(key)?.setValueAtTime(v, ac.currentTime);
+      if (m.type === 'crusher') { to('bits', p.bits); to('hold', p.hold); }
+      if (m.type === 'stutter') { to('size', p.size); to('chance', p.chance); to('repeats', p.repeats); }
+      if (m.type === 'freeze') { to('frozen', p.state === 'frozen' ? 1 : 0); to('size', p.size); }
+      input.connect(node).connect(wet);
+      g.nodes.push(node);
+      g.set = { bits: v => to('bits', v), hold: v => to('hold', v), size: v => to('size', v), chance: v => to('chance', v), repeats: v => to('repeats', v),
+        state: v => to('frozen', v === 'frozen' ? 1 : 0), mix: v => mix(v) };
+      g.targets = Object.fromEntries(['bits', 'hold', 'chance', 'frozen'].map(k => [k, node.parameters.get(k) ? [node.parameters.get(k)] : []]));
+      mix(p.mix);
+    } else if (m.type === 'rotary') {
+      // Highs to the horn, lows to the drum (crossover at 800 Hz). Each rotor: a sine LFO moving
+      // a short delay (the Doppler wobble), the volume and the pan (a quarter turn apart). Their
+      // speeds come from a control signal (slow 0 … fast 1, plus the wheel) through a very slow
+      // low-pass: the inertia, horn quicker than drum.
+      const SPEEDS = { horn: [0.8, 6.7], drum: [0.67, 5.8] };
+      const pre = ac.createWaveShaper(), lowF = ac.createBiquadFilter(), highF = ac.createBiquadFilter(), speed = ac.createConstantSource();
+      pre.curve = driveCurve(ac, p.drive);
+      lowF.type = 'lowpass'; highF.type = 'highpass'; lowF.frequency.value = highF.frequency.value = 800;
+      speed.offset.value = p.speed === 'fast' ? 1 : 0;
+      speed.start(t);
+      input.connect(pre);
+      g.nodes.push(pre, lowF, highF, speed);
+      const rotor = (name, band, inertia, amDepth, panDepth, dopp) => {
+        const [slow, fast] = SPEEDS[name];
+        const base = ac.createConstantSource(), span = ac.createGain(), lag = ac.createBiquadFilter();
+        base.offset.value = slow; span.gain.value = fast - slow;
+        lag.type = 'lowpass'; lag.frequency.value = 1 / (2 * Math.PI * inertia); lag.Q.value = 0.5;
+        speed.connect(span).connect(lag);
+        base.connect(lag);
+        if (p.wheel !== 'off') { this.wheel.connect(span); g.nodes.push({ disconnect: () => { try { this.wheel.disconnect(span); } catch { /* gone */ } } }); }
+        const sin = ac.createOscillator(), cos = ac.createOscillator();
+        sin.frequency.value = cos.frequency.value = 0;
+        cos.setPeriodicWave(assets(ac).cosine);
+        lag.connect(sin.frequency); lag.connect(cos.frequency);
+        const delay = ac.createDelay(0.02), am = ac.createGain(), pan = ac.createStereoPanner(), level = ac.createGain();
+        const dAmt = ac.createGain(), aAmt = ac.createGain(), pAmt = ac.createGain();
+        delay.delayTime.value = 0.002; dAmt.gain.value = dopp * p.depth;
+        am.gain.value = 1 - amDepth * p.depth / 2; aAmt.gain.value = amDepth * p.depth / 2;
+        pAmt.gain.value = panDepth * p.depth;
+        sin.connect(dAmt).connect(delay.delayTime);
+        sin.connect(aAmt).connect(am.gain);
+        cos.connect(pAmt).connect(pan.pan);
+        level.gain.value = name === 'horn' ? p.balance * 2 : (1 - p.balance) * 2;
+        pre.connect(band).connect(delay).connect(am).connect(pan).connect(level).connect(wet);
+        base.start(t); sin.start(t); cos.start(t);
+        g.nodes.push(base, span, lag, sin, cos, delay, am, pan, level, dAmt, aAmt, pAmt);
+        return { level, dAmt, aAmt, pAmt, am, amDepth, panDepth, dopp, lag, inertia };
+      };
+      const horn = rotor('horn', highF, p.inertia, 0.6, 0.8, 0.0008), drum = rotor('drum', lowF, p.inertia * 3, 0.3, 0.35, 0.0003);
+      const depthTo = v => [horn, drum].forEach(r => { r.dAmt.gain.value = r.dopp * v; r.am.gain.value = 1 - r.amDepth * v / 2; r.aAmt.gain.value = r.amDepth * v / 2; r.pAmt.gain.value = r.panDepth * v; });
+      g.set = {
+        speed: v => speed.offset.setValueAtTime(v === 'fast' ? 1 : 0, ac.currentTime),
+        depth: depthTo, drive: v => { pre.curve = driveCurve(ac, v); },
+        balance: v => { horn.level.gain.setTargetAtTime(v * 2, ac.currentTime, 0.02); drum.level.gain.setTargetAtTime((1 - v) * 2, ac.currentTime, 0.02); },
+        inertia: v => { horn.lag.frequency.value = 1 / (2 * Math.PI * v); drum.lag.frequency.value = 1 / (2 * Math.PI * v * 3); },
+        mix: v => mix(v),
+      };
+      g.targets = { speed: [speed.offset] };
+      mix(p.mix);
+    } else if (m.type === 'compressor') {
+      const c = ac.createDynamicsCompressor(), make = ac.createGain();
+      c.threshold.value = p.threshold; c.ratio.value = p.ratio; c.attack.value = p.attack; c.release.value = p.release; c.knee.value = 6;
+      make.gain.value = 10 ** (p.gain / 20);
+      input.connect(c).connect(make).connect(wet);
+      g.nodes.push(c, make);
+      const to = (param, v) => param.setTargetAtTime(v, ac.currentTime, 0.02);
+      g.targets = { threshold: [c.threshold] };
+      g.set = { threshold: v => to(c.threshold, v), ratio: v => to(c.ratio, v), attack: v => to(c.attack, v), release: v => to(c.release, v),
+        gain: v => to(make.gain, 10 ** (v / 20)) };
+      mix(1, 0);
+    }
+    return g;
+  }
+
+  // An effect rack: its effects in series, blended with the dry sound by Mix, then Level.
+  // Settings of the effects inside are set as "<index>.<key>".
+  buildRack(m) {
+    const ac = this.ac, input = ac.createGain(), output = ac.createGain(), dry = ac.createGain(), wet = ac.createGain();
+    const g = { input, output, nodes: [input, output, dry, wet], set: {} };
+    const inner = () => this.patch.modules.find(x => x.id === m.id)?.rack || m.rack;
+    if (m.off || !m.rack.modules.length) { input.connect(output); return g; }
+    input.connect(dry).connect(output);
+    let prev = input;
+    m.rack.modules.forEach((e, k) => {
+      const fx = this.buildEffect(e, () => inner().modules[k]?.params || e.params);
+      prev.connect(fx.input);
+      prev = fx.output;
+      g.nodes.push(...fx.nodes);
+      for (const [key, f] of Object.entries(fx.set)) g.set[`${k}.${key}`] = f;
+    });
+    prev.connect(wet).connect(output);
+    const mix = v => { wet.gain.setTargetAtTime(v, ac.currentTime, 0.02); dry.gain.setTargetAtTime(1 - v, ac.currentTime, 0.02); };
+    mix(m.params.mix);
+    output.gain.value = m.params.level;
+    g.set.mix = mix;
+    g.set.level = v => output.gain.setTargetAtTime(v, ac.currentTime, 0.02);
+    return g;
+  }
+
+  // ---- pedals ----
+  // The sustain pedal (the page holds the notes; this tells Pedal resonance) and the soft pedal
+  // (una corda: hammered strings struck from now on hit one string fewer, with softer felt).
+  setPedal(kind, down, t = this.ac.currentTime) {
+    this.pedals = { ...this.pedals, [kind]: !!down };
+    if (kind === 'sustain') for (const g of this.globals.values()) g.pedal?.setValueAtTime(down ? 1 : 0, t);
+  }
+  // Which notes are sounding at time t, as Pedal resonance's held0-3 bits (22 notes each from A0),
+  // set at t: called when a note starts or is let go (in time order, as notes are played).
+  tellResonance(t) {
+    const bits = [0, 0, 0, 0];
+    for (const v of this.voices) {
+      if (v.t0 > t + 1e-6 || (v.released && v.relAt <= t + 1e-6)) continue;
+      const k = v.note - 21;
+      if (k >= 0 && k < 88 && !(Math.floor(bits[Math.floor(k / 22)] / 2 ** (k % 22)) % 2)) bits[Math.floor(k / 22)] += 2 ** (k % 22);
+    }
+    for (const g of this.globals.values()) g.held?.forEach((prm, i) => prm.setValueAtTime(bits[i], t));
   }
 
   // ---- notes ----
   noteOn(note, vel, t0 = this.ac.currentTime) {
     if (!this.patch) return null;
+    if (this.patch.play === 'mono' || this.patch.play === 'legato') return this.monoOn(note, vel, t0);
     for (const v of this.voices) if (v.note === note && !v.released) this.release(v, t0);
     const live = this.voices.filter(v => v.end > t0);
     if (live.length >= this.patch.voices) this.kill(live.find(v => v.released) || live[0], t0);
@@ -495,12 +882,70 @@ export class LabSynth {
     if (v.choke) for (const o of this.voices) if (o.choke === v.choke && o.end > t0) this.kill(o, t0);
     this.voices.push(v);
     this.voices = this.voices.filter(x => x.end === Infinity || x.end > this.ac.currentTime - 0.1);
+    v.t0 = t0;
+    this.tellResonance(t0);
     return v;
   }
   noteOff(note, t = this.ac.currentTime) {
+    if (this.patch?.play === 'mono' || this.patch?.play === 'legato') { this.monoOff(note, t); return; }
     for (const v of this.voices) if (v.note === note && !v.released) this.release(v, t);
   }
-  play(note, vel, t0, dur) { const v = this.noteOn(note, vel, t0); if (v) this.release(v, t0 + dur); }
+  play(note, vel, t0, dur) {
+    if (this.patch?.play === 'mono' || this.patch?.play === 'legato') { this.monoOn(note, vel, t0); this.monoOff(note, t0 + dur); return; }
+    const v = this.noteOn(note, vel, t0);
+    if (v) this.release(v, t0 + dur);
+  }
+
+  // ---- mono and legato: one voice; keys held down are remembered (last one wins) ----
+  // Mono: every new note starts the envelopes again, and with Glide the pitch slides from the last
+  // note. Legato: a note played while another is held (or within 10 ms of its end, so a sequencer's
+  // touching notes count) moves the sounding voice to the new pitch, gliding if Glide is set, without
+  // starting the envelopes again; letting go goes back to the key still held.
+  monoOn(note, vel, t0) {
+    this.held = (this.held || []).filter(h => h.note !== note);
+    this.held.push({ note, vel });
+    const cur = this.voices.find(v => v.mono && v.end === Infinity && (!v.released || v.relAt > t0 - 0.01));
+    if (cur && this.patch.play === 'legato' && (!cur.released || cur.relAt >= t0 - 0.01)) {
+      this.unrelease(cur);
+      this.glideTo(cur, note, t0);
+      return cur;
+    }
+    const from = this.lastPitch;
+    for (const v of this.voices) if (v.mono && v.end === Infinity) this.kill(v, t0);
+    const v = this.buildVoice(note, vel, t0);
+    v.mono = true;
+    if (this.patch.glide > 0 && from != null && from !== note && (this.patch.play === 'mono' || cur)) {
+      v.glide.setValueAtTime((from - note) * 100, t0);
+      v.glide.setTargetAtTime(0, t0, this.patch.glide / 3);
+    }
+    this.lastPitch = note;
+    this.voices.push(v);
+    this.voices = this.voices.filter(x => x.end === Infinity || x.end > this.ac.currentTime - 0.1);
+    return v;
+  }
+  monoOff(note, t) {
+    this.held = (this.held || []).filter(h => h.note !== note);
+    const cur = this.voices.find(v => v.mono && !v.released && v.note === note);
+    if (!cur) return;
+    const back = this.held.at(-1);
+    if (!back) { this.release(cur, t); return; }
+    if (this.patch.play === 'legato') this.glideTo(cur, back.note, t);
+    else { this.held.pop(); this.monoOn(back.note, back.vel, t); }
+  }
+  glideTo(v, note, t) {
+    const cents = (note - v.base) * 100, g = this.patch.glide || 0;
+    v.glide.cancelScheduledValues(t);
+    if (g > 0) v.glide.setTargetAtTime(cents, t, g / 3); else v.glide.setValueAtTime(cents, t);
+    v.note = note;
+    this.lastPitch = note;
+  }
+  // A mono voice whose release was scheduled, carried on by a legato note: its release is taken back.
+  unrelease(v) {
+    if (!v.released) return;
+    for (const p of v.relParams) p.cancelScheduledValues(v.relAt);
+    v.released = false;
+    v.relAt = undefined;
+  }
 
   // Fast fade on everything (Stop, or a rebuild).
   allOff(now = false) {
@@ -526,8 +971,17 @@ export class LabSynth {
   release(v, t) {
     if (v.released) return;
     v.released = true;
+    v.relAt = t;
+    this.tellResonance(t);
     for (const f of v.offs) f(t);
-    v.stopAt(t + v.tail);
+    if (!v.mono) { v.stopAt(t + v.tail); return; }
+    // Mono: stop later, unless a legato note has carried the voice on by then.
+    const check = () => {
+      if (!v.released || v.end !== Infinity) return;
+      if (this.ac.currentTime < v.relAt + v.tail) { setTimeout(check, 250); return; }
+      v.stopAt(v.relAt + v.tail);
+    };
+    setTimeout(check, Math.max(0, (t + v.tail - this.ac.currentTime) * 1000) + 50);
   }
   kill(v, t) {
     v.released = true;
@@ -541,6 +995,12 @@ export class LabSynth {
     const keep = n => { all.push(n); return n; };
     const src = n => { sources.push(n); return keep(n); };
     let tail = 0.02, gated = false, minEnd = 0, choke = 0;
+    // Glide: a per-voice pitch offset in cents beside the pitch bend, which mono and legato slide
+    // (see glideTo). Everything pitched listens to both.
+    const gl = src(ac.createConstantSource());
+    gl.offset.value = 0;
+    const pitchIn = param => { this.bendCents.connect(param); gl.connect(param); };
+    const relParams = []; // the envelope params a release moves (legato can take it back)
     const stops = []; // called with the voice's end time (granular voices stop making grains) // gated: something shapes the note's end (an Amp, an FM operator...)
     for (const m of patch.modules) {
       const p = m.params;
@@ -560,7 +1020,7 @@ export class LabSynth {
         const osc = src(ac.createOscillator());
         osc.frequency.value = hz(note, p.octave, p.semi);
         osc.detune.value = p.fine;
-        this.bendCents.connect(osc.detune);
+        pitchIn(osc.detune);
         const targets = { pitch: [osc.detune], level: [out.gain] };
         if (p.wave === 'pulse') {
           osc.type = 'sawtooth';
@@ -597,7 +1057,7 @@ export class LabSynth {
           s.buffer = buf;
           s.playbackRate.value = 2 ** ((note - root + p.tune) / 12);
           s.detune.value = p.fine;
-          this.bendCents.connect(s.detune);
+          pitchIn(s.detune);
           const from = Math.min(p.start, 0.999) * dur;
           if (p.mode === 'loop') {
             s.loop = true;
@@ -664,6 +1124,60 @@ export class LabSynth {
         n.connect(out);
         set[`${m.id}.level`] = v => out.gain.setTargetAtTime(v, ac.currentTime, 0.01);
         nodes[m.id] = { out, targets: { level: [out.gain] } };
+      } else if (m.type === 'organ') {
+        // Drawbar organ: every drawbar in one oscillator (a waveform made of the bars' harmonics of
+        // the 16' tone), plus percussion (a struck 4' or 2 2/3' sine, fading) and key click. It
+        // speaks and stops at once, like the organ (its own short envelope, no Amp needed).
+        gated = true;
+        const out = keep(ac.createGain()), osc = src(ac.createOscillator());
+        osc.frequency.value = hz(note, -1);
+        osc.setPeriodicWave(organWave(ac, p));
+        pitchIn(osc.detune);
+        osc.connect(out);
+        out.gain.setValueAtTime(0, t0);
+        out.gain.linearRampToValueAtTime(p.level, t0 + 0.004);
+        offs.push(t => { out.gain.cancelScheduledValues(t); out.gain.setValueAtTime(p.level, t); out.gain.linearRampToValueAtTime(0, t + 0.012); });
+        relParams.push(out.gain);
+        tail = Math.max(tail, 0.03);
+        if (p.perc !== 'off') {
+          const po = src(ac.createOscillator()), pe = keep(ac.createGain());
+          po.frequency.value = hz(note) * (p.perc === 'second' ? 2 : 3);
+          pitchIn(po.detune);
+          pe.gain.setValueAtTime(0.45, t0);
+          pe.gain.setTargetAtTime(0, t0, p.percDecay === 'fast' ? 0.07 : 0.2);
+          po.connect(pe).connect(out);
+        }
+        if (p.click > 0) {
+          const n = src(ac.createBufferSource()), bp = keep(ac.createBiquadFilter()), ce = keep(ac.createGain());
+          n.buffer = a.noise; n.loop = true; n.loopStart = Math.random();
+          bp.type = 'bandpass'; bp.frequency.value = 2500; bp.Q.value = 0.8;
+          ce.gain.setValueAtTime(0, t0);
+          ce.gain.linearRampToValueAtTime(p.click * 0.25, t0 + 0.001);
+          ce.gain.setTargetAtTime(0, t0 + 0.001, 0.003);
+          n.connect(bp).connect(ce).connect(out);
+        }
+        const rewave = () => osc.setPeriodicWave(organWave(ac, m.params));
+        for (let k = 1; k <= 9; k++) set[`${m.id}.bar${k}`] = rewave;
+        set[`${m.id}.level`] = v => out.gain.setTargetAtTime(v, ac.currentTime, 0.01);
+        nodes[m.id] = { out, targets: { pitch: [osc.detune], level: [out.gain] } };
+      } else if (m.type === 'string') {
+        // A physical string (fxworklet.js): plucked or struck at the note's start, damped at release.
+        // Silent until the worklet has loaded (loadSamples starts that when the patch has one).
+        gated = true;
+        const out = keep(ac.createGain());
+        out.gain.value = p.level;
+        if (fxReady(ac)) {
+          const node = keep(new AudioWorkletNode(ac, 'ost-string', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1],
+            processorOptions: { ...p, freq: hz(note, p.octave), start: t0, vel: vel / 127, unacorda: !!this.pedals?.soft } }));
+          pitchIn(node.parameters.get('detune'));
+          node.connect(out);
+          const damp = node.parameters.get('damp');
+          offs.push(t => damp.setValueAtTime(1, t));
+          relParams.push(damp); // legato can take the damper back
+          tail = Math.max(tail, p.release * 1.6);
+          nodes[m.id] = { out, targets: { pitch: [node.parameters.get('detune')], level: [out.gain] } };
+        } else nodes[m.id] = { out, targets: { pitch: [], level: [out.gain] } };
+        set[`${m.id}.level`] = v => out.gain.setTargetAtTime(v, ac.currentTime, 0.01);
       } else if (m.type === 'filter') {
         const f1 = keep(ac.createBiquadFilter()), f2 = p.slope === '24' ? keep(ac.createBiquadFilter()) : null;
         const fs = f2 ? [f1, f2] : [f1];
@@ -671,9 +1185,14 @@ export class LabSynth {
         for (const f of fs) { f.type = p.type; f.frequency.value = cutoff(); f.Q.value = 0.707; }
         f1.Q.value = p.resonance;
         if (f2) f1.connect(f2);
+        // A glide moves the cutoff too, by the key tracking.
+        const kt = keep(ac.createGain());
+        kt.gain.value = p.keytrack;
+        gl.connect(kt);
+        fs.forEach(f => kt.connect(f.detune));
         Object.assign(set, {
           [`${m.id}.cutoff`]: () => fs.forEach(f => f.frequency.setTargetAtTime(cutoff(), ac.currentTime, 0.01)),
-          [`${m.id}.keytrack`]: () => fs.forEach(f => f.frequency.setTargetAtTime(cutoff(), ac.currentTime, 0.01)),
+          [`${m.id}.keytrack`]: v => { fs.forEach(f => f.frequency.setTargetAtTime(cutoff(), ac.currentTime, 0.01)); kt.gain.setTargetAtTime(v, ac.currentTime, 0.01); },
           [`${m.id}.resonance`]: v => f1.Q.setTargetAtTime(v, ac.currentTime, 0.01),
           [`${m.id}.type`]: v => fs.forEach(f => { f.type = v; }),
         });
@@ -689,15 +1208,18 @@ export class LabSynth {
         const env = keep(ac.createGain()), level = keep(ac.createGain());
         level.gain.value = p.level;
         env.connect(level);
-        envOn(env.gain, t0, p, 1 - p.velocity + p.velocity * (vel / 127) ** 1.5);
-        offs.push(t => envOff(env.gain, t, m.params.release));
-        tail = Math.max(tail, p.release * 1.6);
+        const k = envTimes(p, note, vel);
+        envOn(env.gain, t0, p, 1 - p.velocity + p.velocity * (vel / 127) ** 1.5, k);
+        offs.push(t => envOff(env.gain, t, m.params.release * k.release));
+        relParams.push(env.gain);
+        tail = Math.max(tail, p.release * k.release * 1.6);
         set[`${m.id}.level`] = v => level.gain.setTargetAtTime(v, ac.currentTime, 0.01);
         nodes[m.id] = { in: env, out: level, targets: { level: [level.gain] } };
       } else if (m.type === 'env') {
-        const c = src(ac.createConstantSource());
-        envOn(c.offset, t0, p);
-        offs.push(t => envOff(c.offset, t, m.params.release));
+        const c = src(ac.createConstantSource()), k = envTimes(p, note, vel);
+        envOn(c.offset, t0, p, 1 - (p.velocity || 0) + (p.velocity || 0) * (vel / 127) ** 1.5, k);
+        offs.push(t => envOff(c.offset, t, m.params.release * k.release));
+        relParams.push(c.offset);
         nodes[m.id] = { out: c, targets: {} };
       } else if (m.type === 'lfo') {
         const depth = keep(ac.createGain()), fade = keep(ac.createGain());
@@ -732,14 +1254,16 @@ export class LabSynth {
         osc.type = 'sine';
         osc.frequency.value = f();
         osc.detune.value = p.fine;
-        this.bendCents.connect(osc.detune);
+        pitchIn(osc.detune);
         fmIn.gain.value = p.fm * f();
         fmIn.connect(osc.frequency);
         level.gain.value = p.level;
         osc.connect(env).connect(level);
-        envOn(env.gain, t0, p, 1 - p.velocity + p.velocity * (vel / 127) ** 1.5);
-        offs.push(t => envOff(env.gain, t, m.params.release));
-        tail = Math.max(tail, p.release * 1.6);
+        const k = envTimes(p, note, vel);
+        envOn(env.gain, t0, p, 1 - p.velocity + p.velocity * (vel / 127) ** 1.5, k);
+        offs.push(t => envOff(env.gain, t, m.params.release * k.release));
+        relParams.push(env.gain);
+        tail = Math.max(tail, p.release * k.release * 1.6);
         const retune = () => { osc.frequency.setTargetAtTime(f(), ac.currentTime, 0.005); fmIn.gain.setTargetAtTime(m.params.fm * f(), ac.currentTime, 0.01); };
         Object.assign(set, { [`${m.id}.ratio`]: retune, [`${m.id}.fm`]: retune,
           [`${m.id}.fine`]: v => osc.detune.setTargetAtTime(v, ac.currentTime, 0.01),
@@ -828,9 +1352,9 @@ export class LabSynth {
       set[`mod:${c.from}>${c.to}`] = v => g.gain.setTargetAtTime(v * k, ac.currentTime, 0.01);
     }
     // Without an Amp module, a note simply stops when released (with a tiny fade).
-    if (!gated) offs.push(t => exits.forEach(e => { e.gain.cancelScheduledValues(t); e.gain.setTargetAtTime(0, t, 0.008); }));
+    if (!gated) { offs.push(t => exits.forEach(e => { e.gain.cancelScheduledValues(t); e.gain.setTargetAtTime(0, t, 0.008); })); relParams.push(...exits.map(e => e.gain)); }
     for (const s of sources) s.start(t0, ...(s._start || [])); // samples start at their trim point
-    const v = { note, released: false, offs, exits, set, tail, end: Infinity, choke };
+    const v = { note, base: note, released: false, offs, exits, set, tail, end: Infinity, choke, glide: gl.offset, relParams };
     v.stopAt = t => {
       t = Math.max(t, minEnd); // one-shots (drums) play to their end
       v.end = t;
@@ -844,3 +1368,40 @@ export class LabSynth {
     return v;
   }
 }
+
+// A saved effect rack on its own, between `input` and `output`, on any AudioContext: the
+// sequencer's track inserts and master. `set(fx)` takes { rack: { modules }, mix, off } (or null
+// for straight through); it rebuilds only when the effects change, else updates their settings.
+export class FxChain {
+  constructor(ac) {
+    this.ac = ac;
+    this.input = ac.createGain();
+    this.output = ac.createGain();
+    this.input.connect(this.output);
+    this.patch = null; // { modules: [the rack as a rack module] }, which buildRack reads
+    this.g = null;
+    this.shape = '';
+  }
+  set(fx) {
+    const m = fx ? { id: 'fx', type: 'rack', params: { mix: fx.mix ?? 1, level: 1 }, rack: fx.rack, ...(fx.off ? { off: true } : {}) } : null;
+    const shape = m ? JSON.stringify([m.off, m.rack.modules.map(e => [e.type, !!e.off, ...MODULES[e.type].params.filter(x => x.rebuild).map(x => e.params[x.key])])]) : '';
+    const old = this.patch?.modules[0];
+    this.patch = m ? { modules: [JSON.parse(JSON.stringify(m))] } : null;
+    if (this.g && shape === this.shape) {
+      const now = this.patch.modules[0];
+      if (old.params.mix !== now.params.mix) this.g.set.mix?.(now.params.mix);
+      now.rack.modules.forEach((e, i) => { for (const [k, v] of Object.entries(e.params)) if (old.rack.modules[i]?.params[k] !== v) this.g.set[`${i}.${k}`]?.(v); });
+      return;
+    }
+    this.shape = shape;
+    this.input.disconnect();
+    if (this.g) this.g.nodes.forEach(n => { try { n.stop?.(); } catch { /* not started */ } n.disconnect(); });
+    this.g = null;
+    if (!m) { this.input.connect(this.output); return; }
+    this.g = this.buildRack(this.patch.modules[0]);
+    this.input.connect(this.g.input);
+    this.g.output.connect(this.output);
+  }
+}
+FxChain.prototype.buildRack = LabSynth.prototype.buildRack;
+FxChain.prototype.buildEffect = LabSynth.prototype.buildEffect;

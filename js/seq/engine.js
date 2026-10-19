@@ -9,7 +9,7 @@
 //   sink        { note(ti, note, vel, atMs, durMs), cc(ti, controller, value, atMs), clock(atMs), start(atMs), stop(atMs),
 //                 step(ti, pos, pattern, atMs, silent, notes), bar(section, barInSection, atMs) }
 // and calls pump() every ~25 ms while playing.
-import { TICKS_PER_BAR, CLOCK_TICKS, RATES, SWUNG_RATES, stepAt, noteSteps, poolOrder, audible, laneValue } from './model.js';
+import { barTicks, meterAt, CLOCK_TICKS, RATES, SWUNG_RATES, stepAt, noteSteps, poolOrder, audible, laneValue, velOf, spanOf, stepGroups, feelNote } from './model.js';
 
 export const LOOKAHEAD_MS = 120;
 const START_DELAY_MS = 40; // so the first notes aren't already late when they're sent
@@ -72,13 +72,13 @@ export class Engine {
   positionAt(ti, ms) {
     const ts = this.tracks?.[ti], track = this.song().tracks[ti];
     if (!this.playing || !ts || ts.silent || !track) return null;
-    const rate = RATES[track.rate], len = track.patterns[ts.pattern].length;
+    const pat = track.patterns[ts.pattern], len = pat.length, rate = spanOf(pat, RATES[track.rate]) / len;
     const step = ts.pos - (ts.next - this.tickAt(ms)) / rate;
     return { pattern: ts.pattern, step: (step % len + len) % len, stepMs: rate * this.tickMs };
   }
 
   trackState(track, tick) {
-    return { pattern: track.pattern, pos: 0, next: tick, silent: false, poolIdx: -1 };
+    return { pattern: track.pattern, pos: 0, next: tick, silent: false, poolIdx: -1, count: -1 };
   }
 
   pump() {
@@ -100,13 +100,17 @@ export class Engine {
     for (let guard = 0; guard < 10000; guard++) {
       const tick = this.frontier();
       if (this.tickTime(tick) > horizon) break;
-      if (tick === this.nextBar) { this.bar(song, tick); this.nextBar += TICKS_PER_BAR; continue; }
+      if (tick === this.nextBar) { this.bar(song, tick); this.nextBar += this.barLength(song); continue; }
       this.tracks.forEach((ts, ti) => { if (ts.next === tick) this.step(song, ti, ts); });
       if (tick === this.nextClock) { this.sink.clock?.(this.tickTime(tick)); this.nextClock += CLOCK_TICKS; }
     }
   }
 
   frontier() { return Math.min(this.nextBar, this.nextClock, ...this.tracks.map(t => t.next)); }
+
+  // The bar just started: its meter is the section's in song mode, else the song's.
+  barLength(song) { return barTicks(this.mode === 'song' && !this.enterSong ? meterAt(song, this.section) : song.meter); }
+  meterNow(song) { return this.mode === 'song' && !this.enterSong ? meterAt(song, this.section) : song.meter || '4/4'; }
 
   bar(song, tick) {
     this.secBar++;
@@ -116,11 +120,11 @@ export class Engine {
     } else {
       for (const [ti, pattern] of this.queued) {
         const ts = this.tracks[ti];
-        if (ts) Object.assign(ts, { pattern, pos: 0, next: tick, silent: false, poolIdx: -1 });
+        if (ts) Object.assign(ts, { pattern, pos: 0, next: tick, silent: false, poolIdx: -1, count: -1 });
       }
       this.queued.clear();
       // Coming back from song mode, un-silence tracks.
-      this.tracks.forEach((ts, ti) => { if (ts.silent) Object.assign(ts, { silent: false, pattern: song.tracks[ti].pattern, pos: 0, next: tick }); });
+      this.tracks.forEach((ts, ti) => { if (ts.silent) Object.assign(ts, { silent: false, pattern: song.tracks[ti].pattern, pos: 0, next: tick, count: -1 }); });
     }
     this.sink.bar?.(this.section, this.secBar, this.tickTime(tick));
   }
@@ -131,7 +135,7 @@ export class Engine {
     const sec = song.song[index];
     this.tracks.forEach((ts, ti) => {
       const p = sec.play[ti];
-      Object.assign(ts, { silent: p === null, pos: 0, next: tick, poolIdx: -1 });
+      Object.assign(ts, { silent: p === null, pos: 0, next: tick, poolIdx: -1, count: -1 });
       if (p) ts.pattern = p;
     });
   }
@@ -140,42 +144,53 @@ export class Engine {
     const track = song.tracks[ti];
     const pat = track.patterns[ts.pattern];
     const rate = RATES[track.rate];
-    const stepMs = rate * this.tickMs;
     if (ts.pos >= pat.length) ts.pos = 0;
+    if (ts.pos === 0) ts.loopStart = ts.next;
+    ts.count = (ts.count ?? -1) + 1;
+    // Steps are `rate` long, or the pattern's `beats` shared out evenly (rounded to whole ticks
+    // from the start of the pass, so a pass always lasts exactly its beats).
+    const span = spanOf(pat, rate), stepMs = span / pat.length * this.tickMs;
     let at = this.tickTime(ts.next);
     // Swing delays every second step: 50% is straight, 66% a triplet feel, 75% dotted.
-    if (SWUNG_RATES.has(track.rate) && Math.floor(ts.next / rate) % 2 === 1) at += (song.swing / 100 - 0.5) * 2 * stepMs;
+    if (!pat.beats && SWUNG_RATES.has(track.rate) && Math.floor(ts.next / rate) % 2 === 1) at += (song.swing / 100 - 0.5) * 2 * stepMs;
 
-    const step = ts.silent ? null : stepAt(pat, ts.pos);
-    // A step with a chance below 100% plays only that often.
-    const s = step && (!step.prob || this.rng() * 100 < step.prob) ? step : null;
-    let notes = [];
-    if (s) {
-      notes = s.notes;
+    let played = [];
+    for (const g of ts.silent ? [] : stepGroups(pat, ts.pos, ts.count)) {
+      const s = g.s;
+      // A step with a chance below 100% plays only that often.
+      if (s.prob && this.rng() * 100 >= s.prob) continue;
+      let notes = g.notes;
       if (track.mode === 'pool') {
         const list = poolOrder(this.pool(ti), track.pool.order);
         if (!list.length) notes = [];
         else if (track.pool.order === 'random') notes = [list[Math.floor(this.rng() * list.length)]];
         else { ts.poolIdx = (ts.poolIdx + 1) % list.length; notes = [list[ts.poolIdx]]; }
       }
+      played = played.concat(notes);
       if (audible(song, ti)) {
         // End a hair early so a note at 100% gate is off before the next one on the same key.
         const rat = s.rat || 1;
+        // The track's feel moves each note a little and varies how hard it's played.
+        const feel = track.feel, play = (n, t, dur) => {
+          const f = feelNote(feel, n, velOf(s, n), this.rng);
+          this.sink.note?.(ti, n, f.vel, t + f.dt, dur);
+        };
         if (rat === 1) {
           const dur = Math.max(5, noteSteps(s, pat.length) * stepMs - 2);
-          for (const n of notes) this.sink.note?.(ti, n, s.vel, at, dur);
+          for (const n of notes) play(n, at, dur);
         } else {
           // A ratchet repeats the note evenly across its length; gate applies to each repeat.
           const each = Math.max(1, Math.min(s.len, pat.length - s.i)) * stepMs / rat;
           const dur = Math.max(5, each * s.gate / 100 - 2);
-          for (let r = 0; r < rat; r++) for (const n of notes) this.sink.note?.(ti, n, s.vel, at + r * each, dur);
+          for (let r = 0; r < rat; r++) for (const n of notes) play(n, at + r * each, dur);
         }
       }
     }
     if (pat.cc && !ts.silent && audible(song, ti)) this.lanes(ti, ts, pat, at, stepMs);
-    this.sink.step?.(ti, ts.pos, ts.pattern, at, ts.silent, notes);
-    ts.pos = (ts.pos + 1) % pat.length;
-    ts.next += rate;
+    this.sink.step?.(ti, ts.pos, ts.pattern, at, ts.silent, played);
+    const k = ts.pos + 1;
+    ts.pos = k % pat.length;
+    ts.next = Math.max(ts.next + 1, ts.loopStart + Math.round(k * span / pat.length));
   }
 
   // Controller lanes: a value at each step that sets one; gliding lanes also send four in-between

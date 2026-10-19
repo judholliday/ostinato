@@ -143,6 +143,7 @@ console.log(`ok — ${seen.size} preset names typed, ${Object.keys(OVERRIDES).le
 await import('./seqtest.mjs');
 await import('./labtest.mjs');
 await import('./rectest.mjs');
+await import('./spectest.mjs');
 
 // The travel version's offline list (sw.js) has every page, style and script it uses.
 {

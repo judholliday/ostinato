@@ -1,6 +1,8 @@
 // A small Web Audio synth for hearing patterns when no instruments are connected. It's only for
 // checking rhythms and notes; it doesn't try to sound like the XL.
 
+import { FxChain } from '../lab/engine.js';
+
 const VOICES = {
   Bass:  { wave: 'sawtooth', cut: 380,  env: 1400, q: 7, a: .004, d: .22, s: .55, r: .07 },
   Pluck: { wave: 'square',   cut: 900,  env: 3200, q: 4, a: .002, d: .14, s: .12, r: .12 },
@@ -8,7 +10,7 @@ const VOICES = {
   Keys:  { wave: 'triangle', cut: 4000, env: 0,    q: 1, a: .005, d: .40, s: .35, r: .30 },
 };
 
-let ac = null, master = null, out = null, clickOut = null;
+let ac = null, master = null, out = null, clickOut = null, masterFx = null, masterRack = null;
 const live = new Set(); // { gain, oscs, release }
 
 // Browsers only allow audio to start after a click or key press, so call this from one.
@@ -25,7 +27,11 @@ export function wake() {
     limiter.ratio.value = 20;
     limiter.attack.value = 0.002;
     limiter.release.value = 0.1;
-    master.connect(limiter).connect(ac.destination);
+    // The song's master effect rack (straight through when it has none), before the limiter.
+    masterFx = new FxChain(ac);
+    masterFx.set(masterRack);
+    master.connect(masterFx.input);
+    masterFx.output.connect(limiter).connect(ac.destination);
     out = limiter;
     // The metronome goes straight out, so it isn't in recordings of the mix.
     clickOut = ac.createGain();
@@ -37,11 +43,16 @@ export function wake() {
 
 // The master input (after wake), for other instruments to play through the same limiter.
 export function output() { wake(); return master; }
+// The song's master effects: { rack, mix, off } (see seq/model.js cleanFx), or null for none.
+// Doesn't start audio by itself: kept until the first sound if audio hasn't started yet.
+export function setMasterFx(fx) { masterRack = fx; masterFx?.set(fx); }
+export const awake = () => !!ac;
+
 // Everything this page plays, after the limiter (not the metronome): for recording the mix.
 export function mixOutput() { wake(); return out; }
 
 // Starts a voice at audio time t0; returns a function that releases it at audio time t.
-function start(voice, midi, vel, t0, gain = 1) {
+function start(voice, midi, vel, t0, gain = 1, dest) {
   const a = wake(), v = VOICES[voice] || VOICES.Keys;
   const flt = a.createBiquadFilter(), g = a.createGain();
   flt.type = 'lowpass';
@@ -52,7 +63,7 @@ function start(voice, midi, vel, t0, gain = 1) {
   g.gain.setValueAtTime(0, t0);
   g.gain.linearRampToValueAtTime(peak, t0 + v.a);
   g.gain.setTargetAtTime(peak * v.s, t0 + v.a, v.d / 3);
-  flt.connect(g).connect(master);
+  flt.connect(g).connect(dest || master);
   const oscs = (v.detune ? [-v.detune, v.detune] : [0]).map(det => {
     const o = a.createOscillator();
     o.type = v.wave;
@@ -85,7 +96,7 @@ function noiseBuffer(a) {
 }
 
 // One decaying sound: a source (noise or a tone), an optional filter, and an envelope.
-function hit(a, t0, { tone, type = 'sine', from, filter, freq, q = 1, level, decay, delay = 0, dest = master }) {
+function sound(a, t0, { tone, type = 'sine', from, filter, freq, q = 1, level, decay, delay = 0, dest = master }) {
   const g = a.createGain();
   const t = t0 + delay;
   g.gain.setValueAtTime(0, t);
@@ -114,7 +125,8 @@ function hit(a, t0, { tone, type = 'sine', from, filter, freq, q = 1, level, dec
 }
 
 const TOMS = { 41: 82, 43: 98, 45: 115, 47: 135, 48: 160, 50: 190 };
-function drum(a, midi, vel, t0, gain = 1) {
+function drum(a, midi, vel, t0, gain = 1, dest) {
+  const hit = (a, t, o) => sound(a, t, { dest, ...o });
   const v = (vel / 127) * 0.7 * gain;
   if (midi === 35 || midi === 36) {
     // A deep body, plus a punchier layer around 100 Hz and a beater click, so the kick is still
@@ -148,23 +160,23 @@ export function click(atMs, accent, level = 0.6) {
   const a = wake();
   const t0 = Math.max(a.currentTime, a.currentTime + (atMs - performance.now()) / 1000);
   const tone = accent ? 2000 : 1400;
-  hit(a, t0, { tone, type: 'square', filter: 'bandpass', freq: tone, q: 6, level: level * (accent ? 0.9 : 0.6), decay: 0.04, dest: clickOut });
+  sound(a, t0, { tone, type: 'square', filter: 'bandpass', freq: tone, q: 6, level: level * (accent ? 0.9 : 0.6), decay: 0.04, dest: clickOut });
 }
 
 // Plays a note at a performance.now() time (as the engine uses), for durMs. `gain` is the
-// track's volume (1 = normal).
-export function play(voice, midi, vel, atMs, durMs, gain = 1) {
+// track's volume (1 = normal); `dest` where it goes (a track's effects; default the master).
+export function play(voice, midi, vel, atMs, durMs, gain = 1, dest) {
   const a = wake();
   const t0 = Math.max(a.currentTime, a.currentTime + (atMs - performance.now()) / 1000);
-  if (voice === 'Drums') { drum(a, midi, vel, t0, gain); return; }
-  start(voice, midi, vel, t0, gain)(t0 + durMs / 1000);
+  if (voice === 'Drums') { drum(a, midi, vel, t0, gain, dest); return; }
+  start(voice, midi, vel, t0, gain, dest)(t0 + durMs / 1000);
 }
 
 // Starts a note now and returns a function that releases it (for keys played through).
-export function hold(voice, midi, vel, gain = 1) {
+export function hold(voice, midi, vel, gain = 1, dest) {
   const a = wake();
-  if (voice === 'Drums') { drum(a, midi, vel, a.currentTime, gain); return () => {}; }
-  const release = start(voice, midi, vel, a.currentTime, gain);
+  if (voice === 'Drums') { drum(a, midi, vel, a.currentTime, gain, dest); return () => {}; }
+  const release = start(voice, midi, vel, a.currentTime, gain, dest);
   return () => release(a.currentTime);
 }
 

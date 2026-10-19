@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="sequencer.css">
   <link rel="stylesheet" href="recorder.css">
+  <link rel="stylesheet" href="theme.css">
   <!-- The Capture tab of index.html: everything you play, kept as takes; clips; recording. -->
   <script>if (top === self) location.replace('index.html' + location.search + '#capture');</script>
 </head>
@@ -35,7 +36,7 @@
       <label class="field">Length <select id="perf-len"></select></label>
       <label class="field"><input type="checkbox" id="perf-countin"> Count in one bar</label>
       <label class="field" title="Also record the audio input, starting exactly at bar 1"><input type="checkbox" id="perf-audio"> Record audio too</label>
-      <button id="perf-go" class="rec-go">● Record</button>
+      <button id="perf-go" class="rec-go"><span data-icon="rec"></span> Record</button><span class="makes" title="What this makes">→ a take (notes)</span>
     </div>
     <div id="perf-status" class="hint"></div>
   </section>
@@ -51,35 +52,49 @@
       <div class="meter" title="Input level: keep the loudest parts below the red"><i id="meter-bar"></i></div><span id="meter-db" class="hint">—</span>
     </div>
     <div class="audio-row">
-      <button id="audio-rec" class="rec-go" title="Record the audio input until you press it again">● Record audio</button>
+      <button id="audio-rec" class="rec-go" title="Record the audio input until you press it again"><span data-icon="rec"></span> Record audio</button><span class="makes" title="What this makes">→ an audio file</span>
       <span id="audio-time" class="hint"></span>
       <span class="spacer"></span>
       <button id="measure" class="ghost small" title="Plays one short note on the XL and times how long its sound takes to arrive, so recordings line up with the sequencer">Measure delay</button>
       <span id="latency" class="hint"></span>
     </div>
     <div class="audio-row">
-      <button id="stems" class="ghost" title="Records each XL track of the song on its own, one after another">Print stems</button>
+      <button id="stems" class="ghost" title="Records each XL track of the song on its own, one after another">Print stems</button><span class="makes" title="What this makes">→ an audio file per track</span>
       <span id="stems-status" class="hint">Plays the song once per XL track, solo, and saves each as its own file, all starting at bar 1.</span>
     </div>
     <div class="audio-row">
-      <button id="sample-xl" class="ghost" title="Record the XL's current sound note by note and make an Ostinato Synth sound from it">🎹 Sample the XL</button>
+      <button id="sample-xl" class="ghost" title="Record the XL's current sound note by note and make an Ostinato Synth sound from it"><span data-icon="keys"></span> Sample the XL</button><span class="makes" title="What this makes">→ an instrument</span>
       <span class="hint">Plays the XL's current sound across the keyboard, records each note, and makes a multi-sample Ostinato Synth sound you can play without the XL.</span>
     </div>
     <div id="sample-panel" class="sample-panel" hidden></div>
-    <h3 class="sub">Recordings <span class="hint plain">· saved in data/audio/ (not backed up to GitHub)</span></h3>
-    <div id="recordings" class="recordings"></div>
+    <p class="hint">Recordings are listed under the Recordings tab.</p>
   </section>
 
   </div>
   <div class="capture-main">
-  <section class="rec-section">
-    <h2>Takes <span id="takes-sum" class="hint plain"></span></h2>
+  <nav class="lib-tabs" role="tablist" aria-label="Your playing">
+    <button role="tab" data-tab="takes" title="Everything you play, kept automatically (the newest ones)">Takes <span id="takes-count" class="count"></span></button>
+    <button role="tab" data-tab="clips" title="The parts you chose to keep, saved for good in data/clips/">Clips <span id="clips-count" class="count"></span></button>
+    <button role="tab" data-tab="recordings" title="Audio you recorded">Recordings <span id="rec-count" class="count"></span></button>
+  </nav>
+
+  <section class="rec-section lib-pane" data-pane="takes">
+    <div class="pane-head"><span id="takes-sum" class="hint"></span><span class="spacer"></span>
+      <label class="field" title="Older takes are forgotten once there are more than this">Keep the last <select id="takes-keep"><option>25</option><option>50</option><option>100</option><option>200</option></select> takes</label></div>
+    <div id="take-sel" class="sel-bar" hidden></div>
     <div id="takes" class="takes"></div>
   </section>
 
-  <section class="rec-section">
-    <h2>Clips <span class="hint plain">· parts of takes you kept, with their sound</span></h2>
-    <div id="clips" class="takes"></div>
+  <section class="rec-section lib-pane" data-pane="clips" hidden>
+    <div class="pane-head"><span class="hint">Parts of takes you kept, with their sound. Saved for good (data/clips/); put one into a song with → Song…</span><span class="spacer"></span>
+      <input id="clip-search" type="search" placeholder="Search clips" aria-label="Search clips" spellcheck="false">
+      <label class="field">Sort <select id="clip-sort"><option value="new">Newest</option><option value="old">Oldest</option><option value="name">Name</option></select></label></div>
+    <div id="clips" class="clip-grid"></div>
+  </section>
+
+  <section class="rec-section lib-pane" data-pane="recordings" hidden>
+    <div class="pane-head"><span class="hint">Audio you recorded, saved in data/audio/ (not backed up to GitHub).</span></div>
+    <div id="recordings" class="recordings"></div>
   </section>
 
   </div>

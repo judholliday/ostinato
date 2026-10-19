@@ -16,6 +16,19 @@ export function notesToSample(lo, hi, step) {
 
 // Which keys each recording plays: up to halfway to its neighbours (the lowest and highest
 // stretch to the ends of the keyboard).
+// The note in a sample-pack file name: "Piano_C4_mf", "c#3", "Bb2", "Cs3", "A-1", "(C3)", or
+// failing those a MIDI note number ("piano_060"). Null if there's none.
+export function noteInName(file) {
+  const stem = String(file).replace(/\.[a-z0-9]+$/i, '');
+  const names = [...stem.matchAll(/(?:^|[^A-Za-z])([A-Ga-g])(#|♯|s|b|♭)?(-1|[0-9])(?![0-9])/g)];
+  const m = names.at(-1);
+  if (m) {
+    const pc = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }[m[1].toLowerCase()] + ({ '#': 1, '♯': 1, s: 1, b: -1, '♭': -1 }[m[2]] || 0);
+    return Math.max(0, Math.min(127, (+m[3] + 1) * 12 + pc));
+  }
+  const nums = [...stem.matchAll(/(?:^|[^0-9])(\d{2,3})(?![0-9])/g)].map(x => +x[1]).filter(n => n >= 12 && n <= 120);
+  return nums.length ? nums.at(-1) : null;
+}
 export function zonesFor(roots) {
   return roots.map((root, k) => ({
     root,

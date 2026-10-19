@@ -6,6 +6,7 @@
   <title>Sequencer · Ostinato</title>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="sequencer.css">
+  <link rel="stylesheet" href="theme.css">
   <!-- These pages run inside index.html, which keeps both alive so playback never stops. -->
   <script>if (top === self) location.replace('index.html' + location.search + '#sequencer');</script>
 </head>
@@ -16,13 +17,19 @@
       <span class="brand-name">Ostinato</span>
       <nav class="app-nav" aria-label="Switch view" data-page="sequencer"></nav>
     </div>
+    <div class="deck">
     <div class="transport">
-      <button id="play" title="Play (Space)">▶ Play</button>
-      <button id="stop" title="Stop (Space)">■ Stop</button>
-      <button id="rec" title="Record (R): while playing, notes you play on the MIDI in keyboard are added to the selected track's pattern">● Rec</button>
+      <button id="play" class="tkey" title="Play (Space)"><i class="led"></i><span data-icon="play"></span><small>Play</small></button>
+      <button id="stop" class="tkey" title="Stop (Space)"><i class="led"></i><span data-icon="stop"></span><small>Stop</small></button>
+      <button id="rec" class="tkey" title="Record (R): while playing, notes you play on the MIDI in keyboard are added to the selected track's pattern"><i class="led"></i><span data-icon="rec"></span><small>Rec</small></button>
     </div>
-    <details class="dropdown" id="click-menu">
-      <summary class="field" title="Metronome">Click <span id="click-sum"></span></summary>
+    <div class="lcd-window" title="Where the song is, its tempo and time signature">
+      <span class="pos" id="pos">—</span>
+      <label class="lcd-field">BPM <input type="number" id="bpm" min="20" max="300"></label>
+      <label class="lcd-field" title="Time signature: beats in a bar, and which note is a beat (x/4 quarters, x/8 eighths). Song sections can have their own.">Time <select id="meter"></select></label>
+    </div>
+    <details class="dropdown click-key" id="click-menu">
+      <summary class="tkey" title="Metronome: when it clicks, count-in and volume"><i class="led"></i><span class="click-ic">♩</span><small>Click <span id="click-sum"></span></small></summary>
       <div class="dropdown-body">
         <label><input type="radio" name="click" value="off"> Off</label>
         <label><input type="radio" name="click" value="rec"> While recording</label>
@@ -32,9 +39,9 @@
         <span class="hint">The click plays on the computer, not the XL.</span>
       </div>
     </details>
-    <span class="pos" id="pos">—</span>
-    <label class="field">BPM <input type="number" id="bpm" min="20" max="300"></label>
+    </div>
     <label class="field">Swing <input type="range" id="swing" min="50" max="75"> <span id="swing-val"></span></label>
+    <span class="master-fx" id="master-fx"></span>
     <label class="field" title="Dims notes outside the scale and snaps notes played on the keyboard into it">Scale
       <select id="scale-root"></select>
       <select id="scale-type"></select>
@@ -42,9 +49,9 @@
     <span class="spacer"></span>
     <label class="field" title="Notes played here go to the selected track: they fill in steps, set the note pool, or just play through">MIDI in <select id="keys-in"></select>
       <span id="keys-led" class="keys-led" title="Lights up when notes arrive from your keyboard">●</span><span id="keys-last" class="keys-last"></span></label>
-    <label class="field" title="Also send the keys you play to the selected track's output. Turn this off if your keyboard makes its own sound too (e.g. the XL with Local Control on)."><input type="checkbox" id="thru"> Thru</label>
+    <label class="field" title="Also send the keys you play to the selected track's output. Turn this off if your keyboard makes its own sound too (e.g. the XL with Local Control on)."><input type="checkbox" id="thru"> Keys play the track</label>
     <details class="dropdown" id="clock-out">
-      <summary class="field" title="Send MIDI clock and start/stop, so other gear (and the XL's arpeggiator) follows this tempo">Clock out <span id="clock-sum"></span></summary>
+      <summary class="field" title="Send MIDI clock and start/stop, so other gear (and the XL's arpeggiator) follows this tempo">Send clock <span id="clock-sum"></span></summary>
       <div class="dropdown-body" id="clock-list"></div>
     </details>
     <span id="midi-status" class="status-pill">MIDI…</span>
@@ -81,7 +88,8 @@
       <label class="field plain" title="Selecting an XL track (click it, or press 1–8) sends its sound to the XL, for quick switching while playing"><input type="checkbox" id="sound-follows"> XL sound follows selected track</label>
     </h2>
     <div id="tracks"></div>
-    <button class="ghost small" id="add-track">+ Add track</button>
+    <span class="add-track-wrap"><button class="ghost small" id="add-track" aria-haspopup="true">+ Add track</button>
+      <div class="add-track-menu" id="add-track-menu" hidden role="menu"></div></span>
 
     <p class="help">
       Click a step to edit it, double-click to turn it on or off (on a note-pool track, one click turns it on), and drag a note's right edge to hold it longer.
