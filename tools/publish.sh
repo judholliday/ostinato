@@ -5,11 +5,17 @@
 #
 #   tools/publish.sh ["commit message"]     (default message: the latest commit's subject)
 #
+# Work can also happen in the public repo itself (cloud sessions, pull requests). That work must be
+# brought here with tools/pull-public.sh before publishing again, or publishing would replace it
+# with this repo's version: so this script remembers the public commit it last published or pulled
+# (the local ref refs/published/<remote>) and refuses while the public repo has moved on from it.
+#
 # Needs a git remote called "github" (or set PUBLISH_REMOTE) pointing at the GitHub repository.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REMOTE=${PUBLISH_REMOTE:-github}
 BRANCH=main
+LAST=refs/published/$REMOTE
 
 # Not ours to share: Korg's factory banks and MIDI spec (users download them from Korg), the
 # Minimoog Sound Charts transcription (Tom Rhea's permission covers personal use only), and the
@@ -42,6 +48,20 @@ unset GIT_INDEX_FILE
 
 parent=
 if git fetch -q "$REMOTE" "$BRANCH" 2>/dev/null; then parent=$(git rev-parse FETCH_HEAD); fi
+if [ -n "$parent" ]; then
+  last=$(git rev-parse -q --verify "$LAST" || true)
+  if [ -z "$last" ]; then
+    echo "This repo doesn't know which public commit it last published. If $REMOTE/$BRANCH has nothing"
+    echo "that isn't here yet, record it with:  git update-ref $LAST $parent"
+    exit 1
+  fi
+  if [ "$parent" != "$last" ]; then
+    echo "$REMOTE/$BRANCH has changes that aren't here yet:"
+    git log --format='  %h %s (%an)' "$last..$parent" 2>/dev/null || echo "  (its history no longer contains $last)"
+    echo "Bring them in first with tools/pull-public.sh, then publish."
+    exit 1
+  fi
+fi
 if [ -n "$parent" ] && [ "$(git rev-parse "$parent^{tree}")" = "$tree" ]; then
   echo "GitHub is already up to date."
   exit 0
@@ -50,4 +70,5 @@ fi
 msg=${1:-$(git log -1 --format=%B HEAD)}
 commit=$(git commit-tree "$tree" ${parent:+-p "$parent"} -m "$msg")
 git push "$REMOTE" "$commit:refs/heads/$BRANCH"
+git update-ref "$LAST" "$commit"
 echo "Published $(git rev-parse --short "$commit") to $REMOTE/$BRANCH."
