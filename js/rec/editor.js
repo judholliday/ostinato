@@ -9,7 +9,8 @@
 // pos/len in ticks (96 a beat) from the clip's start; sound as in core/sounding.js (or null).
 import * as C from '../seq/capture.js';
 import { TICKS_PER_BEAT, TICKS_PER_BAR, PATTERNS, RATES, ROLES, normalizeSong } from '../seq/model.js';
-import { putClip, songWithClip, soundFits, outKind, guessClipRole, roleName, backingSlice, backingTracks, backingToPlay, songFromBacking } from '../seq/putclip.js';
+import { putClip, songWithClip, soundFits, outKind, guessClipRole, roleName, backingSlice, backingTracks, backingToPlay, songFromBacking, trackSound } from '../seq/putclip.js';
+import { DEVICES } from '../core/devices.js';
 import { writeMidi } from '../seq/midifile.js';
 import { storage, placeOf } from '../core/storage.js';
 import { openSoundPicker, closeSoundPicker } from '../core/soundpicker.js';
@@ -22,7 +23,7 @@ const ROW_H = 8, RULER_H = 20;
 const r2 = v => Math.round(v * 100) / 100;
 
 // env (from ui.js): { channel, toast, seq(), outputs(), takeBpm(take), setTakeBpm(id, bpm),
-//   takeSound(take), takeBacking(take), download(bytes, name), clipsChanged() }
+//   takeSound(take), takeBacking(take), exportAudio(spec), download(bytes, name), clipsChanged() }
 let env = null;
 let ed = null; // what's open (see openTake / openClip)
 export const editing = () => ed;
@@ -146,7 +147,8 @@ function render() {
         <button data-ed="save-new" title="Save ${ed.sel ? 'the selection' : 'it'} as another clip">Save ${ed.sel ? 'selection' : ''} as new clip</button>`
         : `<button class="accent" data-ed="save-new" title="Keep ${ed.sel ? 'the selection' : 'the whole take'} as a clip, with its sound">Save ${ed.sel ? 'selection' : 'take'} as clip</button>`}
       <button data-ed="put" class="${ed.put ? 'on' : ''}" title="Into a track of the song open in the Sequencer, a new track, another saved song or a new song">→ Put into a song…</button>
-      <button class="ghost" data-ed="mid" title="Download ${ed.sel ? 'the selection' : 'it'} as a MIDI file">.mid</button>
+      <button class="ghost" data-ed="wav" ${ed.exporting ? 'disabled' : ''} title="Make ${ed.sel ? 'the selection' : 'it'}${ed.backing && ed.withBacking ? ' and its backing' : ''} into an audio file (Recordings tab), with the sounds chosen here: Ostinato Synth sounds are rendered at once; XL parts are played and recorded through your audio input">${ed.exporting ? 'Making audio…' : '⤓ .wav'}</button>
+      <button class="ghost" data-ed="mid" title="Download ${ed.sel ? 'the selection' : 'it'}${ed.backing && ed.withBacking ? ' and its backing' : ''} as a MIDI file. Tracks are named with their sounds; XL sounds go in as SysEx, so a DAW that passes SysEx on can restore them">.mid</button>
     </div>
     ${ed.put ? putForm(r) : ''}
     ${ed.putDone ? `<div class="ed-put done"><span>${esc(ed.putDone.text)}</span>
@@ -408,7 +410,8 @@ async function putIn() {
       if (!b) { env.toast('The Sequencer played nothing in that stretch.', 'err'); return; }
       r = songFromBacking(b, { name, bpm: ed.bpm, length: bEnd - a, items, newRole: ed.putRole, trackName: opts.name, sound: opts.sound, xlOut: opts.xlOut });
       if (!r.error) r.text = `Made the song "${name}": ${r.backingTracks} track${r.backingTracks === 1 ? '' : 's'} from the backing plus yours on ${r.track.name}${r.gave}.`
-        + (r.lost.length ? ` Too long to fit in patterns A–D: ${r.lost.join(', ')} (the rest is cut).` : '');
+        + (r.lost.length ? ` Didn't fit (8 tracks at most): ${r.lost.join(', ')}.` : '')
+        + (r.soundChanges.length ? ` ${r.soundChanges.join(', ')} changed sound while playing; the song keeps the sound each had at the start.` : '');
     } else r = songWithClip(name, ed.bpm, opts);
     song = r.song;
   } else {
@@ -432,6 +435,36 @@ async function putIn() {
     if (!fresh) ed.putSong = null; // reloaded from its file next time
   }
   render();
+}
+
+// The stretch a..c as a MIDI file: your part, plus (With backing) one track per backing track. Each
+// track is named with its sound. XL sounds go in as SysEx (the program dump) where they start, so a
+// DAW that passes SysEx on restores them; MIDI gear gets its Program Change. Ostinato Synth sounds
+// can't travel in MIDI: the clip (and Recordings' audio) keeps them.
+function midiOf([a, c], name) {
+  const label = s => (!s ? '' : s.kind === 'lab' ? `${s.name} (Ostinato Synth)` : s.kind === 'xl' ? `${s.name} (microKORG XL)` : s.name);
+  const dev = DEVICES.find(d => d.soundMessage);
+  const dump = (s, ch, tick) => (s?.kind === 'xl' && dev ? [{ tick, data: [...dev.soundMessage(ch - 1, s.data)] }] : []);
+  const mine = chosenSound(), mineCh = mine?.kind === 'xl' ? 2 : 1;
+  const tracks = [{ name: mine && mine.kind !== 'track' ? `${name} - ${label(mine)}` : name, ch: mineCh, sysex: dump(mine, mineCh, 0),
+    notes: inRange([a, c]).map(n => ({ tick: n.pos - a, dur: Math.min(n.len, c - n.pos), note: n.note, vel: n.vel })) }];
+  const b = ed.withBacking && backingSlice(ed.backing, a, c);
+  if (b) {
+    const used = new Set([mineCh]), parts = new Map();
+    b.song.tracks.forEach((t, ti) => { const k = t._part ?? ti; if (!parts.has(k)) parts.set(k, []); parts.get(k).push(ti); });
+    for (const tis of parts.values()) {
+      const t = b.song.tracks[tis[0]], kind = outKind(t.out);
+      const notes = b.notes.filter(n => tis.includes(n.ti)).map(n => ({ tick: n.pos, dur: n.len, note: n.note, vel: n.vel }));
+      if (!notes.length) continue;
+      // Hardware keeps its channel; computer tracks take the next free one.
+      let ch = kind === 'computer' ? 1 : t.ch || 1;
+      if (kind === 'computer') while (used.has(ch) && ch < 16) ch++;
+      used.add(ch);
+      tracks.push({ name: `${t.name} - ${label(trackSound(t))}`, ch, notes, program: kind === 'midi' && Number.isInteger(t.program) ? t.program : undefined,
+        sysex: tis.flatMap(ti => dump(trackSound(b.song.tracks[ti]), ch, b.song.tracks[ti]._from || 0)) });
+    }
+  }
+  return writeMidi({ name, bpm: ed.bpm, tracks });
 }
 
 // ---- events (wired once by ui.js) ----
@@ -463,14 +496,16 @@ export function wireEditor() {
       case 'put-show': parent.postMessage({ type: 'switch-view', view: 'sequencer' }, location.origin); ed.putDone = null; render(); break;
       case 'mid': {
         const [a, c] = range(), name = $('#ed-name').value.trim() || 'Clip';
-        const tracks = [{ name, ch: 1, notes: inRange([a, c]).map(n => ({ tick: n.pos - a, dur: Math.min(n.len, c - n.pos), note: n.note, vel: n.vel })) }];
-        // With backing: one more MIDI track per backing track that plays here.
-        const b = ed.withBacking && backingSlice(ed.backing, a, c);
-        if (b) b.song.tracks.forEach((t, ti) => {
-          const notes = b.notes.filter(n => n.ti === ti).map(n => ({ tick: n.pos, dur: n.len, note: n.note, vel: n.vel }));
-          if (notes.length) tracks.push({ name: t.name, ch: (tracks.length % 16) + 1, notes }); // channels 1, 2, 3…
-        });
-        env.download(writeMidi({ name, bpm: ed.bpm, tracks }), `${name}.mid`);
+        env.download(midiOf([a, c], name), `${name}.mid`);
+        break;
+      }
+      case 'wav': {
+        const [a, c] = range(), name = $('#ed-name').value.trim() || 'Clip';
+        const items = inRange([a, c]).map(n => ({ pos: n.pos - a, len: Math.min(n.len, c - n.pos), note: n.note, vel: n.vel }));
+        ed.exporting = true;
+        render();
+        const done = () => { if (ed) { ed.exporting = false; render(); } };
+        env.exportAudio({ name, bpm: ed.bpm, items, sound: chosenSound(), backing: ed.withBacking ? backingSlice(ed.backing, a, c) : null, length: c - a }).then(done, err => { env.toast(`Couldn't make the audio: ${err.message}`, 'err'); done(); });
         break;
       }
     }

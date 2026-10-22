@@ -116,7 +116,7 @@ export function takeBars(items) {
 export const barsPerPattern = rate => Math.max(1, Math.floor(MAX_STEPS * rate / TICKS_PER_BAR));
 
 // Quantizes a take into a pattern at a step rate, starting at bar `fromBar` (0-based). Notes
-// starting on the same step become a chord held as long as its longest note.
+// starting on the same step become a chord held as long as its longest note, each keeping its velocity.
 export function takeToPattern(items, rate, { fromBar = 0 } = {}) {
   const stepsPerBar = TICKS_PER_BAR / rate;
   const bars = Math.min(barsPerPattern(rate), takeBars(items) - fromBar);
@@ -126,15 +126,18 @@ export function takeToPattern(items, rate, { fromBar = 0 } = {}) {
   for (const x of items) {
     const i = Math.round((x.pos - offset) / rate);
     if (i < 0 || i >= length) continue;
-    const s = byStep.get(i) || { i, notes: [], vel: 0, d: 0 };
-    s.notes.push(x.note);
+    const s = byStep.get(i) || { i, notes: [], vels: {}, vel: 0, d: 0 };
+    if (!s.notes.includes(x.note)) s.notes.push(x.note);
+    s.vels[x.note] = Math.max(s.vels[x.note] || 0, x.vel);
     s.vel = Math.max(s.vel, x.vel);
     s.d = Math.max(s.d, x.len / rate);
     byStep.set(i, s);
   }
-  const steps = [...byStep.values()].map(({ i, notes, vel, d }) => {
-    const len = Math.max(1, Math.round(d));
-    return { i, notes, vel, len, gate: Math.round(Math.min(1, Math.max(0.1, d - (len - 1))) * 100) };
+  // Notes quieter than the loudest on their step keep their own velocity (nv: ghost notes, accents).
+  const steps = [...byStep.values()].map(({ i, notes, vels, vel, d }) => {
+    const len = Math.max(1, Math.round(d)), nv = {};
+    for (const n of notes) if (vels[n] !== vel) nv[n] = vels[n];
+    return { i, notes, vel, len, gate: Math.round(Math.min(1, Math.max(0.1, d - (len - 1))) * 100), ...(Object.keys(nv).length ? { nv } : {}) };
   });
   return cleanPattern({ length, steps });
 }

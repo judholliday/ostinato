@@ -107,10 +107,11 @@ export function songWithClip(songName, bpm, opts) {
   return { ...r, song };
 }
 
-// ---- Backing: what the sequencer played under a take (see PLAN.md / CLAUDE.md) ----
+// ---- Backing: what the sequencer played under a take (see CLAUDE.md, "Backing") ----
 // A backing is { song, notes: [{ ti, pos, note, vel, len }], ccs: [{ ti, pos, cc, v }] }: the song as
-// it was when playback started (its tracks give the sounds) and what each track played, in ticks
-// from the clip's start.
+// it was, and what each of its tracks played, in ticks from the clip's start. A track whose sound,
+// effects or volume changed while playing appears once per version: each version's track has `_part`
+// (the same for all versions of one track) and `_from` (the tick it took over; 0 = from the start).
 
 // The sound a track of a backing song plays (core/sounding.js form).
 export function trackSound(t) {
@@ -120,96 +121,168 @@ export function trackSound(t) {
   return { kind: 'midi', name: `${t.out} ch ${t.ch}`, out: t.out, ch: t.ch, program: t.program };
 }
 
-// The part of a backing from tick a to c, moved to start at 0 (null if nothing plays there). Notes
-// started before a are kept only if they're long (held chords and pads), cut to start at a.
-export function backingSlice(b, a, c) {
-  if (!b?.notes?.length) return null;
+const r1 = v => Math.round(v * 10) / 10;
+// Whether a note belongs in the stretch a..c: started there, or a long note (held chords and pads)
+// started earlier and still sounding (it's cut to start at a).
+const inStretch = (n, a, c) => n.pos < c && n.pos + n.len > a && (n.pos >= a || n.len >= M.TICKS_PER_BEAT);
+const cutTo = (n, a, c) => { const pos = Math.max(n.pos, a); return { pos: r1(pos - a), note: n.note, vel: n.vel, len: r1(Math.min(n.pos + n.len, c) - pos) }; };
+
+// The backing from tick a to c of a run as Capture keeps it:
+// { base (the song without tracks), parts: { tid: [{ pos, track }] } (versions in time order), order: [tid],
+//   notes: [{ tid, pos, note, vel, len }], ccs: [{ tid, pos, cc, v }] }. Null if nothing played there.
+export function runBacking(r, a, c) {
+  const tracks = [], index = new Map();
+  const tiOf = (tid, pos) => {
+    const vs = r.parts?.[tid];
+    if (!vs?.length) return -1;
+    let k = 0;
+    vs.forEach((v, i) => { if (v.pos <= pos) k = i; });
+    const key = `${tid}:${k}`;
+    if (!index.has(key)) { index.set(key, tracks.length); tracks.push({ ...vs[k].track, _part: tid, _from: r1(Math.max(0, vs[k].pos - a)) }); }
+    return index.get(key);
+  };
   const notes = [];
-  for (const n of b.notes) {
-    const end = n.pos + n.len;
-    if (n.pos >= c || end <= a || (n.pos < a && n.len < M.TICKS_PER_BEAT)) continue;
-    const pos = Math.max(n.pos, a);
-    notes.push({ ti: n.ti, pos: r1(pos - a), note: n.note, vel: n.vel, len: r1(Math.min(end, c) - pos) });
+  for (const n of r.notes) {
+    if (!inStretch(n, a, c)) continue;
+    const ti = tiOf(n.tid, Math.max(n.pos, a));
+    if (ti >= 0) notes.push({ ti, ...cutTo(n, a, c) });
   }
   if (!notes.length) return null;
-  const ccs = [], before = new Map();
-  for (const x of b.ccs || []) {
+  const heard = new Set([...index.keys()].map(k => k.split(':')[0])); // tracks that play here
+  const ccs = ccsIn((r.ccs || []).filter(x => heard.has(String(x.tid))).map(x => ({ ...x, ti: tiOf(x.tid, Math.max(x.pos, a)) })), a, c);
+  // Tracks in the song's order, versions in time order.
+  const order = new Map((r.order || []).map((tid, i) => [tid, i]));
+  const sorted = tracks.map((t, i) => ({ t, i })).sort((x, y) => (order.get(x.t._part) ?? 99) - (order.get(y.t._part) ?? 99) || x.t._from - y.t._from);
+  const remap = new Map(sorted.map(({ i }, k) => [i, k]));
+  return { song: { ...r.base, tracks: sorted.map(x => x.t) }, notes: notes.map(n => ({ ...n, ti: remap.get(n.ti) })), ccs: ccs.map(x => ({ ...x, ti: remap.get(x.ti) })) };
+}
+// Controllers in a..c, plus the value in force at a for each (track, controller).
+function ccsIn(list, a, c) {
+  const out = [], before = new Map();
+  for (const x of list) {
     if (x.pos < a) before.set(`${x.ti}:${x.cc}`, x);
-    else if (x.pos < c) ccs.push({ ...x, pos: r1(x.pos - a) });
+    else if (x.pos < c) out.push({ ti: x.ti, pos: r1(x.pos - a), cc: x.cc, v: x.v });
   }
-  for (const x of before.values()) ccs.unshift({ ...x, pos: 0 });
-  return { song: b.song, notes, ccs };
+  for (const x of before.values()) out.unshift({ ti: x.ti, pos: 0, cc: x.cc, v: x.v });
+  return out;
 }
-const r1 = v => Math.round(v * 10) / 10;
 
-// Names of the backing's tracks that play something.
+// The part of a backing from tick a to c, moved to start at 0 (null if nothing plays there).
+export function backingSlice(b, a, c) {
+  if (!b?.notes?.length) return null;
+  const tracks = b.song.tracks.map((t, ti) => ({ ...t, _part: t._part ?? `t${ti}`, _from: t._from ?? 0 }));
+  // The tracks (or versions of them) that play something here.
+  const used = new Set(b.notes.filter(n => inStretch(n, a, c)).map(n => n.ti));
+  if (!used.size) return null;
+  const order = [...used].sort((x, y) => x - y), remap = new Map(order.map((ti, k) => [ti, k]));
+  const notes = b.notes.filter(n => used.has(n.ti) && inStretch(n, a, c)).map(n => ({ ti: remap.get(n.ti), ...cutTo(n, a, c) }));
+  const ccs = ccsIn((b.ccs || []).filter(x => remap.has(x.ti)), a, c).map(x => ({ ...x, ti: remap.get(x.ti) }));
+  return { song: { ...b.song, tracks: order.map(ti => ({ ...tracks[ti], _from: r1(Math.max(0, tracks[ti]._from - a)) })) }, notes, ccs };
+}
+
+// Names of the backing's tracks that play something (once per track, however many versions).
 export function backingTracks(b) {
-  const used = new Set((b?.notes || []).map(n => n.ti));
-  return (b?.song?.tracks || []).filter((_, ti) => used.has(ti)).map(t => t.name);
-}
-
-// A new song that recreates the backing (each track that played, its notes made into patterns) plus
-// the clip on a new track. Patterns hold up to MAX_STEPS steps, so long stretches are cut into
-// chunks; chunks that repeat share a pattern, so a backing that loops needs few. Up to 4 different
-// chunks fit per track (patterns A-D); `lost` names tracks that had more.
-export function songFromBacking(backing, { name, bpm, length, items, newRole, trackName = null, sound = null, xlOut = null }) {
-  const song = M.normalizeSong(JSON.parse(JSON.stringify(backing.song)));
-  song.name = String(name || '').trim().slice(0, 60) || 'Untitled';
-  song.bpm = Math.max(20, Math.min(300, Math.round(bpm || song.bpm)));
-  const played = new Map();
-  for (const n of backing.notes) {
-    if (!song.tracks[n.ti]) continue;
-    if (!played.has(n.ti)) played.set(n.ti, []);
-    played.get(n.ti).push({ note: n.note, vel: n.vel, pos: n.pos, len: n.len });
-  }
-  const parts = [...played.keys()].sort((x, y) => x - y).map(ti => ({ track: song.tracks[ti], items: played.get(ti) }));
-  song.tracks = parts.map(p => p.track);
-  song.song = [{ bars: 1, play: song.tracks.map(() => 'A') }];
-  const t = addStarterTrack(song, newRole, trackName);
-  if (!t) return { error: `The backing already has ${M.MAX_TRACKS} tracks, so there's no room for yours.` };
-  if (sound?.kind === 'xl' && xlOut) t.out = xlOut;
-  const gave = giveSound(t, sound, true);
-  parts.push({ track: t, items });
-  for (const p of parts) Object.assign(p.track, { mode: 'steps', mute: false, solo: false, pattern: 'A' });
-
-  const TPB = M.TICKS_PER_BAR, total = Math.max(TPB, Math.ceil(length / TPB) * TPB), bars = total / TPB;
-  const chunk = Math.max(1, Math.min(...parts.map(p => C.barsPerPattern(M.RATES[p.track.rate]))));
-  const n = Math.min(64, Math.ceil(bars / chunk)), lost = new Set();
-  const plays = parts.map(p => {
-    const rate = M.RATES[p.track.rate], letters = new Map();
-    p.track.patterns = Object.fromEntries(M.PATTERNS.map(x => [x, M.newPattern()]));
-    return Array.from({ length: n }, (_, k) => {
-      const from = k * chunk * TPB, to = Math.min(total, from + chunk * TPB);
-      const inChunk = p.items.filter(x => x.pos >= from && x.pos < to).map(x => ({ ...x, pos: x.pos - from, len: Math.min(x.len, to - x.pos) }));
-      if (!inChunk.length) return null;
-      const pat = M.cleanPattern({ ...C.takeToPattern(inChunk, rate), length: Math.round((to - from) / rate) });
-      if (!pat.steps.length) return null;
-      const key = JSON.stringify(pat);
-      if (!letters.has(key)) {
-        if (letters.size >= M.PATTERNS.length) { lost.add(p.track.name); return null; }
-        const L = M.PATTERNS[letters.size];
-        letters.set(key, L);
-        p.track.patterns[L] = pat;
-      }
-      return letters.get(key);
-    });
+  const used = new Set((b?.notes || []).map(n => n.ti)), seen = new Set(), names = [];
+  (b?.song?.tracks || []).forEach((t, ti) => {
+    const part = t._part ?? ti;
+    if (used.has(ti) && !seen.has(part)) { seen.add(part); names.push(t.name); }
   });
-  // One section per chunk; neighbours playing the same patterns become one longer section.
-  song.song = [];
-  for (let k = 0; k < n; k++) {
-    const play = plays.map(x => x[k]), b = Math.min(chunk, bars - k * chunk), last = song.song.at(-1);
-    if (last && b === chunk && last.bars % chunk === 0 && last.bars + b <= 64 && JSON.stringify(last.play) === JSON.stringify(play)) last.bars += b;
-    else song.song.push({ bars: b, play });
-  }
-  if (bars > 64 * chunk) lost.add('everything after bar ' + 64 * chunk);
-  return { song: M.normalizeSong(song), track: t, ti: song.tracks.length - 1, gave, lost: [...lost], backingTracks: parts.length - 1 };
+  return names;
 }
 
-// For audition-take: the backing's notes in ms, with each track's sound.
+// For audition-take: the backing's notes and controllers in ms, with its tracks (each version's
+// `_from` in ms as `fromMs`, when it takes over).
 export function backingToPlay(b, msPerTick, from = 0, to = Infinity) {
   if (!b) return null;
-  return { tracks: b.song.tracks, notes: b.notes.filter(n => n.pos >= from && n.pos < to)
-    .map(n => ({ ti: n.ti, dt: (n.pos - from) * msPerTick, dur: Math.max(20, Math.min(n.len, to - n.pos) * msPerTick), note: n.note, vel: n.vel })),
+  return { tracks: b.song.tracks.map(t => ({ ...t, fromMs: Math.max(0, ((t._from ?? 0) - from) * msPerTick) })),
+    notes: b.notes.filter(n => n.pos >= from && n.pos < to)
+      .map(n => ({ ti: n.ti, dt: (n.pos - from) * msPerTick, dur: Math.max(20, Math.min(n.len, to - n.pos) * msPerTick), note: n.note, vel: n.vel })),
     ccs: (b.ccs || []).filter(c => c.pos >= from && c.pos < to).map(c => ({ ti: c.ti, dt: (c.pos - from) * msPerTick, cc: c.cc, v: c.v })) };
 }
 
+// A new song that recreates the backing (each track that played, its notes made into patterns) plus
+// the clip on a new track. A track's versions (its sound changed while playing) become one track
+// with the sound it had at the start (`soundChanges` lists them). Patterns hold up to MAX_STEPS
+// steps, so long stretches are cut into chunks; chunks that repeat share a pattern, so a backing
+// that loops needs few. A track with more than 4 different chunks continues on extra tracks
+// ("Bass 2"…) with the same sound; `lost` lists what still didn't fit (the 8-track limit).
+export function songFromBacking(backing, { name, bpm, length, items, newRole, trackName = null, sound = null, xlOut = null }) {
+  const src = backing.song;
+  const song = M.normalizeSong({ ...JSON.parse(JSON.stringify(src)), tracks: [], song: [] });
+  song.tracks = []; song.song = [];
+  song.name = String(name || '').trim().slice(0, 60) || 'Untitled';
+  song.bpm = Math.max(20, Math.min(300, Math.round(bpm || song.bpm)));
+  // One part per original track: its first version's settings, all versions' notes.
+  const parts = [], byPart = new Map(), soundChanges = [];
+  src.tracks.forEach((t, ti) => {
+    const key = t._part ?? `t${ti}`;
+    if (!byPart.has(key)) {
+      const clean = M.normalizeSong({ tracks: [{ ...t, patterns: undefined }], song: [] }).tracks[0];
+      byPart.set(key, { track: clean, items: [], tis: [] });
+      parts.push(byPart.get(key));
+    } else if (!soundChanges.includes(t.name)) soundChanges.push(t.name);
+    byPart.get(key).tis.push(ti);
+  });
+  for (const n of backing.notes) {
+    const p = parts.find(x => x.tis.includes(n.ti));
+    p?.items.push({ note: n.note, vel: n.vel, pos: n.pos, len: n.len });
+  }
+  const played = parts.filter(p => p.items.length);
+  for (const p of played) Object.assign(p.track, { mode: 'steps', mute: false, solo: false, pattern: 'A' });
+
+  // Yours, on a new track.
+  const holder = { tracks: [], song: [{ bars: 1, play: [] }] };
+  const mine = addStarterTrack({ ...holder, tracks: played.map(p => p.track) }, newRole, trackName);
+  if (!mine) return { error: `The backing already has ${M.MAX_TRACKS} tracks, so there's no room for yours.` };
+  if (sound?.kind === 'xl' && xlOut) mine.out = xlOut;
+  const gave = giveSound(mine, sound, true);
+  Object.assign(mine, { mode: 'steps', pattern: 'A' });
+  const all = [...played, { track: mine, items, mine: true }];
+
+  const TPB = M.TICKS_PER_BAR, total = Math.max(TPB, Math.ceil(length / TPB) * TPB), bars = total / TPB;
+  const chunk = Math.max(1, Math.min(...all.map(p => C.barsPerPattern(M.RATES[p.track.rate]))));
+  const n = Math.min(64, Math.ceil(bars / chunk)), lost = [];
+  // Each part becomes one or more tracks ("lanes"), each with patterns A-D: lane = which group of 4
+  // different chunks. plays[lane track][chunk] = the pattern it plays there (or null).
+  const lanes = [];
+  for (const p of all) {
+    const rate = M.RATES[p.track.rate], letters = new Map(), mineLanes = [];
+    const laneTrack = k => {
+      while (mineLanes.length <= k) {
+        const t = mineLanes.length ? { ...JSON.parse(JSON.stringify(p.track)), name: `${p.track.name} ${mineLanes.length + 1}` } : p.track;
+        t.patterns = Object.fromEntries(M.PATTERNS.map(x => [x, M.newPattern()]));
+        const lane = { track: t, play: Array(n).fill(null), mine: p.mine && !mineLanes.length };
+        mineLanes.push(lane);
+        lanes.push(lane);
+      }
+      return mineLanes[k];
+    };
+    laneTrack(0);
+    for (let k = 0; k < n; k++) {
+      const from = k * chunk * TPB, to = Math.min(total, from + chunk * TPB);
+      const inChunk = p.items.filter(x => x.pos >= from && x.pos < to).map(x => ({ ...x, pos: x.pos - from, len: Math.min(x.len, to - x.pos) }));
+      if (!inChunk.length) continue;
+      const pat = M.cleanPattern({ ...C.takeToPattern(inChunk, rate), length: Math.round((to - from) / rate) });
+      if (!pat.steps.length) continue;
+      const key = JSON.stringify(pat);
+      if (!letters.has(key)) letters.set(key, letters.size);
+      const d = letters.get(key), lane = laneTrack(Math.floor(d / M.PATTERNS.length)), L = M.PATTERNS[d % M.PATTERNS.length];
+      lane.track.patterns[L] = pat;
+      lane.play[k] = L;
+    }
+  }
+  // At most MAX_TRACKS tracks: yours first, then the backing's in order; extra lanes past that are lost.
+  const keep = [lanes.find(l => l.mine), ...lanes.filter(l => !l.mine)].slice(0, M.MAX_TRACKS);
+  for (const l of lanes) if (!keep.includes(l) && l.play.some(Boolean)) lost.push(l.track.name);
+  const ordered = lanes.filter(l => keep.includes(l));
+  song.tracks = ordered.map(l => l.track);
+  // One section per chunk; neighbours playing the same patterns become one longer section.
+  for (let k = 0; k < n; k++) {
+    const play = ordered.map(l => l.play[k]), b = Math.min(chunk, bars - k * chunk), last = song.song.at(-1);
+    if (last && b === chunk && last.bars % chunk === 0 && last.bars + b <= 64 && JSON.stringify(last.play) === JSON.stringify(play)) last.bars += b;
+    else song.song.push({ bars: b, play });
+  }
+  if (bars > 64 * chunk) lost.push(`everything after bar ${64 * chunk}`);
+  const out = M.normalizeSong(song), ti = out.tracks.findIndex(t => t.name === mine.name);
+  return { song: out, track: out.tracks[ti], ti, gave, lost, soundChanges, backingTracks: played.length };
+}

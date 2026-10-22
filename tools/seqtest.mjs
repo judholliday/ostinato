@@ -644,4 +644,41 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
   assert.deepEqual(r.lost, []);
 }
 
+// Backing from a run: track ids, a sound change mid-run, overflow onto extra tracks, per-drum velocity.
+{
+  const { runBacking, backingSlice, songFromBacking, backingTracks } = await import('../js/seq/putclip.js');
+  const t = (name, voice) => ({ ...normalizeSong(newSong()).tracks[0], name, voice });
+  const r = { base: { name: 'Jam', bpm: 120, meter: '4/4' }, order: [7, 9],
+    parts: { 7: [{ pos: 0, track: t('Keys', 'Keys') }, { pos: 768, track: t('Keys', 'Pad') }], 9: [{ pos: 0, track: t('Drums', 'Drums') }] },
+    notes: [], ccs: [] };
+  for (let bar = 0; bar < 4; bar++) r.notes.push({ tid: 7, pos: bar * 384, note: 60 + bar, vel: 100, len: 96 });
+  r.notes.push({ tid: 9, pos: 0, note: 36, vel: 120, len: 10 }, { tid: 9, pos: 0, note: 42, vel: 50, len: 10 });
+  const b = runBacking(r, 0, 4 * 384);
+  assert.deepEqual(b.song.tracks.map(x => [x.name, x.voice, x._from]), [['Keys', 'Keys', 0], ['Keys', 'Pad', 768], ['Drums', 'Drums', 0]]);
+  assert.deepEqual(backingTracks(b), ['Keys', 'Drums'], 'versions named once');
+  assert.deepEqual(b.notes.filter(n => n.ti === 1).map(n => n.note), [62, 63], 'notes after the change use the new version');
+  const late = backingSlice(b, 768, 4 * 384);
+  assert.deepEqual(late.song.tracks.map(x => [x.voice, x._from]), [['Pad', 0]], 'a slice after the change has only the new sound');
+  const s = songFromBacking(b, { name: 'X', bpm: 120, length: 4 * 384, items: [{ note: 72, vel: 90, pos: 0, len: 96 }], newRole: 'lead' });
+  assert.deepEqual(s.song.tracks.map(x => x.name), ['Keys', 'Drums', 'Lead']);
+  assert.deepEqual(s.soundChanges, ['Keys']);
+  const kick = s.song.tracks[1].patterns.A.steps[0];
+  assert.deepEqual([kick.vel, kick.nv], [120, { 42: 50 }], 'the quieter hat keeps its velocity');
+  // Six different 4-bar chunks of bass: A-D on Bass, the rest on "Bass 2".
+  const long = { base: r.base, order: [1], parts: { 1: [{ pos: 0, track: t('Bass', 'Bass') }] }, notes: [], ccs: [] };
+  for (let k = 0; k < 6; k++) long.notes.push({ tid: 1, pos: k * 4 * 384, note: 36 + k, vel: 100, len: 96 });
+  const L = songFromBacking(runBacking(long, 0, 24 * 384), { name: 'L', bpm: 120, length: 24 * 384, items: [{ note: 72, vel: 90, pos: 0, len: 96 }], newRole: 'lead' });
+  assert.deepEqual(L.song.tracks.map(x => x.name), ['Bass', 'Bass 2', 'Lead']);
+  assert.deepEqual(L.song.song.map(sec => sec.play.slice(0, 2).join(',')), ['A,', 'B,', 'C,', 'D,', ',A', ',B']);
+  assert.deepEqual(L.lost, []);
+}
+
+// SysEx (an XL sound) survives writing and reading a .mid.
+{
+  const dump = [0xf0, 0x42, 0x31, 0x7e, 0x40, 1, 2, 3, 0xf7];
+  const back = readMidi(writeMidi({ name: 'S', bpm: 120, tracks: [{ name: 'XL', ch: 2, sysex: [{ tick: 0, data: dump }], notes: [{ tick: 0, dur: 96, note: 60, vel: 100 }] }] }));
+  assert.deepEqual(back.tracks[1].sysex, [{ tick: 0, data: dump }]);
+  assert.equal(back.tracks[1].notes.length, 1);
+}
+
 console.log('ok — sequencer model and engine');

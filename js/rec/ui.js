@@ -13,7 +13,9 @@
 import { icon } from '../core/icons.js';
 import * as C from '../seq/capture.js';
 import { TICKS_PER_BEAT, TICKS_PER_BAR } from '../seq/model.js';
-import { backingSlice, backingTracks, backingToPlay } from '../seq/putclip.js';
+import { runBacking, backingTracks, backingToPlay, trackSound } from '../seq/putclip.js';
+import { renderComputer, mixInto, trimTail } from './bounce.js';
+import { trackGain } from '../seq/model.js';
 import { writeMidi } from '../seq/midifile.js';
 import { portLabel, looksLikeSynthOut, looksLikeSynthIn } from '../core/midiports.js';
 import { soundKey } from '../core/sounding.js';
@@ -100,8 +102,9 @@ channel.onmessage = e => {
 
 const MAX_EVENTS = 200000; // a guard: takes are kept by count (prefs.keepTakes), not by age
 const cap = { events: [], ranges: [], bpm: new Map(), est: new Map(), auditioning: null, loaded: false,
-  // What the sequencer played in each playback run (its backing), by run id: { run, song, notes, ccs }
-  // with notes { ti, pos (= the run's tick), note, vel, len }. Each run is stored under its own key.
+  // What the sequencer played in each playback run (its backing), by run id, as putclip.js runBacking()
+  // reads it: { run, base, parts: { tid: [{ pos, track }] }, order, notes: [{ tid, pos (= the run's
+  // tick), note, vel, len }], ccs }. Each run is stored under its own key.
   runs: new Map(), dirtyRuns: new Set() };
 // Takes live in IndexedDB (core/kv.js), so many fit and they outlast closing the browser. Until
 // Oct 2026 they were kept in localStorage for an hour; those are moved over once.
@@ -121,7 +124,7 @@ const LEGACY = ['mkxl.rec.capture', 'mkxl.rec.ranges', 'mkxl.rec.sounds', 'mkxl.
   for (const id of await kv.get('rec.runlist', [])) {
     if (cap.runs.has(id)) continue;
     const r = await kv.get(`rec.run.${id}`, null);
-    if (r) cap.runs.set(id, r);
+    if (r) cap.runs.set(id, upgradeRun(r));
   }
   // Anything played while loading comes after.
   cap.events = [...events, ...cap.events];
@@ -139,23 +142,37 @@ const LEGACY = ['mkxl.rec.capture', 'mkxl.rec.ranges', 'mkxl.rec.sounds', 'mkxl.
 function onRun(m) {
   if (!m.run) return;
   let r = cap.runs.get(m.run);
-  if (!r) { r = { run: m.run, song: null, notes: [], ccs: [] }; cap.runs.set(m.run, r); }
-  if (m.song) r.song = m.song;
-  for (const n of m.notes || []) r.notes.push({ ti: n.ti, pos: n.tick, note: n.note, vel: n.vel, len: n.len });
-  for (const c of m.ccs || []) r.ccs.push({ ti: c.ti, pos: c.tick, cc: c.cc, v: c.v });
+  if (!r) { r = { run: m.run, base: null, parts: {}, order: [], notes: [], ccs: [] }; cap.runs.set(m.run, r); }
+  if (m.song) {
+    const { tracks, ...base } = m.song;
+    r.base = base;
+    r.order = m.tids;
+    tracks.forEach((track, i) => { r.parts[m.tids[i]] ||= [{ pos: 0, track }]; });
+  }
+  if (m.type === 'run-track' && r.parts[m.tid]) r.parts[m.tid].push({ pos: m.tick, track: m.track });
+  for (const n of m.notes || []) r.notes.push({ tid: n.tid, pos: n.tick, note: n.note, vel: n.vel, len: n.len });
+  for (const c of m.ccs || []) r.ccs.push({ tid: c.tid, pos: c.tick, cc: c.cc, v: c.v });
   cap.dirtyRuns.add(m.run);
   saveSoon();
+}
+// Runs kept before tracks had ids (Oct 2026: { song, notes: [{ ti, pos… }] }): track index = id.
+function upgradeRun(r) {
+  if (r.parts || !r.song) return r;
+  const { tracks = [], ...base } = r.song;
+  return { run: r.run, base, order: tracks.map((_, i) => i + 1), parts: Object.fromEntries(tracks.map((t, i) => [i + 1, [{ pos: 0, track: t }]])),
+    notes: r.notes.map(({ ti, ...n }) => ({ tid: ti + 1, ...n })), ccs: (r.ccs || []).map(({ ti, ...c }) => ({ tid: ti + 1, ...c })) };
 }
 // What the sequencer played under a take played along with it, from the bar the take starts in to
 // the end of its last bar, in the take's own ticks (as C.takeTicks). Null for free-time takes.
 function takeBacking(take) {
   if (!take.synced) return null;
   const r = cap.runs.get(take.notes[0].run);
-  if (!r?.song || !r.notes.length) return null;
+  if (!r?.base || !r.notes.length) return null;
   const bar0 = Math.floor(take.notes[0].tick / TICKS_PER_BAR) * TICKS_PER_BAR;
   const items = C.takeTicks(take, take.bpm), end = Math.ceil(Math.max(...items.map(x => x.pos + x.len)) / TICKS_PER_BAR) * TICKS_PER_BAR;
-  return backingSlice({ song: r.song, notes: r.notes, ccs: r.ccs }, bar0, bar0 + Math.max(end, TICKS_PER_BAR));
+  return runBacking(r, bar0, bar0 + Math.max(end, TICKS_PER_BAR));
 }
+
 // Forgets the oldest takes beyond prefs.keepTakes.
 function prune() {
   const takes = C.splitTakes(C.notesOf(cap.events, Date.now()), C.GAP_MS, cap.ranges);
@@ -758,6 +775,68 @@ function renderAudio() {
   else if (isOwn()) $('#meter-db').textContent = 'plays when Ostinato does';
 }
 
+// ---- Audio files from the take editor (⤓ .wav; see bounce.js) ----
+
+// Asks the Sequencer something and waits for its answer (null after `ms`).
+function askSeq(msg, reply, ms = 1500) {
+  return new Promise(resolve => {
+    const done = v => { channel.removeEventListener('message', on); clearTimeout(timer); resolve(v); };
+    const on = e => { if (e.data?.type === reply) done(e.data); };
+    const timer = setTimeout(() => done(null), ms);
+    channel.addEventListener('message', on);
+    channel.postMessage(msg);
+  });
+}
+// A take or clip (with its backing) as an audio file in Recordings. Computer sounds are rendered
+// offline; XL and other MIDI parts are played and recorded live through the audio input, aligned
+// with the measured delay, and mixed in. Returns the file name, or null.
+async function exportAudio({ name, bpm, items, sound, backing, length }) {
+  const msPerTick = 60000 / (bpm * TICKS_PER_BEAT), seconds = length * msPerTick / 1000, tail = 4;
+  const mix = await askSeq({ type: 'get-mix', ti: sound?.kind === 'track' ? sound.ti : undefined }, 'mix');
+  const asPart = (track, snd, notes) => ({ track, sound: snd, fx: track?.fx || null, gain: track ? trackGain(track) : 1, notes });
+  const secs = n => ({ t: n.pos * msPerTick / 1000, dur: Math.max(0.02, n.len * msPerTick / 1000), note: n.note, vel: n.vel });
+  // Your part: its sound, or the track it plays through.
+  const myTrack = sound?.kind === 'track' ? mix?.track : null;
+  const parts = [{ ...asPart(myTrack, myTrack ? trackSound(myTrack) : sound, items.map(secs)), mine: true }];
+  if (backing) backing.song.tracks.forEach((t, ti) => {
+    const notes = backing.notes.filter(n => n.ti === ti);
+    if (notes.length) parts.push({ ...asPart(t, trackSound(t), notes.map(secs)), ti });
+  });
+  const onComputer = p => p.sound?.kind === 'lab' || p.sound?.kind === 'voice';
+  const computer = parts.filter(onComputer), hardware = parts.filter(p => p.sound && !onComputer(p)), unknown = parts.filter(p => !p.sound);
+  const live = hardware.length && audio.open && !isOwn(), sr = live ? audio.sampleRate : 48000;
+  const left = [];
+  if (hardware.length && !live) left.push(`${hardware.map(p => p.mine ? 'your part' : p.track.name).join(', ')} (${isOwn() ? 'choose the audio input your XL is plugged into under Audio in' : 'choose an audio input under Audio in'} to record ${hardware.length > 1 ? 'them' : 'it'})`);
+  if (unknown.length) left.push(`${unknown.map(p => p.mine ? 'your part' : p.track.name).join(', ')} (no sound known)`);
+  if (!computer.length && !live) { toast(`Nothing to make audio from: ${left.join('; ')}.`, 'err'); return null; }
+  toast(`Making "${name}.wav"${live ? `: playing the ${hardware.some(p => p.sound.kind === 'xl') ? 'XL' : 'MIDI'} part${hardware.length > 1 ? 's' : ''} and recording ${hardware.length > 1 ? 'them' : 'it'} (${Math.ceil(seconds + tail)} s)` : ''}…`);
+  const frames = Math.ceil((seconds + tail) * sr);
+  let out = computer.length ? await renderComputer(computer, { seconds: seconds + tail, sampleRate: sr, masterFx: mix?.masterFx || null }) : [new Float32Array(frames), new Float32Array(frames)];
+  if (live) {
+    const hw = hardware.filter(p => !p.mine), mine = hardware.find(p => p.mine);
+    const at = performance.timeOrigin + performance.now() + 900; // after the XL has its sound
+    const playBacking = hw.length ? backingToPlay({ song: { tracks: backing.song.tracks }, notes: backing.notes.filter(n => hw.some(p => p.ti === n.ti)), ccs: (backing.ccs || []).filter(c => hw.some(p => p.ti === c.ti)) }, msPerTick) : null;
+    audio.record();
+    channel.postMessage({ type: 'audition-take', at, sound: mine ? (sound?.kind === 'track' ? sound : mine.sound) : null,
+      notes: mine ? items.map(n => ({ dt: n.pos * msPerTick, dur: Math.max(20, n.len * msPerTick), note: n.note, vel: n.vel })) : [], backing: playBacking });
+    await sleep(at - performance.timeOrigin - performance.now() + (seconds + tail) * 1000 + 300);
+    const r = await audio.finish();
+    if (r) mixInto(out, cut(r, audio.frameAt(wallToPerf(at) + latency()), frames));
+    else left.push('the live recording (nothing came in)');
+  }
+  out = trimTail(out, Math.ceil(seconds * sr), sr);
+  const peak = Math.max(...out.map(d => d.reduce((m, x) => Math.max(m, Math.abs(x)), 0)));
+  if (peak > 0.99) out.forEach(d => { for (let i = 0; i < d.length; i++) d[i] *= 0.99 / peak; });
+  try {
+    const file = await storage.save('audio', encodeWav(out, sr), name);
+    refreshRecordings();
+    flashTab('recordings');
+    channel.postMessage({ type: 'recordings-changed' });
+    toast(`Saved "${file}" in Recordings${STATIC ? '' : ` (${placeOf('audio', file)})`}.${left.length ? ` Not in it: ${left.join('; ')}.` : ''}${live && latencyUnknown() ? ' The delay hasn\'t been measured (Measure delay), so the recorded part may be slightly late.' : ''}`, left.length ? '' : 'ok');
+    return file;
+  } catch (err) { toast(`Couldn't save the audio: ${err.message}`, 'err'); return null; }
+}
+
 async function saveWav(chans, name) {
   if (!chans?.[0]?.length) { toast('Nothing was recorded.'); return; }
   const wav = encodeWav(chans, audio.sampleRate);
@@ -1024,7 +1103,7 @@ initEditor({
   seq: () => seq,
   outputs: () => (midi ? [...midi.outputs.values()] : []),
   takeBpm, setTakeBpm: (id, bpm) => { cap.bpm.set(id, bpm); renderTakes(); },
-  takeSound, takeBacking,
+  takeSound, takeBacking, exportAudio,
   clipsChanged: () => { refreshClips(); flashTab('clips'); channel.postMessage({ type: 'clips-changed' }); },
 });
 wireEditor();

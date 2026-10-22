@@ -363,6 +363,8 @@ export function stepGroups(pat, pos, count) {
 
 // A note's velocity in a step (its own, else the step's).
 export const velOf = (s, n) => s.nv?.[n] ?? s.vel;
+// A Computer track's volume as a gain: Vol 100 = 1, quieter by the square below, up to 4× above.
+export const trackGain = t => (t.vol <= 100 ? (t.vol / 100) ** 2 : 1 + (t.vol - 100) / 27 * 3);
 // A step of drums hitting together, from [note, velocity] pairs: the loudest sets the step's
 // velocity, quieter ones keep theirs in nv.
 export function drumStep(i, hits, fields = {}) {

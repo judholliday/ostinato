@@ -52,8 +52,8 @@ export const awake = () => !!ac;
 export function mixOutput() { wake(); return out; }
 
 // Starts a voice at audio time t0; returns a function that releases it at audio time t.
-function start(voice, midi, vel, t0, gain = 1, dest) {
-  const a = wake(), v = VOICES[voice] || VOICES.Keys;
+function start(voice, midi, vel, t0, gain = 1, dest, a = wake()) {
+  const v = VOICES[voice] || VOICES.Keys;
   const flt = a.createBiquadFilter(), g = a.createGain();
   flt.type = 'lowpass';
   flt.Q.value = v.q;
@@ -74,7 +74,7 @@ function start(voice, midi, vel, t0, gain = 1, dest) {
     return o;
   });
   const ref = { g, oscs };
-  live.add(ref);
+  if (a === ac) live.add(ref); // (not notes rendered offline)
   oscs[0].onended = () => { live.delete(ref); g.disconnect(); };
   return t => {
     const end = Math.max(t, t0 + v.a);
@@ -170,6 +170,13 @@ export function play(voice, midi, vel, atMs, durMs, gain = 1, dest) {
   const t0 = Math.max(a.currentTime, a.currentTime + (atMs - performance.now()) / 1000);
   if (voice === 'Drums') { drum(a, midi, vel, t0, gain, dest); return; }
   start(voice, midi, vel, t0, gain, dest)(t0 + durMs / 1000);
+}
+
+// Plays a note into another context (an OfflineAudioContext, for rendering to a file), at its time
+// t0 for dur seconds, into `dest`.
+export function renderVoice(a, dest, voice, midi, vel, t0, dur, gain = 1) {
+  if (voice === 'Drums') { drum(a, midi, vel, t0, gain, dest); return; }
+  start(voice, midi, vel, t0, gain, dest, a)(t0 + dur);
 }
 
 // Starts a note now and returns a function that releases it (for keys played through).

@@ -18,6 +18,8 @@ export function writeMidi({ name = '', bpm, meters = [{ tick: 0, meter: '4/4' }]
     const ch = Math.min(15, Math.max(0, (t.ch || 1) - 1));
     const events = [{ tick: 0, data: meta(0x03, text(t.name)) }];
     if (Number.isInteger(t.program)) events.push({ tick: 0, data: [0xc0 | ch, t.program] });
+    // SysEx (e.g. a synth's sound as a program dump): [{ tick, data: [0xf0 … 0xf7] }], before notes at its tick.
+    for (const x of t.sysex || []) events.push({ tick: Math.max(0, Math.round(x.tick)), data: [0xf0, ...vlq(x.data.length - 1), ...x.data.slice(1)] });
     for (const c of t.ccs || []) events.push({ tick: Math.max(0, Math.round(c.tick)), data: [0xb0 | ch, c.cc, c.v] });
     for (const n of t.notes) {
       const tick = Math.max(0, Math.round(n.tick));
@@ -112,6 +114,7 @@ export function readMidi(bytes) {
     while (p < end) {
       tick += readVlq();
       if (bytes[p] & 128) status = bytes[p++];
+      if (status === 0xf0 || status === 0xf7) { const len = readVlq(); (track.sysex ||= []).push({ tick, data: [0xf0, ...bytes.slice(p, p += len)] }); status = 0; continue; }
       if (status === 0xff) {
         const type = bytes[p++], len = readVlq(), data = bytes.slice(p, p += len);
         if (type === 0x03) track.name = String.fromCharCode(...data);

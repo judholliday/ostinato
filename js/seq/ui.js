@@ -2,7 +2,7 @@
 // and the test synth. No framework. `song` is what gets saved; `views` and `sel` are view state.
 import { icon } from '../core/icons.js';
 import * as M from './model.js';
-import { Engine } from './engine.js';
+import { Engine, LOOKAHEAD_MS } from './engine.js';
 import * as synth from './testsynth.js';
 import { demoSong } from './demo.js';
 import { randomIdea } from './generate.js';
@@ -94,6 +94,7 @@ function changed({ coalesce = false } = {}) {
   }
   snapshot = JSON.stringify(song);
   dirty = true;
+  syncBacking();
   saveWorking();
   renderFileBar();
   postSeqState();
@@ -105,6 +106,7 @@ function restore(json) {
   snapshot = json;
   dirty = true;
   syncViews();
+  syncBacking();
   saveWorking();
   renderAll();
 }
@@ -148,7 +150,7 @@ function send(port, data, at) {
 
 const sounding = []; // MIDI notes the engine has started, so Stop can silence them
 // Track volume → computer-sound gain: 0-100 fades in (100 = normal), 100-127 boosts up to 4×.
-const gainOf = t => t.vol <= 100 ? (t.vol / 100) ** 2 : 1 + (t.vol - 100) / 27 * 3;
+const gainOf = M.trackGain;
 const sendVolume = (t, port = outPort(t.out)) => { if (port) send(port, [0xb0 | (t.ch - 1), 7, t.vol]); };
 
 // The metronome rides on the engine's MIDI clock (24 pulses a quarter note), counted from each
@@ -199,26 +201,71 @@ const sink = {
 const r1 = v => Math.round(v * 10) / 10;
 
 // ---- Backing: what each playback run played, for Capture (a take keeps what it was played over) ----
-// At play: run-start { run, song } (a copy, XL tracks with the sound they play); then every second
-// run-notes { run, notes: [{ ti, tick, note, vel, len }], ccs: [{ ti, tick, cc, v }] } with the notes
-// the engine actually played (after mute, chance, pools, feel, live edits), ticks on the same
-// timeline as `transport`. run-song when tracks are added or removed while playing.
-const backing = { notes: [], ccs: [], timer: null, tracks: 0 };
+// Each track gets an id for the run (`tid`), kept when tracks are added, removed or brought back by
+// undo while playing (matched by name), so notes stay with their track. Messages:
+//   run-start { run, song, tids }       at play: the song (a copy) and each track's id
+//   run-song { run, song, tids }        tracks added or removed while playing
+//   run-track { run, tid, tick, track } a track's sound, effects or volume changed while playing
+//   run-notes { run, notes: [{ tid, tick, note, vel, len }], ccs: [{ tid, tick, cc, v }] }  every second
+// Notes are what the engine actually played (after mute, chance, pools, feel, live edits); ticks are
+// on the same timeline as `transport`. XL tracks carry the sound they play.
+const backing = { notes: [], ccs: [], timer: null, tids: [], names: [], keys: [], nextTid: 1 };
+function trackCopy(ti) {
+  const t = JSON.parse(JSON.stringify(song.tracks[ti]));
+  if (isXLOut(t.out) && !t.sound) { const x = soundOfTrack(ti); if (x) t.sound = { name: x.name, data: x.data }; }
+  delete t.patterns; // the notes played are logged; the patterns aren't needed
+  return t;
+}
 function backingSong() {
-  const s = JSON.parse(JSON.stringify(song));
-  s.tracks.forEach((t, ti) => { if (isXLOut(t.out) && !t.sound) { const x = soundOfTrack(ti); if (x) t.sound = { name: x.name, data: x.data }; } });
+  const s = JSON.parse(JSON.stringify({ ...song, tracks: [] }));
+  s.tracks = song.tracks.map((_, ti) => trackCopy(ti));
   return s;
 }
-function logBacking(kind, e) { if (engine.playing && run) backing[kind].push(e); }
+// What makes a track sound the way it does (a change while playing is reported).
+const soundKey = ti => { const t = song.tracks[ti], x = isXLOut(t.out) ? soundOfTrack(ti) : null; return JSON.stringify([t.out, t.ch, t.voice, t.vol, t.inst, t.fx, x?.data, t.program]); };
+function logBacking(kind, e) {
+  if (!engine.playing || !run) return;
+  e.tid = backing.tids[e.ti];
+  delete e.ti;
+  if (e.tid) backing[kind].push(e);
+}
 function startBacking() {
   backing.notes = []; backing.ccs = [];
-  backing.tracks = song.tracks.length;
-  soundChannel?.postMessage({ type: 'run-start', run, song: backingSong(), mode: prefs.mode });
+  backing.tids = song.tracks.map(() => backing.nextTid++);
+  backing.names = song.tracks.map(t => t.name);
+  backing.keys = song.tracks.map((_, ti) => soundKey(ti));
+  soundChannel?.postMessage({ type: 'run-start', run, song: backingSong(), tids: backing.tids });
   clearInterval(backing.timer);
   backing.timer = setInterval(flushBacking, 1000);
 }
+// After every change (and undo): new track ids if tracks came or went, and sound changes.
+function syncBacking() {
+  if (!backing.timer || !engine.playing) return;
+  if (song.tracks.length !== backing.names.length) {
+    flushBacking(); // notes so far belong to the old layout
+    const old = backing.names.map((n, i) => ({ n, id: backing.tids[i], key: backing.keys[i] }));
+    const kept = song.tracks.map(t => { const k = old.findIndex(o => o.n === t.name); return k >= 0 ? old.splice(k, 1)[0] : null; });
+    backing.tids = kept.map(o => o?.id ?? backing.nextTid++);
+    backing.keys = kept.map((o, ti) => o?.key ?? soundKey(ti));
+    soundChannel?.postMessage({ type: 'run-song', run, song: backingSong(), tids: backing.tids });
+  }
+  backing.names = song.tracks.map(t => t.name);
+  checkSounds();
+}
+// Sound, effects or volume changed (edits, undo, the XL editor, the Sound Lab): reported with the
+// tick from which notes use it (notes before were already sent with the old sound).
+function checkSounds() {
+  if (!backing.timer || !engine.playing || song.tracks.length !== backing.keys.length) return;
+  const tick = r1(engine.tickAt(performance.now() + LOOKAHEAD_MS));
+  song.tracks.forEach((_, ti) => {
+    const key = soundKey(ti);
+    if (key === backing.keys[ti]) return;
+    backing.keys[ti] = key;
+    soundChannel?.postMessage({ type: 'run-track', run, tid: backing.tids[ti], tick, track: trackCopy(ti) });
+  });
+}
 function flushBacking() {
-  if (song.tracks.length !== backing.tracks) { backing.tracks = song.tracks.length; soundChannel?.postMessage({ type: 'run-song', run, song: backingSong() }); }
+  checkSounds();
   if (!backing.notes.length && !backing.ccs.length) return;
   soundChannel?.postMessage({ type: 'run-notes', run, notes: backing.notes, ccs: backing.ccs });
   backing.notes = []; backing.ccs = [];
@@ -1799,7 +1846,7 @@ function postSeqState(force = false) {
 // track when there's no sound) or on a sound kept with the take (core/sounding.js). Notes are
 // scheduled in chunks so it can be stopped; `loopMs` repeats it. `at` is the wall-clock start.
 let audition = null, auditionLab = null;
-const backingLabs = new Map(); // backing track index -> LabSynth, reused (they can't be disposed)
+const backingLabs = new Map(), backingFx = new Map(); // backing track index -> LabSynth / FxChain, reused (they can't be disposed)
 // Stopping cuts everything at once, including notes already scheduled a little ahead: Lab and test
 // sounds are faded out now (with their echoes and reverb); MIDI can't be unscheduled, so All Notes Off goes now and again just
 // after the last note that was already on its way.
@@ -1843,27 +1890,44 @@ function auditionPlayer(sound) {
   return { port: dest.port, ch: dest.ch, play: (n, v, at, dur) => { send(dest.port, [0x90 | dest.ch, n, v], at); send(dest.port, [0x80 | dest.ch, n, 0], at + dur); } };
 }
 // A backing track (Capture: what the sequencer played under a take) as an audition player, from the
-// track as it was then. Only one sound goes to the XL: the take's own if it's an XL sound.
-function backingPlayer(t, ti, xl) {
+// track as it was then: its sound, effects and volume. A track whose sound changed while playing comes
+// as several versions; a later version's `fromMs` is when it took over (an XL sound is sent then).
+// Only one sound plays on the XL: if the take's own sound is an XL sound, backing XL tracks play
+// their notes on it. `xl` tracks what was sent: { sent, own }.
+function backingPlayer(t, k, xl) {
   const sound = trackSound(t);
   if (!sound) return null;
-  if (sound.kind === 'lab') {
-    if (!backingLabs.has(ti)) backingLabs.set(ti, new LabSynth(synth.wake(), synth.output()));
-    const l = backingLabs.get(ti);
-    l.setPatch(sound.patch);
-    return { play: (n, v, at, dur) => l.play(n, v, l.atTime(at), dur / 1000) };
+  if (t.out === M.COMPUTER) {
+    if (!backingFx.has(k)) { const f = new FxChain(synth.wake()); f.output.connect(synth.output()); backingFx.set(k, f); }
+    const fx = backingFx.get(k);
+    fx.set(t.fx || null);
+    if (sound.kind === 'lab') {
+      if (!backingLabs.has(k)) backingLabs.set(k, new LabSynth(synth.wake(), fx.input));
+      const l = backingLabs.get(k);
+      l.setPatch(sound.patch);
+      l.setGain(gainOf(t));
+      return { play: (n, v, at, dur) => l.play(n, v, l.atTime(at), dur / 1000) };
+    }
+    return { voice: true, play: (n, v, at, dur) => synth.play(sound.voice, n, v, at, dur, gainOf(t), fx.input) };
   }
-  if (sound.kind === 'voice') return { voice: true, play: (n, v, at, dur) => synth.play(sound.voice, n, v, at, dur, 1) };
   const dest = sound.kind === 'xl' ? auditionXL() : outPort(sound.out) && { port: outPort(sound.out) };
   if (!dest) return null;
-  const ch = (t.ch || 1) - 1;
-  if (sound.kind === 'xl' && !xl.sent) {
-    const dev = deviceForOut(dest.port, dest.port.name);
-    if (dev && (!dev.needsSysex || sysexOk)) { send(dest.port, dev.soundMessage(ch, sound.data)); xl.sent = true; xl.delay = true; }
-    if (liveSound !== null) { const prev = liveSound; liveSound = null; renderTrack(prev); }
-  } else if (sound.kind === 'midi' && sound.program !== null && sound.program !== undefined) send(dest.port, [0xc0 | ch, sound.program]);
-  return { port: dest.port, ch, play: (n, v, at, dur) => { send(dest.port, [0x90 | ch, n, v], at); send(dest.port, [0x80 | ch, n, 0], at + dur); },
-    cc: (cc, v, at) => send(dest.port, [0xb0 | ch, cc, v], at) };
+  const ch = (t.ch || 1) - 1, port = dest.port;
+  const p = { port, ch, play: (n, v, at, dur) => { send(port, [0x90 | ch, n, v], at); send(port, [0x80 | ch, n, 0], at + dur); },
+    cc: (cc, v, at) => send(port, [0xb0 | ch, cc, v], at) };
+  const load = at => {
+    if (sound.kind === 'xl') {
+      const dev = deviceForOut(port, port.name);
+      if (xl.own || !dev || (dev.needsSysex && !sysexOk)) return;
+      send(port, dev.soundMessage(ch, sound.data), at);
+      xl.sent = true;
+      if (liveSound !== null) { const prev = liveSound; liveSound = null; renderTrack(prev); }
+    } else if (sound.program !== null && sound.program !== undefined) send(port, [0xc0 | ch, sound.program], at);
+    send(port, [0xb0 | ch, 7, t.vol], at); // the track's volume
+  };
+  if (t.fromMs > 0) p.change = load; // takes over later: loaded then (and back at each loop)
+  else { load(); p.wrap = load; }
+  return p;
 }
 function auditionTake({ notes = [], sound = null, at = null, loopMs = 0, link = null, backing = null }) {
   stopAudition();
@@ -1873,13 +1937,22 @@ function auditionTake({ notes = [], sound = null, at = null, loopMs = 0, link = 
   const list = notes.map(n => ({ ...n, p: player }));
   const ports = player.port ? [{ port: player.port, ch: player.ch }] : [];
   let voice = player.voice, xlDelay = sound?.kind === 'xl';
+  const wraps = [];
   if (backing?.notes?.length) {
-    const xl = { sent: sound?.kind === 'xl' };
+    const xl = { sent: false, own: sound?.kind === 'xl' };
     const players = backing.tracks.map((t, ti) => (backing.notes.some(n => n.ti === ti) ? backingPlayer(t, ti, xl) : null));
     for (const n of backing.notes) if (players[n.ti]) list.push({ ...n, p: players[n.ti] });
     for (const c of backing.ccs || []) if (players[c.ti]?.cc) list.push({ ...c, dur: 0, p: players[c.ti] });
-    for (const p of players) { if (p?.port) ports.push({ port: p.port, ch: p.ch }); if (p?.voice) voice = true; }
-    xlDelay ||= xl.delay;
+    players.forEach((p, ti) => {
+      if (!p) return;
+      if (p.port) ports.push({ port: p.port, ch: p.ch });
+      if (p.voice) voice = true;
+      if (p.change) list.push({ dt: Math.max(0, backing.tracks[ti].fromMs - 5), dur: 0, change: true, p });
+      // Back to the first sound at each loop, if a later version of this track changed it.
+      const t = backing.tracks[ti];
+      if (p.wrap && backing.tracks.some(o => o !== t && o._part !== undefined && o._part === t._part && o.fromMs > 0)) wraps.push(p);
+    });
+    xlDelay ||= xl.sent;
   }
   list.sort((a, b) => a.dt - b.dt);
   // A sound sent to the XL needs a moment to load before the first note (150 ms wasn't enough).
@@ -1890,11 +1963,13 @@ function auditionTake({ notes = [], sound = null, at = null, loopMs = 0, link = 
       if (k >= list.length) {
         if (!loopMs) { if (performance.now() > base + (list.at(-1)?.dt ?? 0) + (list.at(-1)?.dur ?? 0)) stopAudition(); return; }
         base += loopMs; k = 0;
+        for (const p of wraps) p.wrap(base - 5); // sounds that changed during the loop go back
       }
       if (base + list[k].dt >= horizon) return;
       const n = list[k++];
       if (loopMs && n.dt >= loopMs) continue;
-      if (n.cc !== undefined) n.p.cc(n.cc, n.v, base + n.dt);
+      if (n.change) n.p.change(base + n.dt);
+      else if (n.cc !== undefined) n.p.cc(n.cc, n.v, base + n.dt);
       else n.p.play(n.note, n.vel, base + n.dt, loopMs ? Math.min(n.dur, loopMs - n.dt) : n.dur);
     }
   };
@@ -2012,6 +2087,8 @@ function onRecorderMessage(m) {
     case 'take-to-track': takeToTrack(m); return true;
     case 'open-song': openSongFor(m.file); return true;
     case 'sequences-changed': refreshOpenList(); return true;
+    // Capture making an audio file: the master effects, and a track's settings if it plays on one.
+    case 'get-mix': soundChannel?.postMessage({ type: 'mix', masterFx: song.masterFx || null, track: song.tracks[m.ti] ? trackCopy(m.ti) : null }); return true;
     case 'clips-changed': loadClips(); return true;
     case 'set-tempo': song.bpm = Math.max(20, Math.min(300, Math.round(m.bpm))); changed(); renderTop(); postSeqState(); return true;
     case 'record-performance': recordPerformance(m); return true;
