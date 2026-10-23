@@ -91,8 +91,8 @@ if (nav && top !== self) {
     <h3>${icon('transfer')} Transfer</h3>
     <p>${STATIC
       ? 'This is the travel version: your work is kept in this browser. <b>Export</b> it to a file to bring home, and <b>Import</b> a file exported at home.'
-      : 'Take your work with you: <b>Export</b> your songs, Lab instruments and saved patterns to a file and open it in the travel version. Back home, <b>Import</b> the file exported there.'}</p>
-    <p class="hint">Songs and instruments replace ones with the same name; patterns and clips you already have aren't added twice. XL sounds and recordings aren't included.</p>
+      : 'Take your work with you: <b>Export</b> your songs, Lab instruments, saved patterns and clips (with the recordings they use) to a file and open it in the travel version. Back home, <b>Import</b> the file exported there.'}</p>
+    <p class="hint">Songs and instruments replace ones with the same name; patterns, clips and recordings you already have aren't added twice. Your other recordings and XL sounds (My Sounds) aren't included.</p>
     <div class="xfer-row">
       <button class="accent" data-x="export">Export…</button>
       <label class="xfer-import"><input type="file" accept=".json,application/json" hidden> <span class="btn-like">Import…</span></label>
@@ -110,7 +110,7 @@ if (nav && top !== self) {
       try {
         const { name, counts } = await exportBundle();
         const n = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
-        msg(`Downloaded "${name}": ${n(counts.songs, 'song')}, ${n(counts.instruments, 'instrument')}, ${n(counts.patterns, 'pattern')}, ${n(counts.clips, 'clip')}.`, 'ok');
+        msg(`Downloaded "${name}": ${n(counts.songs, 'song')}, ${n(counts.instruments, 'instrument')}, ${n(counts.patterns, 'pattern')}, ${n(counts.clips, 'clip')}, ${n(counts.recordings, 'recording')} they use.`, 'ok');
       } catch (err) { msg(`Couldn't export: ${err.message}`, 'err'); }
     }
   });
@@ -123,7 +123,8 @@ if (nav && top !== self) {
       const parts = [`${s.songs} song${s.songs === 1 ? '' : 's'}${s.songsReplacing ? ` (${s.songsReplacing} replacing ones with the same name)` : ''}`,
         `${s.instruments} instrument${s.instruments === 1 ? '' : 's'}${s.instrumentsReplacing ? ` (${s.instrumentsReplacing} replacing)` : ''}`,
         `${s.patterns} new pattern${s.patterns === 1 ? '' : 's'}${s.patternsSkipped ? ` (${s.patternsSkipped} already here)` : ''}`,
-        `${s.clips} new clip${s.clips === 1 ? '' : 's'}${s.clipsSkipped ? ` (${s.clipsSkipped} already here)` : ''}`];
+        `${s.clips} new clip${s.clips === 1 ? '' : 's'}${s.clipsSkipped ? ` (${s.clipsSkipped} already here)` : ''}`,
+        `${s.recordings} recording${s.recordings === 1 ? '' : 's'}${s.recordingsSkipped ? ` (${s.recordingsSkipped} already here)` : ''}`];
       if (!confirm(`Import ${parts.join(', ')}?`)) return;
       await importBundle(bundle);
       msg(`Imported ${parts.join(', ')}.`, 'ok');
