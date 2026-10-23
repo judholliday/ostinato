@@ -56,6 +56,32 @@ function vowelCurve(k, shift = 0) {
 // Band-passes keep only a sliver of the sound (less, the sharper they are): this brings the vowel
 // filter back to about the input's level (measured on a saw at Resonance 10).
 const vowelMakeup = q => 7.5 * Math.sqrt(q / 10);
+// A pitch shifter from two delay taps whose delay falls at (ratio - 1) seconds per second, so what
+// passes through comes out `ratio` times higher; each tap jumps back every grain and they're
+// crossfaded (sin² / cos², half a grain apart) so the jumps don't click. The control signals are
+// looped buffers started together, so they stay in step.
+const GRAIN = 0.08;
+function pitchShifter(ac, ratio) {
+  const input = ac.createGain(), output = ac.createGain(), n = Math.round(GRAIN * ac.sampleRate), nodes = [input, output];
+  const ctl = (fn) => { const b = ac.createBuffer(1, n, ac.sampleRate), d = b.getChannelData(0); for (let i = 0; i < n; i++) d[i] = fn(i / n); const s = ac.createBufferSource(); s.buffer = b; s.loop = true; nodes.push(s); return s; };
+  const taps = [0, 0.5].map(off => {
+    const d = ac.createDelay(1), g = ac.createGain();
+    d.delayTime.value = 0; g.gain.value = 0;
+    input.connect(d).connect(g).connect(output);
+    nodes.push(d, g);
+    return { d, g, off };
+  });
+  const span = Math.max(0, ratio - 1) * GRAIN, at = ac.currentTime + 0.01;
+  for (const t of taps) {
+    const ph = x => (x + t.off) % 1;
+    const dl = ctl(x => span * (1 - ph(x))), gn = ctl(x => Math.sin(Math.PI * ph(x)) ** 2);
+    dl.connect(t.d.delayTime); gn.connect(t.g.gain);
+    dl.start(at); gn.start(at);
+  }
+  return { input, output, nodes };
+}
+let softClipCurve = null;
+const softClip = () => (softClipCurve ||= Float32Array.from({ length: 1025 }, (_, i) => Math.tanh((i / 512 - 1) * 1.5) / Math.tanh(1.5)));
 function driveCurve(ac, amount) {
   const cache = assets(ac).drives, key = Math.round(amount * 100);
   if (!cache.has(key)) {
@@ -682,6 +708,35 @@ export class LabSynth {
       g.set = { type: later, file: later, size: later, predelay: later, damping: later, mix: v => mix(v, 1 - v * 0.4) };
       mix(p.mix, 1 - p.mix * 0.4);
       g.targets = { mix: [wet.gain] };
+    } else if (m.type === 'shimmer') {
+      // Input → reverb → out, and reverb → octave-up pitch shifter → low-pass → feedback → back into
+      // the reverb (with a short delay, which a feedback loop needs, and a soft clip so high settings
+      // can't run away), so each pass of the tail rings higher.
+      const sum = ac.createGain(), conv = ac.createConvolver(), lp = ac.createBiquadFilter(), hp = ac.createBiquadFilter(), fb = ac.createGain(), dl = ac.createDelay(0.1), clip = ac.createWaveShaper();
+      const ratioOf = q => ({ fifth: 1.5, '2 octaves': 4 })[q.interval] || 2;
+      // The reverb's response peaks above 1 at some frequencies, so feedback at face value built up
+      // without end (measured over 12 s, worst on a bright saw); a fifth stays below the loop's
+      // low-pass for more passes than an octave, so it gets less. Shimmer 0.9 = the longest bloom
+      // that still dies away.
+      const loopGain = ({ fifth: 0.5 })[p.interval] || 0.68;
+      const shifter = pitchShifter(ac, ratioOf(p));
+      lp.type = 'lowpass'; lp.frequency.value = p.tone;
+      hp.type = 'highpass'; hp.frequency.value = 300; // the low residue the grain crossfades leave unshifted would recirculate
+      fb.gain.value = p.shimmer * loopGain;
+      dl.delayTime.value = 0.03;
+      clip.curve = softClip();
+      input.connect(sum).connect(conv).connect(wet);
+      conv.connect(shifter.input); shifter.output.connect(hp).connect(lp).connect(fb).connect(clip).connect(dl).connect(sum);
+      const remake = () => { const q = now(); conv.buffer = impulse(ac, { type: 'hall', size: q.size, predelay: 10, damping: q.damping }); };
+      remake();
+      let timer = null;
+      const later = () => { clearTimeout(timer); timer = setTimeout(remake, 150); };
+      g.nodes.push(sum, conv, lp, hp, fb, dl, clip, ...shifter.nodes);
+      g.set = { size: later, damping: later, tone: v => lp.frequency.setTargetAtTime(v, ac.currentTime, 0.02),
+        shimmer: v => fb.gain.setTargetAtTime(v * loopGain, ac.currentTime, 0.02), mix: v => mix(v, 1 - v * 0.4) };
+      mix(p.mix, 1 - p.mix * 0.4);
+      g.targets = { mix: [wet.gain], shimmer: [fb.gain] };
+      g.scales = { shimmer: loopGain };
     } else if (m.type === 'soundboard') {
       const conv = ac.createConvolver();
       conv.normalize = false;

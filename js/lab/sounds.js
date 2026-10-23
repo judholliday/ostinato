@@ -45,6 +45,20 @@ const COWBELL = {
   audio: [{ from: 'op2', to: 'op1' }, { from: 'op1', to: 'out' }, { from: 'op3', to: 'out' }], mod: [],
 };
 
+// A sound from keys.js with effects swapped in after its own: everything that went to the output (and
+// the module named `drop`, e.g. its own room reverb) is replaced by the new effects in a chain.
+function withFx(baseName, { name, type, about, volume, drop = null, fx }) {
+  const base = JSON.parse(JSON.stringify(KEYS.find(k => k.name === baseName)));
+  const modules = base.modules.filter(m => m.id !== drop);
+  const audio = [];
+  for (const c of base.audio) {
+    if (c.from === drop) continue;
+    const to = c.to === drop || c.to === 'out' ? fx[0].id : c.to;
+    if (!audio.some(a => a.from === c.from && a.to === to)) audio.push({ from: c.from, to });
+  }
+  return { ...base, name, type, about, ...(volume ? { volume } : {}), modules: [...modules, ...fx], audio: [...audio, ...chain(...fx.map(m => m.id), 'out')] };
+}
+
 // The starting points (patch.js) plus more, one or more of each type.
 const MORE = [
   {
@@ -704,6 +718,116 @@ const MORE = [
       mod('shaper', 'sat1', { curve: 'tube', drive: 2.2, tone: 4000, mix: 1, level: 0.85 })],
     audio: [{ from: 'op2', to: 'op1' }, { from: 'op1', to: 'filter1' }, { from: 'sub1', to: 'amp2' }, { from: 'amp2', to: 'filter1' }, ...chain('filter1', 'sat1', 'out')],
   },
+
+  // ---- ambient and cinematic (after Vangelis, Eno, Budd, Boards of Canada, Stars of the Lid,
+  // Hiroshi Yoshimura, Tangerine Dream, Jon Hopkins, Aphex Twin's ambient works) ----
+  {
+    name: 'CS Brass', type: 'Brass', voices: 8, volume: 0.4,
+    about: 'The swelling polyphonic brass of the big 70s-80s polysynths (think Vangelis on a CS-80): two detuned layers that bloom open over a quarter second; play harder for brighter. Mod wheel = vibrato, pitch bend for slides. A long hall.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', fine: -7, level: 0.55 }), mod('osc', 'osc2', { wave: 'pulse', pw: 0.4, fine: 7, level: 0.45 }),
+      mod('lfo', 'pwm', { wave: 'triangle', rate: 0.3 }), mod('lfo', 'vib', { rate: 5.2, depth: 0 }),
+      mod('filter', 'filter1', { cutoff: 600, resonance: 2, keytrack: 0.5 }), mod('env', 'env1', { attack: 0.25, decay: 1.9, sustain: 0.6, release: 1.2 }),
+      mod('amp', 'amp1', { attack: 0.25, decay: 1.9, sustain: 0.8, release: 1.2, velocity: 0.5 }),
+      mod('chorus', 'chorus1', { rate: 0.4, depth: 0.4, mix: 0.25 }), mod('reverb', 'hall1', { type: 'hall', size: 6, predelay: 30, damping: 0.5, mix: 0.35 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'chorus1', 'hall1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 2400 }, { from: 'vel', to: 'filter1.cutoff', amount: 1500 }, { from: 'pwm', to: 'osc2.pw', amount: 0.15 },
+      { from: 'vib', to: 'osc1.pitch', amount: 30 }, { from: 'vib', to: 'osc2.pitch', amount: 30 }, { from: 'wheel', to: 'vib.depth', amount: 1 }],
+  },
+  {
+    name: 'CS Strings', type: 'Strings', voices: 12, volume: 0.55,
+    about: 'Warm, wide polysynth strings with a gentle vibrato and a long hall: slow chords that hang in the air.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 4, spread: 14, level: 0.6 }), mod('lfo', 'vib', { rate: 5.5, delay: 0.5 }),
+      mod('filter', 'filter1', { slope: '12', cutoff: 3000, resonance: 0.7, keytrack: 0.4 }),
+      mod('amp', 'amp1', { attack: 0.7, decay: 1, sustain: 0.9, release: 2.5 }),
+      mod('chorus', 'ensemble', { rate: 0.6, depth: 0.7, mix: 0.6 }), mod('reverb', 'hall1', { type: 'hall', size: 7, predelay: 40, mix: 0.4 })],
+    audio: chain('osc1', 'filter1', 'amp1', 'ensemble', 'hall1', 'out'),
+    mod: [{ from: 'vib', to: 'osc1.pitch', amount: 6 }],
+  },
+  {
+    name: 'Memory Bells', type: 'Bell', voices: 10, volume: 0.95,
+    about: 'Soft, slightly metallic bell tones (a sine ring-modulated a little out of tune) ringing into a huge hall with slow echoes.',
+    modules: [mod('osc', 'osc1', { wave: 'sine', level: 0.8 }), mod('ring', 'ring1', { ratio: 2.76, mix: 0.45 }),
+      mod('amp', 'amp1', { attack: 0.003, decay: 3.5, sustain: 0, release: 3, velocity: 0.6 }),
+      mod('delay', 'echo1', { sync: '1/4.', feedback: 0.35, tone: 3500, mix: 0.2 }), mod('reverb', 'hall1', { type: 'hall', size: 8, predelay: 30, mix: 0.45 })],
+    audio: chain('osc1', 'ring1', 'amp1', 'echo1', 'hall1', 'out'),
+  },
+  withFx('Felt Piano', { name: 'Airport Piano', type: 'Keys', volume: 0.4, drop: 'room',
+    about: 'A soft felt piano for slow, sparse phrases, the airport-ambient way: long echoes and a long, dark hall. Leave space between notes.',
+    fx: [mod('delay', 'echo1', { mode: 'tape', sync: '1/2', feedback: 0.45, tone: 2500, wobble: 0.3, mix: 0.25 }), mod('reverb', 'hall1', { type: 'hall', size: 7, predelay: 40, damping: 0.6, mix: 0.45 })] }),
+  withFx('Felt Piano', { name: 'Halo Piano', type: 'Keys', volume: 0.4, drop: 'room',
+    about: 'Soft piano notes that bloom into a shimmering octave-up halo: one note at a time, and let it ring.',
+    fx: [mod('shimmer', 'shimmer1', { size: 6, shimmer: 0.6, tone: 6000, mix: 0.45 })] }),
+  {
+    name: 'Warped Tape Pad', type: 'Pad', voices: 8, volume: 0.6,
+    about: 'A warm, hazy pad that drifts out of tune like an old tape: slow, irregular wow plus a little flutter, tuned slightly flat, softly lo-fi.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 2, spread: 8, fine: -25, level: 0.5 }), mod('osc', 'osc2', { wave: 'triangle', fine: -20, level: 0.5 }),
+      mod('lfo', 'wow', { wave: 'random', rate: 0.7 }), mod('lfo', 'flutter', { rate: 6.5 }),
+      mod('filter', 'filter1', { slope: '12', cutoff: 1800, resonance: 0.8, keytrack: 0.4 }),
+      mod('amp', 'amp1', { attack: 0.4, decay: 1, sustain: 0.9, release: 1.5 }),
+      mod('crusher', 'crush1', { bits: 12, hold: 2, mix: 0.25 }), mod('chorus', 'chorus1', { rate: 0.3, depth: 0.6, mix: 0.4 }),
+      mod('delay', 'tape1', { mode: 'tape', time: 0.35, feedback: 0.3, tone: 2200, wobble: 0.6, mix: 0.25 }), mod('reverb', 'hall1', { type: 'hall', size: 4, mix: 0.25 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'crush1', 'chorus1', 'tape1', 'hall1', 'out')],
+    mod: [{ from: 'wow', to: 'osc1.pitch', amount: 18 }, { from: 'wow', to: 'osc2.pitch', amount: 18 }, { from: 'flutter', to: 'osc1.pitch', amount: 3 }, { from: 'flutter', to: 'osc2.pitch', amount: 3 }],
+  },
+  {
+    name: 'Nostalgic Lead', play: 'legato', glide: 0.06, type: 'Lead', voices: 2, volume: 0.7,
+    about: 'A soft, wobbly lead like a melody on a worn cassette: hollow square and triangle, drifting slightly out of tune, with tape echo.',
+    modules: [mod('osc', 'osc1', { wave: 'square', fine: -15, level: 0.45 }), mod('osc', 'osc2', { wave: 'triangle', octave: 1, fine: -10, level: 0.3 }),
+      mod('lfo', 'wow', { wave: 'random', rate: 0.8 }), mod('lfo', 'flutter', { rate: 7 }),
+      mod('filter', 'filter1', { slope: '12', cutoff: 2200, resonance: 1, keytrack: 0.5 }),
+      mod('amp', 'amp1', { attack: 0.02, decay: 0.4, sustain: 0.85, release: 0.3 }),
+      mod('delay', 'tape1', { mode: 'tape', sync: '1/8.', feedback: 0.35, tone: 2000, wobble: 0.6, mix: 0.25 }), mod('reverb', 'room1', { type: 'room', size: 1.5, mix: 0.15 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'tape1', 'room1', 'out')],
+    mod: [{ from: 'wow', to: 'osc1.pitch', amount: 14 }, { from: 'wow', to: 'osc2.pitch', amount: 14 }, { from: 'flutter', to: 'osc1.pitch', amount: 3 }, { from: 'flutter', to: 'osc2.pitch', amount: 3 }],
+  },
+  {
+    name: 'Slow Swell Drone', type: 'Pad', voices: 6, volume: 0.34,
+    about: 'Hold a chord and it fades in over six seconds and keeps slowly changing (the filter breathing over twenty seconds), blooming upward through a shimmer reverb. Lets go just as slowly.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 3, spread: 10, level: 0.5 }), mod('osc', 'osc2', { wave: 'sine', octave: -1, level: 0.5 }),
+      mod('filter', 'filter1', { cutoff: 900, resonance: 2, keytrack: 0.3 }), mod('lfo', 'breath', { wave: 'triangle', rate: 0.05 }),
+      mod('amp', 'amp1', { attack: 6, decay: 2, sustain: 1, release: 6 }),
+      mod('shimmer', 'shimmer1', { size: 8, shimmer: 0.7, tone: 5000, mix: 0.5 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'shimmer1', 'out')],
+    mod: [{ from: 'breath', to: 'filter1.cutoff', amount: 1200 }],
+  },
+  {
+    name: 'Environmental Marimba', type: 'Bell', voices: 12, volume: 0.9,
+    about: 'A soft digital marimba with a long, airy tail, the gentle FM mallets of 80s Japanese environmental music. Sparse, repeating figures.',
+    modules: [mod('fmop', 'op1', { ratio: 1, fm: 0.8, attack: 0.002, decay: 0.7, sustain: 0, release: 0.5, velocity: 0.5, level: 0.8 }),
+      mod('fmop', 'op2', { ratio: 4, attack: 0.001, decay: 0.05, sustain: 0, release: 0.05, velocity: 0.8, level: 0.6 }),
+      mod('delay', 'echo1', { sync: '1/8.', feedback: 0.3, tone: 3000, mix: 0.2 }), mod('reverb', 'hall1', { type: 'hall', size: 4.5, predelay: 25, mix: 0.35 })],
+    audio: [{ from: 'op2', to: 'op1' }, ...chain('op1', 'echo1', 'hall1', 'out')],
+  },
+  {
+    name: 'Berlin Sequence', type: 'Bass', voices: 4, volume: 1,
+    about: 'A pulsing sequencer bass for long repeating patterns, the 70s Berlin-school way: a resonant filter blip on every note, the cutoff drifting slowly over about fifteen seconds, synced echoes.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.6 }), mod('osc', 'osc2', { wave: 'square', octave: -1, level: 0.35 }),
+      mod('filter', 'filter1', { cutoff: 450, resonance: 8, keytrack: 0.5 }), mod('env', 'env1', { attack: 0.002, decay: 0.15, sustain: 0.05, release: 0.08 }),
+      mod('lfo', 'drift', { wave: 'triangle', rate: 0.07 }),
+      mod('amp', 'amp1', { attack: 0.002, decay: 0.2, sustain: 0.4, release: 0.08, level: 1 }),
+      mod('delay', 'echo1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.35, tone: 3500, mix: 0.25 }), mod('reverb', 'hall1', { type: 'hall', size: 3, mix: 0.18 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'echo1', 'hall1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 3000 }, { from: 'drift', to: 'filter1.cutoff', amount: 1800 }],
+  },
+  {
+    name: 'Shimmer Wash', volume: 0.8, type: 'Pad', voices: 6,
+    about: 'A slowly evolving grain cloud of glass bells through a shimmer reverb that climbs an octave each pass: a bright, weightless wash.',
+    modules: [mod('granular', 'gr1', { file: 'factory/Glass Bell (C5).wav', root: 72, position: 0.3, spread: 0.5, scan: 0.03, size: 0.2, density: 25, jitter: 8, width: 1, level: 0.9 }),
+      mod('amp', 'amp1', { attack: 1.5, decay: 1, sustain: 0.9, release: 3, level: 0.8 }), COMP(),
+      mod('shimmer', 'shimmer1', { size: 8, shimmer: 0.75, tone: 7000, mix: 0.55 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'shimmer1', 'out'),
+  },
+  {
+    name: 'Dark Drone', type: 'Pad', voices: 4, volume: 0.52,
+    about: 'Low, slowly beating tones two octaves down, the filter breathing over twelve seconds, into a vast dark hall. Hold one or two low notes.',
+    modules: [mod('osc', 'osc1', { wave: 'sine', octave: -2, fine: -3, level: 0.6 }), mod('osc', 'osc2', { wave: 'triangle', octave: -1, fine: 4, level: 0.4 }),
+      mod('osc', 'osc3', { wave: 'saw', octave: -1, fine: -6, level: 0.15 }),
+      mod('filter', 'filter1', { cutoff: 450, resonance: 3, keytrack: 0.2 }), mod('lfo', 'breath', { wave: 'triangle', rate: 0.08 }),
+      mod('amp', 'amp1', { attack: 4, decay: 2, sustain: 1, release: 5 }),
+      mod('reverb', 'hall1', { type: 'hall', size: 9, predelay: 50, damping: 0.7, mix: 0.5 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, { from: 'osc3', to: 'filter1' }, ...chain('filter1', 'amp1', 'hall1', 'out')],
+    mod: [{ from: 'breath', to: 'filter1.cutoff', amount: 700 }],
+  },
 ].map(cleanPatch);
 
 export const FACTORY = [...STARTERS, ...MORE, ...KEYS.map(cleanPatch)];
@@ -729,8 +853,14 @@ export const COLLECTIONS = [
     sounds: ['Odd Step Kit', 'Elastic Bass', 'Rubber Arp', 'Glass Arp', 'Saw Arp', 'Blip Arp', 'Glitch Pad'] },
   { title: 'Hip-Hop & Lo-Fi', about: 'Long 808 booms, dusty drums and warm, worn keys.',
     sounds: ['808 Kit', 'Dusty Kit', 'Lo-Fi Kit', 'Sub Bass', 'Lo-Fi Keys', 'Tine Piano', 'Dub Chord'] },
-  { title: 'Ambient & Textures', about: 'Clouds, frozen pads and slow-moving sounds to sit under everything else.',
-    sounds: ['Grain Choir', 'Glass Cloud', 'Freeze Pad', 'Wind Grains', 'Slow Music Box', 'Dark Pad', 'Glitch Pad'] },
+  { title: 'Ambient & Textures', about: 'Slow swells, drones, shimmering washes, airport pianos and grain clouds: sounds that hang in the air.',
+    sounds: ['Slow Swell Drone', 'Shimmer Wash', 'Dark Drone', 'Airport Piano', 'Halo Piano', 'Environmental Marimba', 'Grain Choir', 'Glass Cloud', 'Freeze Pad', 'Wind Grains', 'Slow Music Box', 'Dark Pad'] },
+  { title: 'Cinematic Synths', about: 'The big polysynth film-score palette: swelling brass, warm strings, bells in a huge hall, choirs.',
+    sounds: ['CS Brass', 'CS Strings', 'Memory Bells', 'Vowel Pad', 'Phased String Machine', 'Grain Choir', 'Dark Drone', 'Sub Bass'] },
+  { title: 'Berlin School', about: 'Long pulsing sequences with slowly drifting filters, glassy arpeggios and string pads, the 70s German electronic way.',
+    sounds: ['Berlin Sequence', 'Sync Sequence', 'Glass Arp', 'Saw Arp', 'CS Strings', 'Slow Swell Drone', 'Memory Bells'] },
+  { title: 'Hazy Nostalgia', about: 'Warped, slightly out-of-tune tape pads and leads, worn keys and dusty drums.',
+    sounds: ['Warped Tape Pad', 'Nostalgic Lead', 'Lo-Fi Keys', 'Tape Choir', 'Dusty Kit', 'Elastic Bass', 'Environmental Marimba'] },
 ].map(c => ({ ...c, factory: true, sounds: c.sounds.filter(n => FACTORY.some(p => p.name === n)).map(name => ({ name, mine: false })) }));
 
 export const isCollection = p => p?.kind === 'collection';

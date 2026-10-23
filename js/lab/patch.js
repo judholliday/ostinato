@@ -269,6 +269,17 @@ export const MODULES = {
       num('mix', 'Mix', 0, 1, 0.25)],
     targets: { mix: { min: -1, max: 1 } },
   },
+  shimmer: {
+    label: 'Shimmer', scope: 'global', audioIn: true, audioOut: true,
+    help: 'A reverb that blooms upward: its tail is pitched up (an octave, a fifth or two octaves) and fed back in, so each pass rings higher. The classic ambient wash.',
+    params: [num('size', 'Decay', 0.5, 12, 5, { unit: 's', curve: 'log', help: 'How long the reverb takes to fade' }),
+      choice('interval', 'Shift', ['octave', 'fifth', '2 octaves'], 'octave', { rebuild: true, help: 'How far each pass of the tail is pitched up' }),
+      num('shimmer', 'Shimmer', 0, 0.9, 0.5, { help: 'How much of the pitched-up tail is fed back: more = a brighter, longer bloom' }),
+      num('tone', 'Tone', 1000, 16000, 6000, { unit: 'Hz', curve: 'log', help: 'How bright the shimmer is (a low-pass in the loop)' }),
+      num('damping', 'Damping', 0, 1, 0.4, { help: 'How much faster the reverb\'s highs die away' }),
+      num('mix', 'Mix', 0, 1, 0.35)],
+    targets: { mix: { min: -1, max: 1 }, shimmer: { min: -0.9, max: 0.9 } },
+  },
   phaser: {
     label: 'Phaser', scope: 'global', audioIn: true, audioOut: true,
     help: 'A sweeping, swirling notch sound (think classic electric pianos and guitars).',

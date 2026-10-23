@@ -1458,7 +1458,7 @@ const PICKER_GROUPS = [
   ['Make sound', ['osc', 'string', 'organ', 'sampler', 'granular', 'noise', 'fmop', 'drums']],
   ['Shape it', ['filter', 'vowel', 'drive', 'ring', 'amp', 'space']],
   ['Move things', ['env', 'lfo', 'glfo']],
-  ['Effects', ['soundboard', 'resonance', 'reverb', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'rotary']],
+  ['Effects', ['soundboard', 'resonance', 'reverb', 'shimmer', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'rotary']],
 ];
 const ICONS = {
   osc: 'M2 17 L8 7 V17 L14 7 V17 L20 7 V17',
@@ -1481,6 +1481,7 @@ const ICONS = {
   resonance: 'M3 4 V20 M7 4 V20 M11 4 V20 M15 4 V20 M19 4 V20 M2 12 C6 9 8 15 12 12 S18 9 22 12',
   reverb: 'M5 11 V13 M8 7 a7 7 0 0 1 0 10 M12 4 a11 11 0 0 1 0 16 M16 2 a14 14 0 0 1 0 20',
   phaser: 'M2 12 C5 4 7 4 9 12 S13 20 15 12 S19 4 22 12 M6 3 V21 M17 3 V21',
+  shimmer: 'M3 20 L8 14 L12 17 L17 8 L21 4 M17 4 H21 V8 M5 9 h.01 M9 6 h.01 M13 4 h.01',
   flanger: 'M2 8 L22 16 M2 16 L22 8 M2 12 H22',
   tremolo: 'M2 12 C3 6 5 6 6 12 S9 18 10 12 C11 9 12 9 13 12 S15 15 16 12 C17 11 18 11 19 12 S21 13 22 12',
   eq: 'M5 3 V21 M12 3 V21 M19 3 V21 M3 15 H7 M10 8 H14 M17 13 H21',
@@ -1501,7 +1502,7 @@ const BLURBS = {
   filter: 'Darker or brighter', vowel: 'Makes it talk (A E I O U)', drive: 'Warmth to distortion', ring: 'Metallic, robotic', amp: 'Loudness over time', space: 'Around your head',
   env: 'A shape over each note', lfo: 'Swings a setting back and forth',
   chorus: 'Wider, thicker', delay: 'Echoes, ping-pong, tape', soundboard: 'A piano\'s body, for strings', resonance: 'The pedal\'s halo of strings', reverb: 'Room, hall, plate, or a recording',
-  phaser: 'Swirling sweep', flanger: 'Jet-plane sweep', tremolo: 'Pulsing or panning', eq: 'Bass, middle, treble', compressor: 'Evens out the level',
+  phaser: 'Swirling sweep', shimmer: 'Reverb that blooms upward', flanger: 'Jet-plane sweep', tremolo: 'Pulsing or panning', eq: 'Bass, middle, treble', compressor: 'Evens out the level',
   shaper: 'Saturation, clipping, folding', crusher: 'Fewer bits, lower rate', stutter: 'Repeats slices, glitchy', freeze: 'Holds a moment as a drone',
 };
 
