@@ -250,6 +250,7 @@ function drumHit(ac, a, note, vel, t0, kit, pads, out, src, keep, samples = new 
     pan.connect(lvl).connect(out);
     into = pan;
     if (p.drive > 0) { const sh = keep(ac.createWaveShaper()); sh.curve = driveCurve(ac, p.drive); sh.oversample = '2x'; sh.connect(pan); into = sh; }
+    if (p.hp > 20) { const hp = keep(ac.createBiquadFilter()); hp.type = 'highpass'; hp.frequency.value = p.hp; hp.Q.value = 0.7; hp.connect(into); into = hp; }
   }
   const envelope = (level, decay, delay = 0) => {
     const t = t0 + delay, d = decay * dk, g = keep(ac.createGain());

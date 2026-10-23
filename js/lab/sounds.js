@@ -387,6 +387,37 @@ const MORE = [
     audio: chain('drums1', 'eq1', 'comp1', 'reverb1', 'limit1', 'out'),
   },
   {
+    // The TR-808's sixteen voices on the pads, from Roland's service-manual chart and circuit analyses
+    // (Werner/Abel/Smith; Baratatronix): bass drum a decaying sine near 50 Hz that starts at ~130 Hz
+    // and falls within ~6 ms; snare 238 + 476 Hz with noise high-passed near 2.7 kHz; toms 90/135/185 Hz
+    // and congas without their noise; rimshot 455 + 1667 Hz for 10 ms; claves 2.5 kHz; hats and cymbal
+    // the six square oscillators at 205.3, 304.4, 369.6, 522.7, 540 and 800 Hz (the engine's 'metal'),
+    // filtered high; cowbell 540 + 800 Hz. Dry, as the machine is.
+    name: '808 Kit', type: 'Drums', voices: 16, volume: 0.8,
+    about: 'The Roland TR-808\'s sixteen voices: a booming sine bass drum (Decay on the kit lengthens it), snare, clap, rimshot, '
+      + 'claves, maracas, cowbell, closed and open hats, cymbal, three toms (Low, Mid, High tom pads) and three congas (the other tom pads).',
+    modules: [{ ...mod('drums', 'drums1', { tone: 0.5 }), pads: kitPads({
+      36: { name: 'Bass drum', t1Level: 1.4, t1Wave: 'sine', t1Pitch: 50, t1Sweep: 16.5, t1Bend: 0.006, t1Decay: 0.8, t2Level: 0, nLevel: 0, click: 0.12, level: 1.3 },
+      38: { name: 'Snare', t1Level: 0.6, t1Wave: 'sine', t1Pitch: 238, t1Sweep: 1, t1Bend: 0.02, t1Decay: 0.14, t2Level: 0.35, t2Wave: 'sine', t2Pitch: 476, t2Sweep: 1, t2Bend: 0.02, t2Decay: 0.08,
+        nLevel: 0.6, nFilter: 'highpass', nFreq: 2750, nQ: 0.7, nDecay: 0.2 },
+      37: { name: 'Rimshot', t1Level: 0.45, t1Wave: 'square', t1Pitch: 1667, t1Sweep: 0, t1Decay: 0.012, t2Level: 0.4, t2Wave: 'square', t2Pitch: 455, t2Sweep: 0, t2Decay: 0.014, nLevel: 0, hp: 400 },
+      39: { name: 'Hand clap', t1Level: 0, nLevel: 1.5, nFilter: 'bandpass', nFreq: 1000, nQ: 1.4, nDecay: 0.32, nBursts: 4 },
+      42: { name: 'Closed hat', t1Level: 1.3, level: 1.2, t1Wave: 'metal', t1Pitch: 205.3, t1Sweep: 0, t1Decay: 0.05, nLevel: 0, hp: 7000, choke: 1 },
+      44: { name: 'Maracas', t1Level: 0, nLevel: 0.45, nFilter: 'highpass', nFreq: 5000, nDecay: 0.03, choke: 0 },
+      46: { name: 'Open hat', t1Level: 1.2, level: 1.2, t1Wave: 'metal', t1Pitch: 205.3, t1Sweep: 0, t1Decay: 0.4, nLevel: 0, hp: 6500, choke: 1 },
+      49: { name: 'Cymbal', t1Level: 0.9, t1Wave: 'metal', t1Pitch: 205.3, t1Sweep: 0, t1Decay: 1.6, nLevel: 0, hp: 3500 },
+      51: { name: 'Claves', t1Level: 0.5, t1Wave: 'triangle', t1Pitch: 2500, t1Sweep: 0, t1Decay: 0.03, t2Level: 0, nLevel: 0 },
+      56: { name: 'Cowbell', t1Level: 0.18, t1Wave: 'square', t1Pitch: 540, t1Sweep: 0, t1Decay: 0.28, t2Level: 0.18, t2Wave: 'square', t2Pitch: 800, t2Sweep: 0, t2Decay: 0.28, hp: 500 },
+      41: { name: 'Low tom', t1Level: 1, t1Wave: 'sine', t1Pitch: 90, t1Sweep: 1, t1Bend: 0.2, t1Decay: 0.2, nLevel: 0.06, nFilter: 'lowpass', nFreq: 1500, nDecay: 0.24 },
+      45: { name: 'Mid tom', t1Level: 1, t1Wave: 'sine', t1Pitch: 135, t1Sweep: 1, t1Bend: 0.13, t1Decay: 0.13, nLevel: 0.06, nFilter: 'lowpass', nFreq: 1800, nDecay: 0.16 },
+      48: { name: 'High tom', t1Level: 1, t1Wave: 'sine', t1Pitch: 185, t1Sweep: 1, t1Bend: 0.1, t1Decay: 0.1, nLevel: 0.06, nFilter: 'lowpass', nFreq: 2200, nDecay: 0.12 },
+      43: { name: 'Low conga', t1Level: 0.9, t1Wave: 'sine', t1Pitch: 165, t1Sweep: 1, t1Bend: 0.18, t1Decay: 0.18, nLevel: 0 },
+      47: { name: 'Mid conga', t1Level: 0.9, t1Wave: 'sine', t1Pitch: 250, t1Sweep: 1, t1Bend: 0.15, t1Decay: 0.15, nLevel: 0 },
+      50: { name: 'High conga', t1Level: 0.9, t1Wave: 'sine', t1Pitch: 370, t1Sweep: 1, t1Bend: 0.12, t1Decay: 0.12, nLevel: 0 },
+    }) }],
+    audio: [{ from: 'drums1', to: 'out' }],
+  },
+  {
     name: 'Elastic Bass', play: 'legato', glide: 0.05, type: 'Bass', voices: 2, volume: 0.65,
     about: 'A round, warm bass with a rubbery FM bite on each attack (harder notes bite more) over a clean sine sub. Slides between notes you play legato.',
     modules: [mod('fmop', 'op1', { ratio: 1, fm: 1.4, attack: 0.002, decay: 0.6, sustain: 0.7, release: 0.12, velocity: 0.4, level: 0.6 }),

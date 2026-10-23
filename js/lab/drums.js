@@ -7,7 +7,7 @@
 //   a sample      (s…): one of your recordings, tuned, trimmed and faded, on top of the rest.
 //   a sound       (l…): any Ostinato Synth sound (a copy of its patch), played at a note for a
 //                    moment and rendered to audio by the engine, so it plays like a sample.
-//   a click, drive, pan, level, and a choke group (pads in the same group cut each other off,
+//   a click, drive, a high-pass filter, pan, level, and a choke group (pads in the same group cut each other off,
 //   like open and closed hats).
 // A layer at level 0 is off. No DOM or audio here.
 
@@ -54,6 +54,7 @@ export const PAD_GROUPS = [
   { title: 'Out', help: '', params: [
     num('click', 'Click', 0, 1, 0, { help: 'A short tick at the start, for attack' }),
     num('drive', 'Drive', 0, 1, 0),
+    num('hp', 'High-pass', 20, 12000, 20, { unit: 'Hz', curve: 'log', help: 'Takes the lows out of the whole pad (808 hats and rimshot are filtered high); 20 = off' }),
     num('pan', 'Pan', -1, 1, 0),
     num('level', 'Level', 0, 1.5, 1),
     num('choke', 'Choke group', 0, 4, 0, { step: 1, help: 'Pads in the same group (1–4) cut each other off, like open and closed hats; 0 = none' }),
@@ -129,6 +130,7 @@ export function varyPad(p, amount, rnd = Math.random) {
     const v = p[spec.key];
     if (spec.kind === 'choice') { if (amount >= 0.4 && rnd() < amount * 0.25) out[spec.key] = spec.choices[Math.floor(rnd() * spec.choices.length)]; continue; }
     if (/Level$/.test(spec.key) && v === 0) continue; // a layer that's off stays off
+    if (spec.key === 'hp' && v <= spec.min) continue; // and so does the filter
     const r = (rnd() * 2 - 1) * amount;
     out[spec.key] = cleanValue(spec, spec.curve === 'log' ? v * 2 ** (r * 2) : v + r * (spec.max - spec.min) * 0.5);
   }
