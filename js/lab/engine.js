@@ -257,6 +257,9 @@ function drumHit(ac, a, note, vel, t0, kit, pads, out, src, keep, samples = new 
     g.gain.setValueAtTime(0, t);
     g.gain.linearRampToValueAtTime(level * v, t + 0.002);
     g.gain.exponentialRampToValueAtTime(0.0005, t + d);
+    // Then silence: held keys keep the voice (and its sources) going, and drive or a kit's
+    // compressor would bring a -66 dB remainder back up into a hum or hiss.
+    g.gain.setValueAtTime(0, t + d);
     longest = Math.max(longest, delay + d + 0.05);
     g.connect(into);
     return g;
@@ -305,7 +308,7 @@ function drumHit(ac, a, note, vel, t0, kit, pads, out, src, keep, samples = new 
     s.playbackRate.value = rate;
     const natural = (buf.duration - from) / rate, d = Math.min(natural, decay * dk), g = keep(ac.createGain());
     g.gain.setValueAtTime(level * v, t0);
-    if (d < natural) g.gain.exponentialRampToValueAtTime(0.0005, t0 + d);
+    if (d < natural) { g.gain.exponentialRampToValueAtTime(0.0005, t0 + d); g.gain.setValueAtTime(0, t0 + d); }
     s._start = [from];
     s.connect(g).connect(into);
     longest = Math.max(longest, d + 0.05);
