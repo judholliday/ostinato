@@ -472,6 +472,56 @@ const MORE = [
     mod: [{ from: 'pump', to: 'amp1.level', amount: 0.45 }],
   },
 
+  {
+    name: 'Talk Box Bass', play: 'mono', type: 'Bass', voices: 2, volume: 0.6,
+    about: 'A bass that says "wow" on every note: the vowel filter opens from "oo" to "ah" and closes again. Play harder to open the mouth wider.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', octave: -1, level: 0.6 }), mod('osc', 'osc2', { wave: 'square', octave: -1, fine: 6, level: 0.4 }),
+      mod('vowel', 'mouth', { vowel: 4, resonance: 9, shift: -4 }), mod('env', 'env1', { attack: 0.03, decay: 0.3, sustain: 0.35, release: 0.15, velocity: 0.8 }),
+      mod('amp', 'amp1', { attack: 0.003, decay: 0.3, sustain: 0.85, release: 0.08 }), mod('drive', 'drive1', { amount: 0.3 })],
+    audio: [{ from: 'osc1', to: 'mouth' }, { from: 'osc2', to: 'mouth' }, ...chain('mouth', 'drive1', 'amp1', 'out')],
+    mod: [{ from: 'env1', to: 'mouth.vowel', amount: -4 }],
+  },
+  {
+    name: 'Vowel Pad', type: 'Pad', voices: 8, volume: 0.2,
+    about: 'A choir-like pad that slowly sings through the vowels (ah, eh, ee, oh, oo and back) over four bars, locked to the tempo.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 3, spread: 12, level: 0.6 }), mod('osc', 'osc2', { wave: 'pulse', pw: 0.35, octave: -1, level: 0.3 }),
+      mod('vowel', 'mouth', { vowel: 2, resonance: 8, mix: 0.85 }), mod('lfo', 'lfo1', { wave: 'triangle', sync: '4/1' }),
+      mod('amp', 'amp1', { attack: 0.6, decay: 1, sustain: 0.9, release: 1.5 }),
+      mod('chorus', 'chorus1', { rate: 0.4, depth: 0.6, mix: 0.4 }), mod('reverb', 'reverb1', { type: 'hall', size: 3.5, mix: 0.3 })],
+    audio: [{ from: 'osc1', to: 'mouth' }, { from: 'osc2', to: 'mouth' }, ...chain('mouth', 'amp1', 'chorus1', 'reverb1', 'out')],
+    mod: [{ from: 'lfo1', to: 'mouth.vowel', amount: 2 }],
+  },
+  {
+    name: 'Jet Filter Chords', type: 'Keys', voices: 10, volume: 0.45,
+    about: 'Disco Filter Chords with a jet-plane flanger sweeping over them; the filter opens and closes over four bars. The mod wheel opens it further.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 3, spread: 12, level: 0.55 }), mod('osc', 'osc2', { wave: 'square', octave: -1, level: 0.25 }),
+      mod('filter', 'filter1', { cutoff: 900, resonance: 6, keytrack: 0.4 }), mod('lfo', 'lfo1', { wave: 'triangle', sync: '4/1' }),
+      mod('amp', 'amp1', { attack: 0.005, decay: 0.3, sustain: 1, release: 0.15 }),
+      mod('flanger', 'flanger1', { rate: 0.12, depth: 0.8, feedback: 0.7, mix: 0.5 }), mod('compressor', 'comp1', { threshold: -20, ratio: 3, gain: 3 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'flanger1', 'comp1', 'out')],
+    mod: [{ from: 'lfo1', to: 'filter1.cutoff', amount: 2000 }, { from: 'wheel', to: 'filter1.cutoff', amount: 3600 }],
+  },
+  {
+    name: 'Phased String Machine', type: 'Strings', voices: 12, volume: 0.6,
+    about: 'Lush 70s ensemble strings swirled by a slow phaser: the disco string-machine sound. Hold chords.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 4, spread: 14, level: 0.6 }), mod('osc', 'osc2', { wave: 'saw', octave: 1, unison: 2, spread: 10, level: 0.25 }),
+      mod('filter', 'filter1', { slope: '12', cutoff: 3200, resonance: 0.8, keytrack: 0.4 }),
+      mod('amp', 'amp1', { attack: 0.25, decay: 1, sustain: 0.9, release: 0.9 }),
+      mod('chorus', 'ensemble', { rate: 0.7, depth: 0.7, mix: 0.5 }), mod('phaser', 'phaser1', { rate: 0.15, depth: 0.8, feedback: 0.5, mix: 0.5 }),
+      mod('reverb', 'reverb1', { type: 'hall', size: 3, mix: 0.25 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'ensemble', 'phaser1', 'reverb1', 'out')],
+  },
+  {
+    name: 'Wah Funk Guitar', type: 'Pluck', voices: 6, volume: 1,
+    about: 'A clean electric through an auto-wah: each note sweeps open, harder playing sweeps further. For choppy sixteenth-note rhythm parts.',
+    modules: [mod('string', 'str', { excite: 'pick', position: 0.09, brightness: 0.7, decay: 3, highs: 1, release: 0.06, velocity: 0.7, level: 0.9 }),
+      mod('filter', 'wah', { type: 'bandpass', slope: '12', cutoff: 450, resonance: 7, keytrack: 0.3 }),
+      mod('env', 'env1', { attack: 0.015, decay: 0.22, sustain: 0.2, release: 0.1, velocity: 0.7 }),
+      mod('shaper', 'amp', { curve: 'soft', drive: 3, tone: 6000, mix: 1, level: 1.3 }), mod('reverb', 'room1', { type: 'room', size: 0.8, mix: 0.1 })],
+    audio: chain('str', 'wah', 'amp', 'room1', 'out'),
+    mod: [{ from: 'env1', to: 'wah.cutoff', amount: 2600 }],
+  },
+
   // ---- electro ----
   {
     name: 'Electro Fuzz Bass', play: 'mono', type: 'Bass', voices: 2, volume: 0.6,
@@ -523,6 +573,19 @@ const MORE = [
       // swelled its ring back up, which made the cowbell and the whole kit sound pumped and synthetic.
       mod('compressor', 'comp1', { threshold: -12, ratio: 2, attack: 0.03, release: 0.2, gain: 1 }), mod('reverb', 'room1', { type: 'room', size: 0.6, predelay: 5, damping: 0.6, mix: 0.08 })],
     audio: chain('drums1', 'comp1', 'room1', 'out'),
+  },
+  {
+    name: 'Jet Hats', type: 'Drums', voices: 16, volume: 0.75,
+    about: 'Hats, shaker and tambourine through a slowly sweeping flanger: put them on a second drum track over Dance Punk Kit (or any kit) for that swooshing disco top end.',
+    modules: [{ ...mod('drums', 'drums1', { tone: 0.6 }), pads: kitPads({
+      42: { name: 'Closed hat', nLevel: 0.55, nFilter: 'highpass', nFreq: 8000, nDecay: 0.05, t1Level: 0.3, t1Wave: 'metal', t1Pitch: 330, t1Decay: 0.045, choke: 1 },
+      44: { name: 'Shaker', nLevel: 0.45, nFilter: 'bandpass', nFreq: 6500, nQ: 1, nDecay: 0.07, choke: 0 },
+      46: { name: 'Open hat', nLevel: 0.5, nFilter: 'highpass', nFreq: 7500, nDecay: 0.45, t1Level: 0.3, t1Wave: 'metal', t1Pitch: 330, t1Decay: 0.4, choke: 1 },
+      51: { name: 'Tambourine', t1Level: 0.35, t1Wave: 'metal', t1Pitch: 1100, t1Decay: 0.18, nLevel: 0.5, nFilter: 'highpass', nFreq: 6000, nDecay: 0.16, nBursts: 2, hp: 3000 },
+      49: { name: 'Crash', nLevel: 0.4, nFilter: 'highpass', nFreq: 4500, nDecay: 1.4, t1Level: 0.2, t1Wave: 'metal', t1Pitch: 280, t1Decay: 1.2 },
+    }) },
+      mod('flanger', 'flanger1', { rate: 0.1, depth: 0.85, feedback: 0.6, mix: 0.6 })],
+    audio: chain('drums1', 'flanger1', 'out'),
   },
   {
     name: 'Sync Sequence', type: 'Pluck', voices: 8, volume: 0.53,
@@ -652,12 +715,12 @@ export const FACTORY = [...STARTERS, ...MORE, ...KEYS.map(cleanPatch)];
 // (kept with your sounds so they're backed up and transferred with them; `name` is prefixed so a
 // collection never replaces a sound of the same name). Sounds are referred to by name.
 export const COLLECTIONS = [
-  { title: 'French House', about: 'Filtered disco chords, talking robot leads, pumping pads and a punchy bass: loops that open and close.',
-    sounds: ['Disco Filter Chords', 'Robot Talk Lead', 'Robot Rock Riff', 'Pump Pad', 'Disco Punk Bass', 'Saw Arp', '909 Kit'] },
+  { title: 'French House', about: 'Filtered and flanged disco chords, talking robot leads and basses, vowel and string pads, a pumping supersaw and a punchy bass: loops that open and close.',
+    sounds: ['Disco Filter Chords', 'Jet Filter Chords', 'Robot Talk Lead', 'Talk Box Bass', 'Vowel Pad', 'Robot Rock Riff', 'Pump Pad', 'Disco Punk Bass', 'Phased String Machine', 'Saw Arp', '909 Kit'] },
   { title: 'Electro', about: 'Distorted basses, huge supersaws and pumping pads over hard drum machines.',
     sounds: ['Electro Fuzz Bass', 'Big Supersaw Lead', 'Pump Pad', 'Robot Rock Riff', 'Blip Arp', '909 Kit', 'Glitch Kit'] },
-  { title: 'Disco Punk', about: 'A dry drum machine with cowbell, a driving analog bass, sync-like sequences and noise build-ups.',
-    sounds: ['Dance Punk Kit', 'Disco Punk Bass', 'Sync Sequence', 'Noise Riser', 'Saw Arp', 'Brass Stab'] },
+  { title: 'Disco Punk', about: 'A dry drum machine with cowbell (and flanged hats on a second track), a driving analog bass, wah guitar, phased strings, sync-like sequences and noise build-ups.',
+    sounds: ['Dance Punk Kit', 'Jet Hats', 'Disco Punk Bass', 'Wah Funk Guitar', 'Phased String Machine', 'Sync Sequence', 'Noise Riser', 'Saw Arp', 'Brass Stab'] },
   { title: 'New Wave', about: 'Sequenced octave basses, sampled-choir pads, syndrums and crunchy early drum machines; a high melodic bass as the lead.',
     sounds: ['Sequenced Octave Bass', 'High Melodic Bass', 'Tape Choir', 'String Ensemble', 'Glass Arp', 'Syndrum Kit', 'DMX Kit'] },
   { title: 'Indie Electronic', about: 'Fuzzed, double-tracked guitar leads, gliding mono synths and steel plucks over a booming 808.',
