@@ -9,7 +9,7 @@ import { renderVoice } from '../seq/testsynth.js';
 
 // parts: [{ sound: { kind: 'lab', patch } | { kind: 'voice', voice }, fx, gain, notes: [{ t, dur, note, vel }] }]
 // (times in seconds). Returns [left, right] Float32Arrays of `seconds` at sampleRate.
-export async function renderComputer(parts, { seconds, sampleRate = 48000, masterFx = null }) {
+export async function renderComputer(parts, { seconds, sampleRate = 48000, masterFx = null, bpm = 120 }) {
   const ctx = new OfflineAudioContext(2, Math.max(1, Math.ceil(seconds * sampleRate)), sampleRate);
   await ensureFx(ctx); // effects that run in a worklet (bitcrusher, stutter, freeze)
   // As the Sequencer's mix: master → master effects → limiter.
@@ -18,16 +18,19 @@ export async function renderComputer(parts, { seconds, sampleRate = 48000, maste
   const limiter = ctx.createDynamicsCompressor();
   limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = 20; limiter.attack.value = 0.002; limiter.release.value = 0.1;
   const mfx = new FxChain(ctx);
+  mfx.tempo = bpm; // tempo-synced effects
   mfx.set(masterFx);
   master.connect(mfx.input);
   mfx.output.connect(limiter).connect(ctx.destination);
   const synths = [];
   for (const p of parts) {
     const fx = new FxChain(ctx);
+    fx.tempo = bpm;
     fx.set(p.fx || null);
     fx.output.connect(master);
     if (p.sound.kind === 'lab') {
       const s = new LabSynth(ctx, fx.input);
+      s.tempo = bpm;
       s.setPatch(p.sound.patch);
       s.out.gain.cancelScheduledValues(0);
       s.out.gain.value = s.patch.volume * (p.gain ?? 1);

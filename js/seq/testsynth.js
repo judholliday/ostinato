@@ -29,6 +29,7 @@ export function wake() {
     limiter.release.value = 0.1;
     // The song's master effect rack (straight through when it has none), before the limiter.
     masterFx = new FxChain(ac);
+    masterFx.tempo = tempo;
     masterFx.set(masterRack);
     master.connect(masterFx.input);
     masterFx.output.connect(limiter).connect(ac.destination);
@@ -46,6 +47,9 @@ export function output() { wake(); return master; }
 // The song's master effects: { rack, mix, off } (see seq/model.js cleanFx), or null for none.
 // Doesn't start audio by itself: kept until the first sound if audio hasn't started yet.
 export function setMasterFx(fx) { masterRack = fx; masterFx?.set(fx); }
+// The tempo for tempo-synced effects in the master rack.
+let tempo = 120;
+export function setTempo(bpm) { tempo = bpm; masterFx?.setTempo(bpm); }
 export const awake = () => !!ac;
 
 // Everything this page plays, after the limiter (not the metronome): for recording the mix.

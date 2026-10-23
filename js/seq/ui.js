@@ -282,7 +282,7 @@ const labSynths = new Map(); // track index -> { synth, json }
 async function refreshInstruments() {
   let all = [];
   try { all = await storage.list('instruments'); } catch { /* none */ }
-  instruments = all.filter(x => x.patch?.kind !== 'rack');
+  instruments = all.filter(x => !x.patch?.kind); // not racks or collections
   racks = all.filter(x => x.patch?.kind === 'rack').map(x => ({ file: x.file, name: x.name, rack: rackOf(x.patch) })).filter(x => x.rack.modules.length);
   renderTracks();
   renderMasterFx();
@@ -294,7 +294,7 @@ const trackFx = new Map(); // track index -> { chain, json }
 // Where a Computer track's sound goes: its effects (straight through when none), then the master.
 function fxFor(ti) {
   let f = trackFx.get(ti);
-  if (!f) { f = { chain: new FxChain(synth.wake()), json: null }; f.chain.output.connect(synth.output()); trackFx.set(ti, f); }
+  if (!f) { f = { chain: new FxChain(synth.wake()), json: null }; f.chain.tempo = song.bpm; f.chain.output.connect(synth.output()); trackFx.set(ti, f); }
   const fx = song.tracks[ti]?.fx || null, json = JSON.stringify(fx);
   if (json !== f.json) { f.chain.set(fx); f.json = json; }
   return f.chain.input;
@@ -303,6 +303,10 @@ function fxFor(ti) {
 function syncFx() {
   synth.setMasterFx(song.masterFx);
   for (const ti of trackFx.keys()) fxFor(ti);
+  // Tempo-synced LFOs, delays and tremolos follow the song's tempo.
+  synth.setTempo(song.bpm);
+  for (const f of trackFx.values()) f.chain.setTempo(song.bpm);
+  for (const l of labSynths.values()) l.synth.setTempo(song.bpm);
 }
 const rackFx = (r, was) => M.cleanFx({ name: r.name, rack: r.rack, mix: was?.mix ?? 1 });
 const sameRack = (fx, r) => !!r && JSON.stringify(fx.rack.modules) === JSON.stringify(r.rack.modules);
@@ -334,7 +338,7 @@ function labFor(ti) {
   const t = song.tracks[ti];
   if (!t?.inst) return null;
   let l = labSynths.get(ti);
-  if (!l) { l = { synth: new LabSynth(synth.wake(), fxFor(ti)), json: '' }; labSynths.set(ti, l); }
+  if (!l) { l = { synth: new LabSynth(synth.wake(), fxFor(ti)), json: '' }; l.synth.tempo = song.bpm; labSynths.set(ti, l); }
   fxFor(ti);
   const json = JSON.stringify(t.inst.patch);
   if (json !== l.json) { l.synth.setPatch(t.inst.patch); l.json = json; }
@@ -1845,7 +1849,7 @@ function postSeqState(force = false) {
 // Playing a take for the Recorder: on a track (`sound: { kind: 'track', ti }`, or the selected
 // track when there's no sound) or on a sound kept with the take (core/sounding.js). Notes are
 // scheduled in chunks so it can be stopped; `loopMs` repeats it. `at` is the wall-clock start.
-let audition = null, auditionLab = null;
+let audition = null, auditionLab = null, auditionTempo = 120;
 const backingLabs = new Map(), backingFx = new Map(); // backing track index -> LabSynth / FxChain, reused (they can't be disposed)
 // Stopping cuts everything at once, including notes already scheduled a little ahead: Lab and test
 // sounds are faded out now (with their echoes and reverb); MIDI can't be unscheduled, so All Notes Off goes now and again just
@@ -1874,6 +1878,7 @@ function auditionPlayer(sound) {
   }
   if (sound.kind === 'lab') {
     auditionLab ||= new LabSynth(synth.wake(), synth.output());
+    auditionLab.setTempo(auditionTempo);
     auditionLab.setPatch(sound.patch);
     return { play: (n, v, at, dur) => auditionLab.play(n, v, auditionLab.atTime(at), dur / 1000) };
   }
@@ -1898,12 +1903,13 @@ function backingPlayer(t, k, xl) {
   const sound = trackSound(t);
   if (!sound) return null;
   if (t.out === M.COMPUTER) {
-    if (!backingFx.has(k)) { const f = new FxChain(synth.wake()); f.output.connect(synth.output()); backingFx.set(k, f); }
+    if (!backingFx.has(k)) { const f = new FxChain(synth.wake()); f.tempo = auditionTempo; f.output.connect(synth.output()); backingFx.set(k, f); }
     const fx = backingFx.get(k);
     fx.set(t.fx || null);
     if (sound.kind === 'lab') {
       if (!backingLabs.has(k)) backingLabs.set(k, new LabSynth(synth.wake(), fx.input));
       const l = backingLabs.get(k);
+      l.setTempo(auditionTempo);
       l.setPatch(sound.patch);
       l.setGain(gainOf(t));
       return { play: (n, v, at, dur) => l.play(n, v, l.atTime(at), dur / 1000) };
@@ -1929,9 +1935,14 @@ function backingPlayer(t, k, xl) {
   else { load(); p.wrap = load; }
   return p;
 }
-function auditionTake({ notes = [], sound = null, at = null, loopMs = 0, link = null, backing = null }) {
+function auditionTake({ notes = [], sound = null, at = null, loopMs = 0, link = null, backing = null, bpm = null }) {
   stopAudition();
   synth.wake();
+  // Tempo-synced settings follow the take's tempo.
+  const tempo = auditionTempo = bpm || song.bpm;
+  auditionLab?.setTempo(tempo);
+  for (const l of backingLabs.values()) l.setTempo(tempo);
+  for (const f of backingFx.values()) f.setTempo(tempo);
   const player = auditionPlayer(sound);
   if (!player) { soundChannel?.postMessage({ type: 'take-result', text: sound?.kind === 'xl' ? 'The microKORG XL isn\'t connected (or SysEx isn\'t allowed), so its sound can\'t be played.' : `${sound?.name || 'That sound'} isn't connected.` }); return; }
   const list = notes.map(n => ({ ...n, p: player }));
@@ -1997,6 +2008,27 @@ function takeToTrack({ items, fromBar = 0, bpm, synced, ti = sel.t, newRole = nu
   reply(`Put ${r.bars} bar${r.bars > 1 ? 's' : ''} into ${r.added ? 'a new track, ' : ''}${r.track.name} pattern ${r.pattern}${r.gave}.`
     + (!synced && bpm !== song.bpm ? ` It was played at ${bpm} BPM; the song is at ${song.bpm}.` : ''), true);
 }
+// The Sound Lab's "New song from these" (a collection): a new song with a track for each sound (up
+// to MAX_TRACKS), each on the computer with that sound, in the role its type suggests. Refused while
+// this song has unsaved changes.
+const ROLE_OF_TYPE = { Drums: 'drums', Bass: 'bass', Pad: 'pad', Strings: 'pad', Keys: 'chords', Organ: 'chords', Brass: 'chords' };
+function songFromSounds({ title, sounds = [] }) {
+  const reply = (text, ok = false) => soundChannel?.postMessage({ type: 'song-made', text, ok });
+  if (dirty) { reply(`The Sequencer has unsaved changes to "${song.name}". Save them first, then try again.`); return; }
+  const s = M.newSong();
+  s.name = String(title || 'Untitled').slice(0, 60);
+  s.tracks = [];
+  s.song = [{ bars: 4, play: [] }];
+  // Drums first, then bass, then the rest, as tracks are usually laid out.
+  const order = { drums: 0, bass: 1, chords: 2, pad: 3, lead: 4 };
+  const list = sounds.map(x => ({ ...x, role: ROLE_OF_TYPE[x.type] || 'lead' })).sort((a, b) => order[a.role] - order[b.role]).slice(0, M.MAX_TRACKS);
+  for (const x of list) M.addTrack(s, { role: x.role, name: M.freeTrackName(s, x.name.slice(0, 24)), mode: 'steps', inst: M.cleanInst({ name: x.name, patch: x.patch }) });
+  if (!s.tracks.length) { reply('No sounds to make tracks from.'); return; }
+  load(s, null, true);
+  parent.postMessage({ type: 'switch-view', view: 'sequencer' }, location.origin);
+  reply(`Started "${s.name}" with ${s.tracks.length} tracks${sounds.length > list.length ? ` (the first ${list.length} sounds; a song has ${M.MAX_TRACKS} tracks at most)` : ''}.`, true);
+}
+
 // Capture put a clip into a saved song and asks to see it: opened unless that would lose changes.
 async function openSongFor(file) {
   const reply = (text, ok = false) => soundChannel?.postMessage({ type: 'take-result', text, ok });
@@ -2087,6 +2119,7 @@ function onRecorderMessage(m) {
     case 'take-to-track': takeToTrack(m); return true;
     case 'open-song': openSongFor(m.file); return true;
     case 'sequences-changed': refreshOpenList(); return true;
+    case 'new-song-from-sounds': songFromSounds(m); return true;
     // Capture making an audio file: the master effects, and a track's settings if it plays on one.
     case 'get-mix': soundChannel?.postMessage({ type: 'mix', masterFx: song.masterFx || null, track: song.tracks[m.ti] ? trackCopy(m.ti) : null }); return true;
     case 'clips-changed': loadClips(); return true;

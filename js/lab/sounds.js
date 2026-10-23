@@ -32,6 +32,19 @@ const COMP = () => mod('compressor', 'comp1', { threshold: -30, ratio: 3, attack
 const LIMIT = () => mod('compressor', 'limit1', { threshold: -10, ratio: 12, attack: 0.001, release: 0.1, gain: 0 });
 const tom909 = (name, f) => ({ name, t1Level: 1, t1Wave: 'sine', t1Pitch: f, t1Sweep: 7, t1Bend: 0.08, t1Decay: 0.4, nLevel: 0.12, nFilter: 'lowpass', nFreq: 3000, nDecay: 0.05 });
 
+// A struck cowbell (for drum pads, as a pad's sound): its two main modes at 1 : 1.44 (about 587 and
+// 845 Hz played at D5, after Sound On Sound's Synth Secrets), the first frequency-modulated by the
+// second so the strike is a bright, inharmonic clank that falls within ~35 ms to a softer ring (the
+// two-stage decay of struck metal), the higher mode dying sooner.
+const COWBELL = {
+  name: 'Struck cowbell', type: 'Drums', voices: 4, volume: 0.9,
+  // The pad holds the note for 50 ms (lHold), so Decay/Sustain shape the strike and Release the ring.
+  modules: [mod('fmop', 'op1', { ratio: 1, fm: 2.2, attack: 0.001, decay: 0.03, sustain: 0.4, release: 0.28, velocity: 0.5, level: 0.8 }),
+    mod('fmop', 'op2', { ratio: 1.44, attack: 0.001, decay: 0.03, sustain: 0.3, release: 0.22, velocity: 0.8, level: 0.8 }),
+    mod('fmop', 'op3', { ratio: 1.44, attack: 0.001, decay: 0.03, sustain: 0.35, release: 0.18, velocity: 0.5, level: 0.45 })],
+  audio: [{ from: 'op2', to: 'op1' }, { from: 'op1', to: 'out' }, { from: 'op3', to: 'out' }], mod: [],
+};
+
 // The starting points (patch.js) plus more, one or more of each type.
 const MORE = [
   {
@@ -417,6 +430,206 @@ const MORE = [
     }) }],
     audio: [{ from: 'drums1', to: 'out' }],
   },
+  // ---- French house: filtered disco chords, robot voices, pumping ----
+  {
+    name: 'Disco Filter Chords', type: 'Keys', voices: 10, volume: 0.4,
+    about: 'Bright stacked chords through a resonant filter that opens and closes over two bars (synced to the tempo); the mod wheel opens it further. A phaser swirls on top.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 3, spread: 12, level: 0.55 }), mod('osc', 'osc2', { wave: 'square', octave: -1, level: 0.25 }),
+      mod('filter', 'filter1', { cutoff: 700, resonance: 7, keytrack: 0.4 }), mod('lfo', 'lfo1', { wave: 'triangle', sync: '2/1' }),
+      mod('amp', 'amp1', { attack: 0.005, decay: 0.3, sustain: 1, release: 0.15 }),
+      mod('phaser', 'phaser1', { rate: 0.3, depth: 0.6, feedback: 0.5, mix: 0.4 }), mod('compressor', 'comp1', { threshold: -20, ratio: 3, gain: 3 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'phaser1', 'comp1', 'out')],
+    mod: [{ from: 'lfo1', to: 'filter1.cutoff', amount: 2400 }, { from: 'wheel', to: 'filter1.cutoff', amount: 3600 }],
+  },
+  {
+    name: 'Robot Talk Lead', play: 'legato', glide: 0.05, type: 'Lead', voices: 2, volume: 0.45,
+    about: 'A buzzy lead that talks: each note says "ah-oh" through the vowel filter, and the mod wheel moves the mouth further toward "oo". Slides between notes you play legato.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 3, spread: 10, level: 0.6 }), mod('osc', 'osc2', { wave: 'pulse', pw: 0.3, octave: -1, level: 0.3 }),
+      mod('vowel', 'mouth', { vowel: 0, resonance: 12, shift: -2 }), mod('env', 'env1', { attack: 0.01, decay: 0.35, sustain: 0.4, release: 0.2 }),
+      mod('amp', 'amp1', { attack: 0.005, decay: 0.3, sustain: 0.9, release: 0.12 }), mod('drive', 'drive1', { amount: 0.3 }),
+      mod('delay', 'delay1', { sync: '1/8.', feedback: 0.3, tone: 3500, mix: 0.18 })],
+    audio: [{ from: 'osc1', to: 'mouth' }, { from: 'osc2', to: 'mouth' }, ...chain('mouth', 'drive1', 'amp1', 'delay1', 'out')],
+    mod: [{ from: 'env1', to: 'mouth.vowel', amount: 3 }, { from: 'wheel', to: 'mouth.vowel', amount: 1 }],
+  },
+  {
+    name: 'Robot Rock Riff', type: 'Lead', voices: 6, volume: 0.55,
+    about: 'A short, gated, overdriven stab for hammering riffs: it stops dead when you let go. Squashed hard by a compressor.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 2, spread: 8, level: 0.6 }), mod('osc', 'osc2', { wave: 'square', octave: -1, level: 0.35 }),
+      mod('filter', 'filter1', { cutoff: 2600, resonance: 2, keytrack: 0.3 }),
+      mod('amp', 'amp1', { attack: 0.002, decay: 0.2, sustain: 1, release: 0.03 }),
+      mod('shaper', 'dist1', { curve: 'hard', drive: 12, tone: 5000, mix: 1, level: 0.5 }),
+      mod('compressor', 'comp1', { threshold: -24, ratio: 8, attack: 0.003, release: 0.08, gain: 4 }), mod('reverb', 'room1', { type: 'room', size: 0.7, mix: 0.08 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'dist1', 'comp1', 'room1', 'out')],
+  },
+  {
+    name: 'Pump Pad', type: 'Pad', voices: 10, volume: 0.55,
+    about: 'A wide supersaw pad that ducks on every beat and swells back, like a pad side-chained to the kick. Synced to the tempo: start chords on the beat.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 5, spread: 18, level: 0.6 }), mod('osc', 'osc2', { wave: 'saw', octave: 1, unison: 3, spread: 12, level: 0.2 }),
+      mod('filter', 'filter1', { cutoff: 2400, resonance: 1, keytrack: 0.3 }), mod('lfo', 'pump', { wave: 'rise', sync: '1/4' }),
+      mod('amp', 'amp1', { attack: 0.02, decay: 0.5, sustain: 1, release: 0.4, level: 0.55 }),
+      mod('reverb', 'reverb1', { type: 'hall', size: 2.5, mix: 0.22 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'reverb1', 'out')],
+    mod: [{ from: 'pump', to: 'amp1.level', amount: 0.45 }],
+  },
+
+  // ---- electro ----
+  {
+    name: 'Electro Fuzz Bass', play: 'mono', type: 'Bass', voices: 2, volume: 0.6,
+    about: 'Detuned saws driven into distortion and a little bitcrush: aggressive and mid-heavy, made to cut through. The filter snaps open on each note.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', octave: -1, unison: 3, spread: 15, level: 0.6 }), mod('osc', 'osc2', { wave: 'square', octave: -1, level: 0.35 }),
+      mod('filter', 'filter1', { cutoff: 650, resonance: 4, keytrack: 0.4 }), mod('env', 'env1', { attack: 0.002, decay: 0.2, sustain: 0.25, release: 0.08 }),
+      mod('amp', 'amp1', { attack: 0.002, decay: 0.3, sustain: 0.9, release: 0.06 }),
+      mod('shaper', 'dist1', { curve: 'hard', drive: 16, tone: 4500, mix: 1, level: 0.45 }), mod('crusher', 'crush1', { bits: 8, hold: 2, mix: 0.3 }),
+      mod('eq', 'eq1', { low: 2, mid: 4, midfreq: 1200, high: -2 }), mod('compressor', 'comp1', { threshold: -18, ratio: 4, gain: 2 }), LIMIT()],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'dist1', 'crush1', 'eq1', 'comp1', 'limit1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 3000 }],
+  },
+  {
+    name: 'Big Supersaw Lead', type: 'Lead', voices: 8, volume: 1,
+    about: 'Seven detuned saws plus five more an octave up, spread wide: the huge festival lead. Synced ping-pong echoes.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 7, spread: 30, level: 0.6 }), mod('osc', 'osc2', { wave: 'saw', octave: 1, unison: 5, spread: 20, level: 0.25 }),
+      mod('filter', 'filter1', { slope: '12', cutoff: 5500, resonance: 1, keytrack: 0.4 }),
+      mod('amp', 'amp1', { attack: 0.01, decay: 0.4, sustain: 0.9, release: 0.3, level: 1 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8', feedback: 0.3, tone: 4500, mix: 0.2 }), mod('reverb', 'reverb1', { type: 'plate', size: 2, mix: 0.18 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'delay1', 'reverb1', 'out')],
+  },
+
+  // ---- disco punk ----
+  {
+    name: 'Disco Punk Bass', play: 'mono', type: 'Bass', voices: 2, volume: 0.75,
+    about: 'A punchy analog bass for driving eighth-note lines: saw and square through a 24 dB filter that snaps shut, slightly driven. Play harder to open it.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.65 }), mod('osc', 'osc2', { wave: 'square', octave: -1, level: 0.4 }),
+      mod('filter', 'filter1', { cutoff: 480, resonance: 3, keytrack: 0.5 }), mod('env', 'env1', { attack: 0.002, decay: 0.18, sustain: 0.1, release: 0.06 }),
+      mod('amp', 'amp1', { attack: 0.002, decay: 0.3, sustain: 0.65, release: 0.06 }), mod('drive', 'drive1', { amount: 0.35 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'drive1', 'amp1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 2600 }, { from: 'vel', to: 'filter1.cutoff', amount: 1200 }],
+  },
+  {
+    name: 'Dance Punk Kit', type: 'Drums', voices: 16, volume: 0.75,
+    about: 'A dry, tight drum machine in a small room: punchy kick, cracking snare, bright open hats, a loud cowbell, tambourine (Ride pad) and shaker (Pedal hat pad).',
+    modules: [{ ...mod('drums', 'drums1', { tone: 0.6 }), pads: kitPads({
+      36: { name: 'Kick', t1Level: 1.3, t1Wave: 'sine', t1Pitch: 55, t1Sweep: 22, t1Bend: 0.025, t1Decay: 0.32, t2Level: 0.6, t2Wave: 'triangle', t2Pitch: 110, t2Sweep: 12, t2Bend: 0.015, t2Decay: 0.05, click: 0.5, drive: 0.15 },
+      38: { name: 'Snare', t1Level: 0.55, t1Wave: 'triangle', t1Pitch: 200, t1Sweep: 4, t1Bend: 0.02, t1Decay: 0.09, nLevel: 0.9, nFilter: 'highpass', nFreq: 1800, nDecay: 0.17, click: 0.4, level: 0.8 },
+      39: { name: 'Clap', nLevel: 1.4, nFilter: 'bandpass', nFreq: 1200, nQ: 1.5, nDecay: 0.22, nBursts: 4 },
+      42: { name: 'Closed hat', nLevel: 0.55, nFilter: 'highpass', nFreq: 8000, nDecay: 0.05, t1Level: 0.3, t1Wave: 'metal', t1Pitch: 330, t1Decay: 0.045, choke: 1 },
+      44: { name: 'Shaker', nLevel: 0.45, nFilter: 'bandpass', nFreq: 6500, nQ: 1, nDecay: 0.07, choke: 0 },
+      46: { name: 'Open hat', nLevel: 0.5, nFilter: 'highpass', nFreq: 7500, nDecay: 0.45, t1Level: 0.3, t1Wave: 'metal', t1Pitch: 330, t1Decay: 0.4, choke: 1 },
+      51: { name: 'Tambourine', t1Level: 0.35, t1Wave: 'metal', t1Pitch: 1100, t1Decay: 0.18, nLevel: 0.5, nFilter: 'highpass', nFreq: 6000, nDecay: 0.16, nBursts: 2, hp: 3000 },
+      // A struck cowbell (COWBELL, above) with a burst of noise for the stick, not the 808's squares.
+      56: { name: 'Cowbell', t1Level: 0, t2Level: 0, nLevel: 0.3, nFilter: 'bandpass', nFreq: 3200, nQ: 1, nDecay: 0.025, click: 0.35,
+        lSound: { name: 'Struck cowbell', patch: COWBELL }, lLevel: 0.45, lNote: 74, lHold: 0.05, lDecay: 0.6, hp: 300, level: 1 },
+    }) },
+      // Gentle glue only: a faster, harder compressor (and a limiter) squashed each hit's strike and
+      // swelled its ring back up, which made the cowbell and the whole kit sound pumped and synthetic.
+      mod('compressor', 'comp1', { threshold: -12, ratio: 2, attack: 0.03, release: 0.2, gain: 1 }), mod('reverb', 'room1', { type: 'room', size: 0.6, predelay: 5, damping: 0.6, mix: 0.08 })],
+    audio: chain('drums1', 'comp1', 'room1', 'out'),
+  },
+  {
+    name: 'Sync Sequence', type: 'Pluck', voices: 8, volume: 0.53,
+    about: 'A tearing, sync-like sweep on every note (a sharp resonant filter swept fast), for long repeating sequences. Echoes on the dotted eighth.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 2, spread: 6, level: 0.6 }), mod('osc', 'osc2', { wave: 'pulse', pw: 0.25, octave: 1, level: 0.2 }),
+      mod('filter', 'filter1', { cutoff: 500, resonance: 14, keytrack: 0.6 }), mod('env', 'env1', { attack: 0.001, decay: 0.25, sustain: 0.15, release: 0.1 }),
+      mod('amp', 'amp1', { attack: 0.002, decay: 0.3, sustain: 0.4, release: 0.1 }),
+      mod('delay', 'delay1', { sync: '1/8.', feedback: 0.35, tone: 4000, mix: 0.22 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'delay1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 4800 }, { from: 'vel', to: 'filter1.cutoff', amount: 1200 }],
+  },
+  {
+    name: 'Noise Riser', type: 'FX', voices: 2, volume: 1,
+    about: 'Hold a note for a build-up: noise sweeping up for about four seconds, growing louder and faster-pulsing. Let go to drop.',
+    modules: [mod('noise', 'noise1', { level: 1 }), mod('filter', 'filter1', { type: 'bandpass', slope: '12', cutoff: 300, resonance: 2, keytrack: 0 }),
+      mod('env', 'env1', { attack: 4, decay: 1, sustain: 1, release: 0.5 }),
+      mod('amp', 'amp1', { attack: 3.5, decay: 1, sustain: 1, release: 0.6, level: 1 }),
+      mod('tremolo', 'trem1', { sync: '1/16', depth: 0.35 }), mod('reverb', 'reverb1', { type: 'hall', size: 3, mix: 0.3 })],
+    audio: [...chain('noise1', 'filter1', 'amp1', 'trem1', 'reverb1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 6000 }],
+  },
+
+  // ---- new wave ----
+  {
+    name: 'Sequenced Octave Bass', type: 'Bass', voices: 2, volume: 0.85,
+    about: 'A short, punchy bass made for sixteenth-note sequences jumping between octaves: square and saw, a quick filter blip on each note.',
+    modules: [mod('osc', 'osc1', { wave: 'square', level: 0.55 }), mod('osc', 'osc2', { wave: 'saw', fine: 5, level: 0.4 }),
+      mod('filter', 'filter1', { cutoff: 1100, resonance: 2, keytrack: 0.6 }), mod('env', 'env1', { attack: 0.001, decay: 0.12, sustain: 0.1, release: 0.05 }),
+      mod('amp', 'amp1', { attack: 0.002, decay: 0.15, sustain: 0.5, release: 0.05, level: 1 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 1800 }],
+  },
+  {
+    name: 'Tape Choir', volume: 0.65, type: 'Pad', voices: 6,
+    about: 'A breathy sampled-choir pad, like the early sampling keyboards: a grain cloud of a sung "ah" with a little tape wobble.',
+    modules: [mod('granular', 'gr1', { file: 'factory/Vowel Ah (C4).wav', root: 60, position: 0.4, spread: 0.15, scan: 0.02, size: 0.18, density: 32, jitter: 5, width: 0.7, level: 0.9 }),
+      mod('filter', 'filter1', { slope: '12', cutoff: 3500, resonance: 0.8, keytrack: 0.3 }),
+      mod('amp', 'amp1', { attack: 0.35, decay: 1, sustain: 0.9, release: 1.2, level: 0.8 }), COMP(),
+      mod('delay', 'tape1', { mode: 'tape', time: 0.03, feedback: 0, wobble: 0.6, mix: 0.4 }), mod('reverb', 'reverb1', { type: 'hall', size: 3, mix: 0.3 })],
+    audio: chain('gr1', 'filter1', 'amp1', 'comp1', 'tape1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Syndrum Kit', type: 'Drums', voices: 16, volume: 0.9,
+    about: 'Electronic drums with big falling pitches, the early-80s pad kit: every tom pad sweeps down, the kick and snare too. A plate gives them space.',
+    modules: [{ ...mod('drums', 'drums1', { tone: 0.5 }), pads: kitPads({
+      36: { name: 'Kick', t1Level: 1.3, t1Wave: 'sine', t1Pitch: 50, t1Sweep: 19, t1Bend: 0.06, t1Decay: 0.5, t2Level: 0, click: 0.3 },
+      38: { name: 'Syn snare', t1Level: 0.6, t1Wave: 'triangle', t1Pitch: 210, t1Sweep: 12, t1Bend: 0.08, t1Decay: 0.18, nLevel: 0.8, nFilter: 'highpass', nFreq: 1500, nDecay: 0.25 },
+      41: { name: 'Syndrum low', t1Level: 1, t1Wave: 'sine', t1Pitch: 80, t1Sweep: 19, t1Bend: 0.3, t1Decay: 0.6, nLevel: 0.1, nFilter: 'lowpass', nFreq: 2000, nDecay: 0.05 },
+      43: { name: 'Syndrum 2', t1Level: 1, t1Wave: 'sine', t1Pitch: 100, t1Sweep: 17, t1Bend: 0.28, t1Decay: 0.55, nLevel: 0.1, nFilter: 'lowpass', nFreq: 2000, nDecay: 0.05 },
+      45: { name: 'Syndrum 3', t1Level: 1, t1Wave: 'sine', t1Pitch: 125, t1Sweep: 15, t1Bend: 0.25, t1Decay: 0.5, nLevel: 0.1, nFilter: 'lowpass', nFreq: 2200, nDecay: 0.05 },
+      47: { name: 'Syndrum 4', t1Level: 1, t1Wave: 'sine', t1Pitch: 155, t1Sweep: 14, t1Bend: 0.22, t1Decay: 0.45, nLevel: 0.1, nFilter: 'lowpass', nFreq: 2500, nDecay: 0.05 },
+      48: { name: 'Syndrum 5', t1Level: 1, t1Wave: 'triangle', t1Pitch: 190, t1Sweep: 12, t1Bend: 0.2, t1Decay: 0.4, nLevel: 0.1, nFilter: 'lowpass', nFreq: 2800, nDecay: 0.05 },
+      50: { name: 'Syndrum high', t1Level: 1, t1Wave: 'triangle', t1Pitch: 240, t1Sweep: 12, t1Bend: 0.18, t1Decay: 0.35, nLevel: 0.1, nFilter: 'lowpass', nFreq: 3000, nDecay: 0.05 },
+      56: { name: 'Zap', t1Level: 0.6, t1Wave: 'square', t1Pitch: 300, t1Sweep: 36, t1Bend: 0.12, t1Decay: 0.2, level: 0.6 },
+    }) },
+      mod('reverb', 'plate1', { type: 'plate', size: 1.8, predelay: 15, mix: 0.18 }), LIMIT()],
+    audio: chain('drums1', 'plate1', 'limit1', 'out'),
+  },
+  {
+    name: 'DMX Kit', type: 'Drums', voices: 16, volume: 0.45,
+    about: 'Crunchy early-sampler drum machine: tight kick, snappy snare, crisp hats and claps, all through 8-bit grit and a short room.',
+    modules: [{ ...mod('drums', 'drums1', { tone: 0.55 }), pads: kitPads({
+      36: { name: 'Kick', t1Level: 1.3, t1Wave: 'sine', t1Pitch: 58, t1Sweep: 20, t1Bend: 0.03, t1Decay: 0.28, t2Level: 0.5, t2Wave: 'triangle', t2Pitch: 120, t2Sweep: 12, t2Bend: 0.01, t2Decay: 0.04, click: 0, level: 1.1 },
+      38: { name: 'Snare', t1Level: 0.6, t1Wave: 'triangle', t1Pitch: 190, t1Sweep: 5, t1Bend: 0.02, t1Decay: 0.1, nLevel: 0.9, nFilter: 'highpass', nFreq: 2000, nDecay: 0.16, click: 0.35, level: 0.8 },
+      39: { name: 'Claps', nLevel: 1.4, nFilter: 'bandpass', nFreq: 1300, nQ: 1.3, nDecay: 0.2, nBursts: 3 },
+      42: { name: 'Closed hat', nLevel: 0.6, nFilter: 'highpass', nFreq: 8500, nDecay: 0.04, choke: 1 },
+      46: { name: 'Open hat', nLevel: 0.5, nFilter: 'highpass', nFreq: 7500, nDecay: 0.32, choke: 1 },
+    }) },
+      mod('crusher', 'crush1', { bits: 8, hold: 2, mix: 0.8 }), mod('eq', 'eq1', { low: 2, high: 1 }),
+      mod('reverb', 'room1', { type: 'room', size: 0.5, mix: 0.08 }), LIMIT()],
+    audio: chain('drums1', 'crush1', 'eq1', 'room1', 'limit1', 'out'),
+  },
+  {
+    name: 'High Melodic Bass', type: 'Bass', voices: 4, volume: 0.75,
+    about: 'A picked electric bass played up high as a lead, with chorus: melodic lines an octave or two above where a bass usually sits.',
+    modules: [mod('string', 'str', { excite: 'pick', position: 0.12, brightness: 0.62, decay: 4, highs: 0.9, release: 0.1, velocity: 0.7, level: 1 }),
+      mod('eq', 'tone', { low: 1, mid: 3, midfreq: 900, high: -2 }), mod('chorus', 'chorus1', { rate: 0.5, depth: 0.6, mix: 0.5 }),
+      mod('compressor', 'comp', { threshold: -26, ratio: 6, attack: 0.003, gain: 6 }), mod('reverb', 'room1', { type: 'room', size: 1, mix: 0.12 })],
+    audio: chain('str', 'tone', 'chorus1', 'comp', 'room1', 'out'),
+  },
+
+  // ---- indie electronic: fuzz guitars, gliding leads, steel ----
+  {
+    name: 'Twin Fuzz Lead', play: 'legato', glide: 0.03, type: 'Lead', voices: 1, volume: 0.55,
+    about: 'A fuzzed lead guitar, double-tracked (two strings a few cents apart): sustaining melodic lines that slide when you play legato. Dotted-eighth echoes.',
+    modules: [mod('string', 'str', { excite: 'pick', position: 0.1, brightness: 0.75, decay: 12, highs: 3, strings: 2, detune: 9, release: 0.12, velocity: 0.6, level: 0.9 }),
+      mod('shaper', 'fuzz1', { curve: 'tube', drive: 18, tone: 3800, mix: 1, level: 0.55 }), mod('eq', 'cab', { low: 1, mid: 3, midfreq: 1000, high: -6 }),
+      mod('chorus', 'double', { rate: 0.3, depth: 0.3, mix: 0.3 }), mod('delay', 'echo', { sync: '1/8.', feedback: 0.25, mix: 0.18 }), mod('reverb', 'room', { type: 'plate', size: 1.6, mix: 0.15 })],
+    audio: chain('str', 'fuzz1', 'cab', 'double', 'echo', 'room', 'out'),
+  },
+  {
+    name: 'Glide Mono Lead', play: 'legato', glide: 0.12, type: 'Lead', voices: 2, volume: 0.75,
+    about: 'A smooth, round mono lead with long slides between legato notes and vibrato that fades in on held notes.',
+    modules: [mod('osc', 'osc1', { wave: 'triangle', level: 0.7 }), mod('osc', 'osc2', { wave: 'saw', fine: 4, level: 0.3 }),
+      mod('filter', 'filter1', { cutoff: 2600, resonance: 2, keytrack: 0.6 }), mod('lfo', 'vib', { rate: 5.5, delay: 0.4 }),
+      mod('amp', 'amp1', { attack: 0.01, decay: 0.3, sustain: 0.9, release: 0.2 }), mod('delay', 'delay1', { sync: '1/4', feedback: 0.25, mix: 0.15 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'delay1', 'out')],
+    mod: [{ from: 'vib', to: 'osc1.pitch', amount: 25 }, { from: 'vib', to: 'osc2.pitch', amount: 25 }],
+  },
+  {
+    name: 'Steel Pluck', type: 'Bell', voices: 10, volume: 0.6,
+    about: 'A bright, ringing steel-drum-like pluck: a quick metallic strike settling into a sweet tone.',
+    modules: [mod('fmop', 'op1', { ratio: 1, fm: 1.6, attack: 0.001, decay: 0.9, sustain: 0, release: 0.4, velocity: 0.5, level: 0.75 }),
+      mod('fmop', 'op2', { ratio: 2, fine: 12, attack: 0.001, decay: 0.12, sustain: 0.15, release: 0.2, velocity: 0.8, level: 0.7 }),
+      mod('reverb', 'reverb1', { type: 'plate', size: 1.5, mix: 0.2 })],
+    audio: [{ from: 'op2', to: 'op1' }, ...chain('op1', 'reverb1', 'out')],
+  },
   {
     name: 'Elastic Bass', play: 'legato', glide: 0.05, type: 'Bass', voices: 2, volume: 0.65,
     about: 'A round, warm bass with a rubbery FM bite on each attack (harder notes bite more) over a clean sine sub. Slides between notes you play legato.',
@@ -431,3 +644,37 @@ const MORE = [
 ].map(cleanPatch);
 
 export const FACTORY = [...STARTERS, ...MORE, ...KEYS.map(cleanPatch)];
+
+// ---- collections: sounds that belong together (a genre, a set for one kind of track) ----
+// Factory collections are below; yours are saved instruments of kind 'collection':
+//   { format: 'mkxl-inst', version: 1, kind: 'collection', name: 'Collection: <title>', title, about?,
+//     sounds: [{ name, mine }], modules: [], audio: [], mod: [] }
+// (kept with your sounds so they're backed up and transferred with them; `name` is prefixed so a
+// collection never replaces a sound of the same name). Sounds are referred to by name.
+export const COLLECTIONS = [
+  { title: 'French House', about: 'Filtered disco chords, talking robot leads, pumping pads and a punchy bass: loops that open and close.',
+    sounds: ['Disco Filter Chords', 'Robot Talk Lead', 'Robot Rock Riff', 'Pump Pad', 'Disco Punk Bass', 'Saw Arp', '909 Kit'] },
+  { title: 'Electro', about: 'Distorted basses, huge supersaws and pumping pads over hard drum machines.',
+    sounds: ['Electro Fuzz Bass', 'Big Supersaw Lead', 'Pump Pad', 'Robot Rock Riff', 'Blip Arp', '909 Kit', 'Glitch Kit'] },
+  { title: 'Disco Punk', about: 'A dry drum machine with cowbell, a driving analog bass, sync-like sequences and noise build-ups.',
+    sounds: ['Dance Punk Kit', 'Disco Punk Bass', 'Sync Sequence', 'Noise Riser', 'Saw Arp', 'Brass Stab'] },
+  { title: 'New Wave', about: 'Sequenced octave basses, sampled-choir pads, syndrums and crunchy early drum machines; a high melodic bass as the lead.',
+    sounds: ['Sequenced Octave Bass', 'High Melodic Bass', 'Tape Choir', 'String Ensemble', 'Glass Arp', 'Syndrum Kit', 'DMX Kit'] },
+  { title: 'Indie Electronic', about: 'Fuzzed, double-tracked guitar leads, gliding mono synths and steel plucks over a booming 808.',
+    sounds: ['Twin Fuzz Lead', 'Glide Mono Lead', 'Steel Pluck', 'Elastic Bass', 'Clean Electric', '808 Kit'] },
+  { title: 'Odd-Meter Electronic', about: 'Skittering beats in 5/4 and other odd meters, rubbery bass and fast arpeggios.',
+    sounds: ['Odd Step Kit', 'Elastic Bass', 'Rubber Arp', 'Glass Arp', 'Saw Arp', 'Blip Arp', 'Glitch Pad'] },
+  { title: 'Hip-Hop & Lo-Fi', about: 'Long 808 booms, dusty drums and warm, worn keys.',
+    sounds: ['808 Kit', 'Dusty Kit', 'Lo-Fi Kit', 'Sub Bass', 'Lo-Fi Keys', 'Tine Piano', 'Dub Chord'] },
+  { title: 'Ambient & Textures', about: 'Clouds, frozen pads and slow-moving sounds to sit under everything else.',
+    sounds: ['Grain Choir', 'Glass Cloud', 'Freeze Pad', 'Wind Grains', 'Slow Music Box', 'Dark Pad', 'Glitch Pad'] },
+].map(c => ({ ...c, factory: true, sounds: c.sounds.filter(n => FACTORY.some(p => p.name === n)).map(name => ({ name, mine: false })) }));
+
+export const isCollection = p => p?.kind === 'collection';
+// A collection as saved (title, up to 32 sounds, each named once).
+export function collectionFile(title, sounds = [], about = '') {
+  const t = String(title || 'Collection').trim().slice(0, 40) || 'Collection';
+  const seen = new Set(), list = [];
+  for (const s of sounds) { const k = `${!!s.mine}:${s.name}`; if (s?.name && !seen.has(k) && list.length < 32) { seen.add(k); list.push({ name: String(s.name).slice(0, 40), mine: !!s.mine }); } }
+  return { format: 'mkxl-inst', version: 1, kind: 'collection', name: `Collection: ${t}`, title: t, ...(about ? { about: String(about).slice(0, 300) } : {}), sounds: list, modules: [], audio: [], mod: [] };
+}

@@ -37,6 +37,8 @@
     </div>
     <input id="lib-search" type="search" placeholder="Search sounds" autocomplete="off" spellcheck="false" aria-label="Search sounds">
     <div class="seg-btn lib-bank" id="lib-bank"></div>
+    <div class="lib-colls" id="lib-colls" aria-label="Collections"></div>
+    <div class="lib-coll-bar" id="lib-coll-bar" hidden></div>
     <div class="lib-types" id="lib-types"></div>
     <div class="lib-list" id="lib-list" tabindex="0" aria-label="Sounds"></div>
     <label class="lib-audition hint" title="Play a short note each time you pick a sound"><input type="checkbox" id="lib-audition"> Play a note when I pick one (↑ ↓ to step through)</label>
@@ -51,6 +53,8 @@
     <span id="dirty" class="dirty" hidden>unsaved</span>
     <button id="save" class="accent" title="Save to My Sounds (data/instruments/, ⌘S)">Save</button>
     <button id="delete" class="ghost" title="Remove it from My Sounds (moved to data/instruments/deleted/)">Delete</button>
+    <span class="coll-wrap"><button id="coll-btn" class="ghost small" title="Put this sound in your collections (groups of sounds that work together), or take it out">☆ Collections</button>
+      <div id="coll-pop" class="coll-pop" hidden></div></span>
     <span class="spacer"></span>
     <span class="field" title="Poly: chords. Mono: one note at a time, each starting fresh. Legato: one note; notes played while another is held slide to it without starting again (the classic lead and bass playing)">Play
       <span class="seg-btn" id="play-mode"><button data-play="poly">Poly</button><button data-play="mono">Mono</button><button data-play="legato">Legato</button></span></span>

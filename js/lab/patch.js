@@ -31,6 +31,22 @@ const file = (key, label, extra = {}) => ({ key, label, kind: 'file', def: '', .
 const choice = (key, label, choices, def, extra = {}) => ({ key, label, kind: 'choice', choices, def: def ?? choices[0], ...extra });
 const time = (key, label, def) => num(key, label, 0.001, 10, def, { unit: 's', curve: 'log' });
 
+// Tempo sync: note lengths an LFO's cycle or a delay's time can lock to ('.' dotted, 't' triplet),
+// in beats. The engine gets the tempo from the page (LabSynth.setTempo: the Sequencer's).
+export const SYNC = ['off', '4/1', '2/1', '1/1', '1/2', '1/2.', '1/2t', '1/4', '1/4.', '1/4t', '1/8', '1/8.', '1/8t', '1/16', '1/16.', '1/16t', '1/32'];
+export function syncBeats(v) {
+  const m = /^(\d+)\/(\d+)([.t]?)$/.exec(v || '');
+  if (!m) return 0;
+  const beats = 4 * m[1] / m[2];
+  return m[3] === '.' ? beats * 1.5 : m[3] === 't' ? beats * 2 / 3 : beats;
+}
+const sync = (what, extra = {}) => choice('sync', 'Sync', SYNC, 'off', { help: `Lock ${what} to the song's tempo (a note length); off = the setting below`, ...extra });
+const unsynced = p => !p.sync || p.sync === 'off';
+// The vowel filter's formants (Hz) for A E I O U, a low male voice (after the common Csound
+// vocal-formant table), and how loud each formant is.
+export const VOWELS = [[800, 1150, 2900], [400, 1600, 2700], [350, 2300, 3000], [450, 800, 2830], [325, 700, 2530]];
+export const FORMANT_GAINS = [1, 0.63, 0.32];
+
 // Every module type: what it's called, whether it runs per note, its connections, its settings,
 // and which settings can be modulated (with the units and range of a modulation amount).
 export const MODULES = {
@@ -43,6 +59,8 @@ export const MODULES = {
       num('semi', 'Semitones', -12, 12, 0, { step: 1 }),
       num('fine', 'Fine', -100, 100, 0, { unit: 'cents', step: 1 }),
       num('pw', 'Pulse width', 0.05, 0.95, 0.5, { help: 'Only for the pulse wave', showIf: p => p.wave === 'pulse' }),
+      num('unison', 'Unison', 1, 7, 1, { step: 1, rebuild: true, help: 'Copies of the oscillator, detuned against each other and spread across left and right: 1 = one oscillator; 5–7 = a supersaw' }),
+      num('spread', 'Spread', 0, 100, 20, { unit: 'cents', step: 1, help: 'How far the outermost copies are detuned', showIf: p => p.unison > 1 }),
       num('level', 'Level', 0, 1, 0.7),
     ],
     targets: { pitch: { unit: 'cents', min: -4800, max: 4800 }, pw: { min: -0.45, max: 0.45 }, level: { min: -1, max: 1 } },
@@ -158,8 +176,9 @@ export const MODULES = {
   },
   lfo: {
     label: 'LFO', scope: 'voice', modOut: true,
-    help: 'A slow wave (-1 to 1) for vibrato, wobble and movement; random = a new random value each cycle (sample & hold). Starts with each note.',
-    params: [choice('wave', 'Wave', ['sine', 'triangle', 'square', 'saw', 'random'], 'sine', { rebuild: true }), num('rate', 'Rate', 0.05, 30, 5, { unit: 'Hz', curve: 'log' }),
+    help: 'A slow wave (-1 to 1) for vibrato, wobble and movement; random = a new random value each cycle (sample & hold); rise = from the bottom up each cycle, then back down at once (for pumping and ducking). Starts with each note.',
+    params: [choice('wave', 'Wave', ['sine', 'triangle', 'square', 'saw', 'rise', 'random'], 'sine', { rebuild: true }), sync('each cycle'),
+      num('rate', 'Rate', 0.05, 30, 5, { unit: 'Hz', curve: 'log', showIf: unsynced }),
       num('delay', 'Fade in', 0, 5, 0, { unit: 's' }), num('depth', 'Depth', 0, 1, 1)],
     targets: { rate: { unit: 'Hz', min: -20, max: 20 }, depth: { min: -1, max: 1 } },
   },
@@ -174,6 +193,15 @@ export const MODULES = {
       num('velocity', 'Velocity', 0, 1, 0.6), num('level', 'Level', 0, 1, 0.7), num('keytrack', 'Key → time', 0, 1, 0, { help: 'Higher notes shorter, lower notes longer, like a piano or a plucked string: 1 = half as long each octave above C4' }), num('veltime', 'Velocity → time', -1, 1, 0, { help: 'Above 0: harder notes attack faster and ring longer (up to twice); below 0, the reverse' }),
     ],
     targets: { pitch: { unit: 'cents', min: -4800, max: 4800 }, level: { min: -1, max: 1 }, fm: { min: -10, max: 10 } },
+  },
+  vowel: {
+    label: 'Vowel filter', scope: 'voice', audioIn: true, audioOut: true,
+    help: 'Makes the sound talk: three resonant peaks at the formants of a sung vowel. Sweep Vowel (0 = A, 1 = E, 2 = I, 3 = O, 4 = U) with an envelope, an LFO or the mod wheel for talkbox and robot voices. Works best on bright sounds (saws, pulses, noise).',
+    params: [num('vowel', 'Vowel', 0, 4, 0, { step: 0.01, help: '0 = A, 1 = E, 2 = I, 3 = O, 4 = U, and everything between' }),
+      num('resonance', 'Resonance', 2, 30, 10, { help: 'How sharp the peaks are: higher = more vocal, thinner' }),
+      num('shift', 'Shift', -12, 12, 0, { unit: 'st', step: 0.5, help: 'Moves the formants: down = a bigger, deeper voice; up = a smaller one' }),
+      num('mix', 'Mix', 0, 1, 1)],
+    targets: { vowel: { min: -4, max: 4 }, mix: { min: -1, max: 1 } },
   },
   ring: {
     label: 'Ring mod', scope: 'voice', audioIn: true, audioOut: true,
@@ -207,7 +235,7 @@ export const MODULES = {
     label: 'Delay', scope: 'global', audioIn: true, audioOut: true,
     help: 'Echoes. Ping-pong bounces them left and right; tape wobbles and darkens them like an old tape echo.',
     params: [choice('mode', 'Mode', ['normal', 'ping-pong', 'tape'], 'normal', { rebuild: true }),
-      num('time', 'Time', 0.01, 2, 0.35, { unit: 's', curve: 'log' }), num('feedback', 'Feedback', 0, 0.95, 0.35),
+      sync('the echo time'), num('time', 'Time', 0.01, 2, 0.35, { unit: 's', curve: 'log', showIf: unsynced }), num('feedback', 'Feedback', 0, 0.95, 0.35),
       num('tone', 'Tone', 500, 16000, 4500, { unit: 'Hz', curve: 'log', help: 'How bright the echoes are' }),
       num('wobble', 'Wobble', 0, 1, 0.3, { help: 'Tape speed wobble (tape mode)', showIf: p => p.mode === 'tape' }),
       num('mix', 'Mix', 0, 1, 0.25)],
@@ -258,7 +286,7 @@ export const MODULES = {
   tremolo: {
     label: 'Tremolo', scope: 'global', audioIn: true, audioOut: true,
     help: 'Pulses the volume up and down, or moves the sound left and right (Pan).',
-    params: [num('rate', 'Rate', 0.1, 20, 5, { unit: 'Hz', curve: 'log' }), num('depth', 'Depth', 0, 1, 0.5),
+    params: [sync('each pulse'), num('rate', 'Rate', 0.1, 20, 5, { unit: 'Hz', curve: 'log', showIf: unsynced }), num('depth', 'Depth', 0, 1, 0.5),
       num('pan', 'Pan', 0, 1, 0, { help: '0 = volume (tremolo), 1 = left and right (auto-pan)' })],
     targets: { rate: { unit: 'Hz', min: -20, max: 20 } },
   },
@@ -318,7 +346,7 @@ export const MODULES = {
   glfo: {
     label: 'Global LFO', scope: 'global', modOut: true,
     help: 'One LFO for the whole sound (not one per note), for moving effects: sweep a delay\'s mix, a phaser\'s rate, a bitcrusher\'s bits… Drag from its dot to an effect\'s setting.',
-    params: [choice('wave', 'Wave', ['sine', 'triangle', 'square', 'saw'], 'sine'), num('rate', 'Rate', 0.02, 20, 0.5, { unit: 'Hz', curve: 'log' }), num('depth', 'Depth', 0, 1, 1)],
+    params: [choice('wave', 'Wave', ['sine', 'triangle', 'square', 'saw'], 'sine'), sync('each cycle'), num('rate', 'Rate', 0.02, 20, 0.5, { unit: 'Hz', curve: 'log', showIf: unsynced }), num('depth', 'Depth', 0, 1, 1)],
     targets: { rate: { unit: 'Hz', min: -10, max: 10 }, depth: { min: -1, max: 1 } },
   },
   rack: {
@@ -478,6 +506,9 @@ export function normalizePatch(raw, { nested = false } = {}) {
 }
 
 export const cleanPatch = raw => normalizePatch(raw).patch;
+// Saved instruments that aren't sounds: effect racks (kind 'rack') and collections ('collection',
+// lab/sounds.js). Lists of sounds use isSoundFile.
+export const isSoundFile = p => !p?.kind;
 export const copyPatch = p => JSON.parse(JSON.stringify(p));
 
 // A modulation amount as text ("+1.0 oct", "+25 c", "+0.30"), for a target of a module type.

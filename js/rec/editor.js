@@ -318,7 +318,7 @@ function play({ upTo = 0 } = {}) {
   if (!notes.length && !backing?.notes.length) { env.toast('No notes there to play.'); return; }
   const at = performance.timeOrigin + performance.now() + 150;
   const loop = !!ed.sel && !upTo;
-  env.channel.postMessage({ type: 'audition-take', notes, sound: chosenSound(), at, loopMs: loop ? (b - a) * ms : 0, link: ed.link || null, backing });
+  env.channel.postMessage({ type: 'audition-take', notes, sound: chosenSound(), at, loopMs: loop ? (b - a) * ms : 0, link: ed.link || null, backing, bpm: ed.bpm });
   ed.playing = { at, a, b, ms, loop };
   requestAnimationFrame(head);
   render();

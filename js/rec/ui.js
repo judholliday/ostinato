@@ -464,7 +464,7 @@ $('#clips').addEventListener('click', async e => {
     if (clipPlaying === c.file) clipPlaying = null;
     else {
       const ms = 60000 / (c.bpm * TICKS_PER_BEAT);
-      channel.postMessage({ type: 'audition-take', sound: c.sound, notes: c.notes.map(n => ({ dt: n.pos * ms, dur: n.len * ms, note: n.note, vel: n.vel })), backing: backingToPlay(c.backing, ms) });
+      channel.postMessage({ type: 'audition-take', sound: c.sound, notes: c.notes.map(n => ({ dt: n.pos * ms, dur: n.len * ms, note: n.note, vel: n.vel })), backing: backingToPlay(c.backing, ms), bpm: c.bpm });
       clipPlaying = c.file;
       cap.auditionTimer = setTimeout(() => { clipPlaying = null; renderClips(); }, c.length * ms + 400);
     }
@@ -811,13 +811,13 @@ async function exportAudio({ name, bpm, items, sound, backing, length }) {
   if (!computer.length && !live) { toast(`Nothing to make audio from: ${left.join('; ')}.`, 'err'); return null; }
   toast(`Making "${name}.wav"${live ? `: playing the ${hardware.some(p => p.sound.kind === 'xl') ? 'XL' : 'MIDI'} part${hardware.length > 1 ? 's' : ''} and recording ${hardware.length > 1 ? 'them' : 'it'} (${Math.ceil(seconds + tail)} s)` : ''}…`);
   const frames = Math.ceil((seconds + tail) * sr);
-  let out = computer.length ? await renderComputer(computer, { seconds: seconds + tail, sampleRate: sr, masterFx: mix?.masterFx || null }) : [new Float32Array(frames), new Float32Array(frames)];
+  let out = computer.length ? await renderComputer(computer, { seconds: seconds + tail, sampleRate: sr, masterFx: mix?.masterFx || null, bpm }) : [new Float32Array(frames), new Float32Array(frames)];
   if (live) {
     const hw = hardware.filter(p => !p.mine), mine = hardware.find(p => p.mine);
     const at = performance.timeOrigin + performance.now() + 900; // after the XL has its sound
     const playBacking = hw.length ? backingToPlay({ song: { tracks: backing.song.tracks }, notes: backing.notes.filter(n => hw.some(p => p.ti === n.ti)), ccs: (backing.ccs || []).filter(c => hw.some(p => p.ti === c.ti)) }, msPerTick) : null;
     audio.record();
-    channel.postMessage({ type: 'audition-take', at, sound: mine ? (sound?.kind === 'track' ? sound : mine.sound) : null,
+    channel.postMessage({ type: 'audition-take', at, bpm, sound: mine ? (sound?.kind === 'track' ? sound : mine.sound) : null,
       notes: mine ? items.map(n => ({ dt: n.pos * msPerTick, dur: Math.max(20, n.len * msPerTick), note: n.note, vel: n.vel })) : [], backing: playBacking });
     await sleep(at - performance.timeOrigin - performance.now() + (seconds + tail) * 1000 + 300);
     const r = await audio.finish();

@@ -5,7 +5,7 @@
 //   const synth = new LabSynth(audioContext, destinationNode);
 //   synth.setPatch(patch);
 //   synth.play(60, 100, synth.atTime(performance.now()), 0.5);   // or noteOn / noteOff
-import { MODULES, isSource, zoneFor, DRAWBAR_HARMONIC } from './patch.js';
+import { MODULES, isSource, zoneFor, DRAWBAR_HARMONIC, syncBeats, VOWELS, FORMANT_GAINS } from './patch.js';
 import { ALIASES, padSoundKey } from './drums.js';
 import { ensureFx, fxReady, WORKLET_FX, WORKLET_VOICES } from './fxworklet.js';
 import { fft } from '../core/spectral.js';
@@ -29,10 +29,33 @@ function assets(ac) {
   const steps = ac.createBuffer(1, 64 * STEP, ac.sampleRate), sd = steps.getChannelData(0);
   for (let k = 0; k < 64; k++) { const v = Math.random() * 2 - 1; sd.fill(v, k * STEP, (k + 1) * STEP); }
   const cosine = ac.createPeriodicWave(new Float32Array([0, 1]), new Float32Array([0, 0])); // for orbits
-  a = { noise, comparator, steps, cosine, drives: new Map() };
+  // The 'rise' LFO: a ramp from -1 up to 1 that starts each cycle at the bottom (a sawtooth's
+  // series is sin(kx)/k; minus it, from phase 0, rises from the bottom), for pumping and ducking.
+  const H = 64, ri = new Float32Array(H + 1);
+  for (let k = 1; k <= H; k++) ri[k] = -2 / (Math.PI * k);
+  const rise = ac.createPeriodicWave(new Float32Array(H + 1), ri);
+  a = { noise, comparator, steps, cosine, rise, drives: new Map() };
   shared.set(ac, a);
   return a;
 }
+// The vowel filter: formant k's frequency (Hz) along the vowel position, as a wave shaper's curve
+// (input -1…1 = vowel 0…4, A E I O U), moved by `shift` semitones. Cached.
+const vowelCurves = new Map();
+function vowelCurve(k, shift = 0) {
+  const key = `${k}:${shift}`;
+  if (!vowelCurves.has(key)) {
+    const c = new Float32Array(1025), mul = 2 ** (shift / 12);
+    for (let i = 0; i < c.length; i++) {
+      const x = i / (c.length - 1) * 4, j = Math.min(3, Math.floor(x)), f = x - j;
+      c[i] = (VOWELS[j][k] * (1 - f) + VOWELS[j + 1][k] * f) * mul;
+    }
+    vowelCurves.set(key, c);
+  }
+  return vowelCurves.get(key);
+}
+// Band-passes keep only a sliver of the sound (less, the sharper they are): this brings the vowel
+// filter back to about the input's level (measured on a saw at Resonance 10).
+const vowelMakeup = q => 7.5 * Math.sqrt(q / 10);
 function driveCurve(ac, amount) {
   const cache = assets(ac).drives, key = Math.round(amount * 100);
   if (!cache.has(key)) {
@@ -355,6 +378,7 @@ export async function renderSound(patch, note, hold, sampleRate = 44100, tail = 
 export class LabSynth {
   constructor(ac, destination = ac.destination) {
     this.ac = ac;
+    this.tempo = 120; // for tempo-synced LFOs, delays and tremolos (setTempo)
     this.out = ac.createGain();
     this.out.connect(destination);
     this.bus = ac.createGain(); // where voices and effects meet before the volume
@@ -476,6 +500,21 @@ export class LabSynth {
   setBend(v) { this.bend.offset.setTargetAtTime(v, this.ac.currentTime, 0.005); }
 
   // One setting of one module, or one modulation amount, while notes sound.
+  // ---- tempo sync (patch.js SYNC) ----
+  // The page tells the tempo (the Sequencer's); synced LFOs, delays and tremolos follow it, in
+  // sounding notes too.
+  setTempo(bpm) {
+    if (!(bpm > 0) || bpm === this.tempo) return;
+    this.tempo = bpm;
+    const call = set => { for (const [k, f] of Object.entries(set || {})) if (k === '_tempo' || k.endsWith('._tempo')) f(); };
+    for (const v of this.voices || []) call(v.set);
+    for (const g of this.globals?.values() || []) call(g.set);
+    if (this.g) call(this.g.set); // an FxChain's rack
+  }
+  // A setting's rate (Hz) or time (s): from the tempo when it's synced, else its own.
+  rateOf(p, rate = p.rate) { const b = syncBeats(p.sync); return b ? (this.tempo || 120) / 60 / b : rate; }
+  timeOf(p, time = p.time) { const b = syncBeats(p.sync); return b ? Math.min(2.4, b * 60 / (this.tempo || 120)) : time; }
+
   setParam(id, key, value) {
     const m = this.patch?.modules.find(x => x.id === id);
     if (!m) return;
@@ -534,11 +573,13 @@ export class LabSynth {
   buildGlobalLfo(m) {
     const ac = this.ac, p = m.params, osc = ac.createOscillator(), depth = ac.createGain();
     osc.type = { sine: 'sine', triangle: 'triangle', square: 'square', saw: 'sawtooth' }[p.wave] || 'sine';
-    osc.frequency.value = p.rate;
+    osc.frequency.value = this.rateOf(p);
     depth.gain.value = p.depth;
     osc.connect(depth);
     if (!m.off) osc.start();
-    return { out: depth, nodes: [osc, depth], set: { rate: v => osc.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: v => depth.gain.setTargetAtTime(v, ac.currentTime, 0.05) },
+    const now = () => this.patch.modules.find(x => x.id === m.id)?.params || p;
+    const rerate = () => osc.frequency.setTargetAtTime(this.rateOf(now()), ac.currentTime, 0.05);
+    return { out: depth, nodes: [osc, depth], set: { rate: rerate, sync: rerate, _tempo: rerate, depth: v => depth.gain.setTargetAtTime(v, ac.currentTime, 0.05) },
       targets: { rate: [osc.frequency], depth: [depth.gain] } };
   }
 
@@ -579,7 +620,7 @@ export class LabSynth {
       // wobbling time and a little saturation in the loop.
       const line = pan => {
         const d = ac.createDelay(2.5), tone = ac.createBiquadFilter(), fb = ac.createGain();
-        d.delayTime.value = p.time;
+        d.delayTime.value = this.timeOf(p);
         tone.type = 'lowpass';
         tone.frequency.value = p.tone;
         fb.gain.value = p.feedback;
@@ -604,8 +645,9 @@ export class LabSynth {
         g.nodes.push(sat, slow, fast, wob);
         g.set.wobble = v => wob.gain.setTargetAtTime(v * 0.004, ac.currentTime, 0.05);
       } else lines[0].fb.connect(lines[0].d);
+      const retime = () => lines.forEach(l => l.d.delayTime.setTargetAtTime(this.timeOf(now()), ac.currentTime, 0.05));
       Object.assign(g.set, {
-        time: v => lines.forEach(l => l.d.delayTime.setTargetAtTime(v, ac.currentTime, 0.05)),
+        time: retime, sync: retime, _tempo: retime,
         feedback: v => lines.forEach(l => l.fb.gain.setTargetAtTime(v, ac.currentTime, 0.02)),
         tone: v => lines.forEach(l => l.tone.frequency.setTargetAtTime(v, ac.currentTime, 0.02)),
         mix: v => mix(v, 1),
@@ -701,14 +743,15 @@ export class LabSynth {
         vol.gain.setTargetAtTime(q.depth * (1 - q.pan) * 0.5, at, 0.02);
         side.gain.setTargetAtTime(q.depth * q.pan, at, 0.02);
       };
-      lfo.frequency.value = p.rate;
+      lfo.frequency.value = this.rateOf(p);
       lfo.connect(vol).connect(vca.gain);
       lfo.connect(side).connect(pn.pan);
       input.connect(vca).connect(pn).connect(wet);
       lfo.start(t);
       apply();
       g.nodes.push(vca, pn, lfo, vol, side);
-      g.set = { rate: v => lfo.frequency.setTargetAtTime(v, ac.currentTime, 0.05), depth: apply, pan: apply };
+      const rerate = () => lfo.frequency.setTargetAtTime(this.rateOf(now()), ac.currentTime, 0.05);
+      g.set = { rate: rerate, sync: rerate, _tempo: rerate, depth: apply, pan: apply };
       g.targets = { rate: [lfo.frequency] };
       mix(1, 0);
     } else if (m.type === 'eq') {
@@ -1019,32 +1062,46 @@ export class LabSynth {
         continue;
       }
       if (m.type === 'osc') {
+        // Unison: `unison` copies, detuned evenly from -spread to +spread cents and panned across
+        // the stereo field, each at √(2/n) (detuned copies add up by power; panning costs 3 dB).
+        const n = Math.max(1, Math.round(p.unison || 1));
         const out = keep(ac.createGain());
         out.gain.value = p.level;
-        const osc = src(ac.createOscillator());
-        osc.frequency.value = hz(note, p.octave, p.semi);
-        osc.detune.value = p.fine;
-        pitchIn(osc.detune);
-        const targets = { pitch: [osc.detune], level: [out.gain] };
-        if (p.wave === 'pulse') {
-          osc.type = 'sawtooth';
-          const shaper = keep(ac.createWaveShaper()), offset = src(ac.createConstantSource());
-          shaper.curve = a.comparator;
-          shaper.oversample = '4x';
-          offset.offset.value = 2 * p.pw - 1;
-          osc.connect(shaper);
-          offset.connect(shaper);
-          shaper.connect(out);
-          targets.pw = [offset.offset];
-          set[`${m.id}.pw`] = v => offset.offset.setTargetAtTime(2 * v - 1, ac.currentTime, 0.01);
-        } else {
-          osc.type = OSC_TYPES[p.wave];
-          osc.connect(out);
-          targets.pw = [];
+        const off = k => (n === 1 ? 0 : (k / (n - 1) * 2 - 1) * (m.params.spread ?? 20));
+        const oscs = [], offset = p.wave === 'pulse' ? src(ac.createConstantSource()) : null;
+        if (offset) offset.offset.value = 2 * p.pw - 1;
+        for (let k = 0; k < n; k++) {
+          const osc = src(ac.createOscillator());
+          osc.frequency.value = hz(note, p.octave, p.semi);
+          osc.detune.value = p.fine + off(k);
+          pitchIn(osc.detune);
+          let into = out;
+          if (n > 1) {
+            const g = keep(ac.createGain()), pan = keep(ac.createStereoPanner());
+            g.gain.value = Math.sqrt(2 / n);
+            pan.pan.value = (k / (n - 1) * 2 - 1) * 0.8 * (k % 2 ? -1 : 1);
+            g.connect(pan).connect(out);
+            into = g;
+          }
+          if (offset) {
+            osc.type = 'sawtooth';
+            const shaper = keep(ac.createWaveShaper());
+            shaper.curve = a.comparator;
+            shaper.oversample = '4x';
+            osc.connect(shaper);
+            offset.connect(shaper);
+            shaper.connect(into);
+          } else {
+            osc.type = OSC_TYPES[p.wave];
+            osc.connect(into);
+          }
+          oscs.push(osc);
         }
-        const retune = () => osc.frequency.setTargetAtTime(hz(note, m.params.octave, m.params.semi), ac.currentTime, 0.005);
-        Object.assign(set, { [`${m.id}.octave`]: retune, [`${m.id}.semi`]: retune,
-          [`${m.id}.fine`]: v => osc.detune.setTargetAtTime(v, ac.currentTime, 0.01),
+        const targets = { pitch: oscs.map(o => o.detune), level: [out.gain], pw: offset ? [offset.offset] : [] };
+        if (offset) set[`${m.id}.pw`] = v => offset.offset.setTargetAtTime(2 * v - 1, ac.currentTime, 0.01);
+        const retune = () => oscs.forEach(o => o.frequency.setTargetAtTime(hz(note, m.params.octave, m.params.semi), ac.currentTime, 0.005));
+        const redetune = () => oscs.forEach((o, k) => o.detune.setTargetAtTime(m.params.fine + off(k), ac.currentTime, 0.01));
+        Object.assign(set, { [`${m.id}.octave`]: retune, [`${m.id}.semi`]: retune, [`${m.id}.fine`]: redetune, [`${m.id}.spread`]: redetune,
           [`${m.id}.level`]: v => out.gain.setTargetAtTime(v, ac.currentTime, 0.01) });
         nodes[m.id] = { out, targets };
       } else if (m.type === 'sampler') {
@@ -1234,19 +1291,20 @@ export class LabSynth {
           osc.buffer = a.steps;
           osc.loop = true;
           perHz = STEP / ac.sampleRate;
-          osc.playbackRate.value = p.rate * perHz;
+          osc.playbackRate.value = this.rateOf(p) * perHz;
           rate = osc.playbackRate;
         } else {
           osc = src(ac.createOscillator());
-          osc.type = LFO_TYPES[p.wave];
-          osc.frequency.value = p.rate;
+          if (p.wave === 'rise') osc.setPeriodicWave(a.rise); else osc.type = LFO_TYPES[p.wave];
+          osc.frequency.value = this.rateOf(p);
           rate = osc.frequency;
         }
         depth.gain.value = p.depth;
         fade.gain.setValueAtTime(p.delay > 0 ? 0 : 1, t0);
         if (p.delay > 0) fade.gain.linearRampToValueAtTime(1, t0 + p.delay);
         osc.connect(depth).connect(fade);
-        Object.assign(set, { [`${m.id}.rate`]: v => rate.setTargetAtTime(v * perHz, ac.currentTime, 0.02),
+        const rerate = () => rate.setTargetAtTime(this.rateOf(m.params) * perHz, ac.currentTime, 0.02);
+        Object.assign(set, { [`${m.id}.rate`]: rerate, [`${m.id}.sync`]: rerate, [`${m.id}._tempo`]: rerate,
           [`${m.id}.depth`]: v => depth.gain.setTargetAtTime(v, ac.currentTime, 0.02) });
         nodes[m.id] = { out: fade, targets: { rate: [rate], depth: [depth.gain] }, scales: { rate: perHz } };
       } else if (m.type === 'fmop') {
@@ -1273,6 +1331,39 @@ export class LabSynth {
           [`${m.id}.fine`]: v => osc.detune.setTargetAtTime(v, ac.currentTime, 0.01),
           [`${m.id}.level`]: v => level.gain.setTargetAtTime(v, ac.currentTime, 0.01) });
         nodes[m.id] = { in: fmIn, out: level, targets: { pitch: [osc.detune], level: [level.gain], fm: [fmIn.gain] }, scales: { fm: f() } };
+      } else if (m.type === 'vowel') {
+        // Three band-passes at the formants. One control, the vowel position (0-4, plus any
+        // modulation), drives all three frequencies through wave shapers whose curves map the
+        // position to each formant's Hz (vowelCurve), so modulation sweeps between vowels smoothly.
+        const input = keep(ac.createGain()), out = keep(ac.createGain()), dry = keep(ac.createGain()), wet = keep(ac.createGain());
+        const pos = src(ac.createConstantSource()), bias = src(ac.createConstantSource()), scale = keep(ac.createGain());
+        pos.offset.value = p.vowel;
+        bias.offset.value = -1;
+        scale.gain.value = 0.5; // 0…4 → -1…1, the shapers' input range
+        pos.connect(scale);
+        const shapers = [], filters = [], gains = [];
+        for (let k = 0; k < 3; k++) {
+          const sh = keep(ac.createWaveShaper()), f = keep(ac.createBiquadFilter()), g = keep(ac.createGain());
+          sh.curve = vowelCurve(k, p.shift);
+          scale.connect(sh); bias.connect(sh);
+          f.type = 'bandpass';
+          f.frequency.value = 0; // the shaper's output is the frequency
+          f.Q.value = p.resonance;
+          sh.connect(f.frequency);
+          g.gain.value = FORMANT_GAINS[k] * vowelMakeup(p.resonance);
+          input.connect(f).connect(g).connect(wet);
+          shapers.push(sh); filters.push(f); gains.push(g);
+        }
+        input.connect(dry);
+        dry.connect(out); wet.connect(out);
+        dry.gain.value = 1 - p.mix; wet.gain.value = p.mix;
+        Object.assign(set, {
+          [`${m.id}.vowel`]: v => pos.offset.setTargetAtTime(v, ac.currentTime, 0.02),
+          [`${m.id}.resonance`]: v => filters.forEach((f, k) => { f.Q.setTargetAtTime(v, ac.currentTime, 0.02); gains[k].gain.setTargetAtTime(FORMANT_GAINS[k] * vowelMakeup(v), ac.currentTime, 0.02); }),
+          [`${m.id}.shift`]: v => shapers.forEach((sh, k) => { sh.curve = vowelCurve(k, v); }),
+          [`${m.id}.mix`]: v => { dry.gain.setTargetAtTime(1 - v, ac.currentTime, 0.02); wet.gain.setTargetAtTime(v, ac.currentTime, 0.02); },
+        });
+        nodes[m.id] = { in: input, out, targets: { vowel: [pos.offset], mix: [wet.gain] } };
       } else if (m.type === 'ring') {
         // The input multiplied by a sine at ratio × the note's pitch, mixed with the dry input.
         const input = keep(ac.createGain()), vca = keep(ac.createGain()), dry = keep(ac.createGain()), wet = keep(ac.createGain()), out = keep(ac.createGain());
@@ -1383,6 +1474,7 @@ export class FxChain {
     this.output = ac.createGain();
     this.input.connect(this.output);
     this.patch = null; // { modules: [the rack as a rack module] }, which buildRack reads
+    this.tempo = 120;
     this.g = null;
     this.shape = '';
   }
@@ -1409,3 +1501,6 @@ export class FxChain {
 }
 FxChain.prototype.buildRack = LabSynth.prototype.buildRack;
 FxChain.prototype.buildEffect = LabSynth.prototype.buildEffect;
+FxChain.prototype.rateOf = LabSynth.prototype.rateOf;
+FxChain.prototype.timeOf = LabSynth.prototype.timeOf;
+FxChain.prototype.setTempo = LabSynth.prototype.setTempo;

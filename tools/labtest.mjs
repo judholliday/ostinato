@@ -1,6 +1,6 @@
 // Offline checks for Lab patches: node tools/labtest.mjs (also run by tools/selftest.mjs)
 import assert from 'node:assert/strict';
-import { normalizePatch, cleanPatch, STARTERS, MODULES, toSlider, fromSlider, paramOf, formatValue, newId } from '../js/lab/patch.js';
+import { normalizePatch, cleanPatch, STARTERS, MODULES, toSlider, fromSlider, paramOf, formatValue, newId, SYNC, syncBeats, VOWELS } from '../js/lab/patch.js';
 import { FACTORY, TYPES, typeOf } from '../js/lab/sounds.js';
 import { heardModules } from '../js/lab/patchview.js';
 
@@ -215,5 +215,14 @@ for (const [type, spec] of Object.entries(MODULES)) {
   }
   assert.ok(coupled.early > loose.early + 2, `coupling makes the prompt sound fall faster (${coupled.early.toFixed(1)} vs ${loose.early.toFixed(1)} dB in 1 s)`);
   assert.ok(coupled.late > 2.5 && coupled.late < 9, `the aftersound decays near 60/13.5 = 4.4 dB/s (${coupled.late.toFixed(1)})`);
+}
+// Tempo sync note lengths (beats), and every choice parses; the vowel table is complete.
+assert.deepEqual(['1/1', '1/4', '1/8.', '1/8t', '1/16', '4/1'].map(syncBeats), [4, 1, 0.75, 1 / 3, 0.25, 16]);
+assert.ok(SYNC.every(v => v === 'off' || syncBeats(v) > 0) && syncBeats('off') === 0);
+assert.ok(VOWELS.length === 5 && VOWELS.every(f => f.length === 3 && f[0] < f[1] && f[1] < f[2]));
+// Old patches get the new settings' defaults (no unison, no sync).
+{
+  const p = cleanPatch({ name: 'Old', modules: [{ id: 'o', type: 'osc', params: { wave: 'saw' } }, { id: 'l', type: 'lfo', params: { rate: 3 } }], audio: [{ from: 'o', to: 'out' }], mod: [] });
+  assert.deepEqual([p.modules[0].params.unison, p.modules[1].params.sync, p.modules[1].params.rate], [1, 'off', 3]);
 }
 console.log(`ok — Lab patches (${FACTORY.length} factory sounds)`);

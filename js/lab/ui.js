@@ -9,7 +9,7 @@ import { storage, placeOf, stemOf, FACTORY_SAMPLES } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
 import { attachQwerty, qwertyBase, setQwertyBase } from '../core/qwerty.js';
 import { soundReporter } from '../core/sounding.js';
-import { FACTORY, TYPES, typeOf } from './sounds.js';
+import { FACTORY, TYPES, typeOf, COLLECTIONS, isCollection, collectionFile } from './sounds.js';
 import { PAD_GROUPS, padParam, KIT_NOTES, DEFAULT_PADS, cleanPad, varyPad, padLength, padSoundKey } from './drums.js';
 import { openSoundPicker } from '../core/soundpicker.js';
 import { LabSynth as RenderSynth, fileBuffer } from './engine.js';
@@ -32,7 +32,7 @@ function toast(text, kind = '') {
   $('#toasts').append(el);
   setTimeout(() => el.remove(), kind === 'err' ? 7000 : 3500);
 }
-const prefs = { keysIn: null, base: 48, viewOpen: true, libOpen: true, libBank: 'all', libType: '', audition: true, ...store.get('prefs', {}) };
+const prefs = { keysIn: null, base: 48, viewOpen: true, libOpen: true, libBank: 'all', libType: '', libColl: '', audition: true, ...store.get('prefs', {}) };
 const savePrefs = () => store.set('prefs', prefs);
 
 // ---------------------------------------------------------------------------------------------
@@ -63,7 +63,7 @@ let fileName = null; // in My Sounds (data/instruments/), if it's one of yours
 let factoryName = null; // else the factory sound it came from, if any
 let dirty = false;
 let saved = []; // [{ file, name, patch }]: My Sounds and saved effect racks (patch.kind 'rack')
-const mySounds = () => saved.filter(x => x.patch?.kind !== 'rack');
+const mySounds = () => saved.filter(x => !x.patch?.kind); // not racks or collections
 const myRacks = () => saved.filter(x => x.patch?.kind === 'rack');
 let recordings = []; // your audio recordings (data/audio/): impulse responses for the reverb
 const undoStack = [], redoStack = [];
@@ -183,10 +183,10 @@ function libraryEntries() {
   return [...mySounds().map(x => ({ key: `synth:m:${x.file}`, file: x.file, name: x.name, type: typeOf(x.patch), mine: true, patch: x.patch })),
     ...FACTORY.map(p => ({ key: `synth:f:${p.name}`, name: p.name, type: typeOf(p), mine: false, patch: p }))];
 }
-// What the list shows: bank, search, then type.
+// What the list shows: a collection (else the bank), search, then type.
 function shownEntries() {
-  const q = $('#lib-search').value.trim().toLowerCase();
-  const inBank = libraryEntries().filter(e => (prefs.libBank === 'all' || e.mine === (prefs.libBank === 'mine'))
+  const q = $('#lib-search').value.trim().toLowerCase(), coll = currentColl();
+  const inBank = libraryEntries().filter(e => (coll ? inColl(coll, e) : prefs.libBank === 'all' || e.mine === (prefs.libBank === 'mine'))
     && (!q || `${e.name} ${e.type}`.toLowerCase().includes(q)));
   return { inBank, shown: inBank.filter(e => !prefs.libType || e.type === prefs.libType) };
 }
@@ -195,7 +195,10 @@ function renderLibrary() {
   $('#lab-layout').classList.toggle('lib-hidden', !prefs.libOpen);
   $('#lib-show').hidden = prefs.libOpen;
   $('#lib-count').textContent = ` ${FACTORY.length} factory · ${mySounds().length} mine`;
-  $('#lib-bank').innerHTML = BANKS.map(([v, l]) => `<button class="${prefs.libBank === v ? 'on' : ''}" data-bank="${v}">${l}</button>`).join('');
+  const coll = currentColl();
+  if (prefs.libColl && !coll) prefs.libColl = ''; // deleted
+  $('#lib-bank').innerHTML = BANKS.map(([v, l]) => `<button class="${!coll && prefs.libBank === v ? 'on' : ''}" data-bank="${v}">${l}</button>`).join('');
+  renderCollections();
   const { inBank, shown } = shownEntries();
   const counts = new Map();
   for (const e of inBank) counts.set(e.type, (counts.get(e.type) || 0) + 1);
@@ -209,9 +212,95 @@ function renderLibrary() {
   $('#lib-list').innerHTML = shown.length ? [...groups].map(([type, list]) => `${prefs.libType ? '' : `<div class="lib-group">${esc(type)}</div>`}${list.map(e =>
     `<button class="lib-row${keyOf(e) === cur ? ' on' : ''}" data-key="${esc(keyOf(e))}" title="${e.mine ? 'One of your sounds' : 'A factory sound'}: click to open it">
       <span class="nm">${esc(e.name)}</span>${e.mine ? '<span class="mine">★</span>' : ''}</button>`).join('')}`).join('')
-    : `<div class="hint lib-empty">${prefs.libBank === 'mine' ? 'None of yours here yet. Open a sound, change it, and save it to My Sounds.' : 'No sounds match.'}</div>`;
+    : `<div class="hint lib-empty">${coll ? (coll.sounds.length ? 'No sounds match.' : 'This collection is empty: open a sound and use ☆ Collections (beside Save) to add it.') : prefs.libBank === 'mine' ? 'None of yours here yet. Open a sound, change it, and save it to My Sounds.' : 'No sounds match.'}</div>`;
   $('#lib-audition').checked = prefs.audition;
 }
+
+// ---- collections: sounds that belong together (sounds.js) ----
+// Factory ones (by genre) and yours (saved instruments of kind 'collection'). Picking one shows only
+// its sounds; ☆ Collections beside Save puts the open sound in yours or takes it out; New song
+// starts a Sequencer song with a track for each sound.
+const myCollections = () => saved.filter(x => isCollection(x.patch))
+  .map(x => ({ key: `m:${x.file}`, file: x.file, title: x.patch.title || x.name, about: x.patch.about || '', sounds: x.patch.sounds || [], factory: false }));
+const allCollections = () => [...COLLECTIONS.map(c => ({ ...c, key: `f:${c.title}` })), ...myCollections()];
+const currentColl = () => (prefs.libColl ? allCollections().find(c => c.key === prefs.libColl) || null : null);
+const inColl = (c, e) => c.sounds.some(s => s.name === e.name && !!s.mine === e.mine);
+// The open sound as a collection member (null for a new sound not saved yet).
+function currentMember() {
+  if (fileName) { const x = mySounds().find(s => s.file === fileName); return x ? { name: x.name, mine: true } : null; }
+  return factoryName ? { name: factoryName, mine: false } : null;
+}
+function renderCollections() {
+  const colls = allCollections(), cur = prefs.libColl;
+  $('#lib-colls').innerHTML = `<span class="hint">Collections</span>` + colls.map(c =>
+    `<button class="chip${c.key === cur ? ' on' : ''}" data-coll="${esc(c.key)}" title="${esc(c.about || (c.factory ? '' : 'Your collection'))}">${c.factory ? '' : '★ '}${esc(c.title)} <span>${c.sounds.length}</span></button>`).join('');
+  const c = currentColl(), bar = $('#lib-coll-bar');
+  bar.hidden = !c;
+  if (!c) return;
+  bar.innerHTML = `${c.about ? `<p class="hint">${esc(c.about)}</p>` : ''}<div class="coll-acts">
+    <button class="small" data-coll-act="song" title="Start a new song in the Sequencer with a track for each of these sounds (up to 8), each in the role that suits it">♪ New song from these</button>
+    ${c.factory ? `<button class="ghost small" data-coll-act="copy" title="Make your own copy to change">Copy as mine</button>`
+      : `<button class="ghost small" data-coll-act="rename">Rename</button><button class="ghost small" data-coll-act="delete" title="${STATIC ? 'Delete it' : 'Move it to data/instruments/deleted/'} (the sounds stay)">Delete</button>`}</div>`;
+}
+async function saveCollection(title, sounds, about, replaceFile = null) {
+  const file = await storage.save('instruments', collectionFile(title, sounds, about));
+  if (replaceFile && replaceFile !== file) await storage.remove('instruments', replaceFile).catch(() => {});
+  await refreshSaved();
+  return file;
+}
+async function collectionAction(act) {
+  const c = currentColl();
+  if (!c) return;
+  try {
+    if (act === 'song') {
+      const sounds = c.sounds.map(s => libraryEntries().find(e => e.name === s.name && e.mine === !!s.mine)).filter(Boolean)
+        .map(e => ({ name: e.name, type: e.type, patch: normalizePatch(e.patch).patch }));
+      if (!sounds.length) { toast('This collection has no sounds yet.'); return; }
+      channel?.postMessage({ type: 'new-song-from-sounds', title: c.title, sounds });
+    } else if (act === 'copy') {
+      const title = (prompt('Name your copy:', `${c.title} (mine)`) || '').trim();
+      if (!title) return;
+      const file = await saveCollection(title, c.sounds, c.about);
+      prefs.libColl = `m:${file}`; savePrefs(); renderLibrary();
+      toast(`Made your collection "${title}".`, 'ok');
+    } else if (act === 'rename') {
+      const title = (prompt('Rename the collection:', c.title) || '').trim();
+      if (!title || title === c.title) return;
+      const file = await saveCollection(title, c.sounds, c.about, c.file);
+      prefs.libColl = `m:${file}`; savePrefs(); renderLibrary();
+    } else if (act === 'delete') {
+      if (!confirm(`Delete the collection "${c.title}"? Its sounds stay.`)) return;
+      await storage.remove('instruments', c.file);
+      prefs.libColl = ''; savePrefs();
+      await refreshSaved();
+    }
+  } catch (err) { toast(`Couldn't change the collection: ${err.message}`, 'err'); }
+}
+// The ☆ Collections menu: your collections with the open sound ticked; tick to add, untick to remove.
+function renderCollPop() {
+  const pop = $('#coll-pop'), me = currentMember(), mine = myCollections();
+  pop.innerHTML = !me ? '<p class="hint">Save this sound to My Sounds first, then add it to collections.</p>'
+    : `<p class="hint">Put <b>${esc(me.name)}</b> in:</p>${mine.length ? mine.map(c => `<label><input type="checkbox" data-coll-file="${esc(c.file)}" ${inColl(c, me) ? 'checked' : ''}> ${esc(c.title)} <span class="hint">${c.sounds.length}</span></label>`).join('')
+      : '<p class="hint">You have no collections yet.</p>'}
+      <button class="small" data-coll-new>+ New collection with it…</button>`;
+}
+$('#coll-btn').onclick = () => { const pop = $('#coll-pop'); pop.hidden = !pop.hidden; if (!pop.hidden) renderCollPop(); };
+document.addEventListener('pointerdown', e => { if (!e.target.closest('.coll-wrap')) $('#coll-pop').hidden = true; });
+$('#coll-pop').addEventListener('change', async e => {
+  const file = e.target.dataset.collFile, me = currentMember(), c = myCollections().find(x => x.file === file);
+  if (!c || !me) return;
+  const sounds = e.target.checked ? [...c.sounds, me] : c.sounds.filter(s => !(s.name === me.name && !!s.mine === me.mine));
+  try { await saveCollection(c.title, sounds, c.about, c.file); renderCollPop(); toast(e.target.checked ? `Added to ${c.title}.` : `Taken out of ${c.title}.`, 'ok'); }
+  catch (err) { toast(`Couldn't change the collection: ${err.message}`, 'err'); }
+});
+$('#coll-pop').addEventListener('click', async e => {
+  if (!e.target.closest('[data-coll-new]')) return;
+  const me = currentMember(), title = (prompt('Name the new collection:', '') || '').trim();
+  if (!me || !title) return;
+  try { const file = await saveCollection(title, [me]); renderCollPop(); toast(`Made the collection "${title}" with ${me.name}.`, 'ok'); prefs.libColl = `m:${file}`; savePrefs(); renderLibrary(); }
+  catch (err) { toast(`Couldn't make the collection: ${err.message}`, 'err'); }
+});
+channel?.addEventListener('message', e => { if (e.data?.type === 'song-made') toast(e.data.text, e.data.ok ? 'ok' : 'err'); });
 
 // ---- a take's sound, opened from Capture (✎ Edit sound) ----
 // Changes made while linked carry `link`, so the take's loop plays them and Capture keeps them.
@@ -305,7 +394,9 @@ channel?.addEventListener('message', async e => {
 $('#library').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if (b.dataset.bank) { prefs.libBank = b.dataset.bank; prefs.libType = ''; savePrefs(); renderLibrary(); }
+  if (b.dataset.coll !== undefined) { prefs.libColl = prefs.libColl === b.dataset.coll ? '' : b.dataset.coll; prefs.libType = ''; savePrefs(); renderLibrary(); return; }
+  if (b.dataset.collAct) { collectionAction(b.dataset.collAct); return; }
+  if (b.dataset.bank) { prefs.libBank = b.dataset.bank; prefs.libColl = ''; prefs.libType = ''; savePrefs(); renderLibrary(); }
   else if (b.dataset.type !== undefined) { prefs.libType = b.dataset.type; savePrefs(); renderLibrary(); }
   else if (b.dataset.key) openEntry(b.dataset.key);
 });
@@ -350,10 +441,7 @@ function paramHTML(m, spec) {
   const cc = Object.entries(patch.cc).find(([, t]) => t === target)?.[0];
   const help = spec.help ? ` title="${esc(spec.help)}"` : '';
   if (spec.kind === 'file') return fileHTML(spec, v, `data-act="file" data-id="${m.id}" data-key="${spec.key}"`, help);
-  if (spec.kind === 'choice') {
-    return `<div class="prm"${help}><label>${spec.label}</label><span class="seg-btn">${spec.choices.map(c =>
-      `<button data-act="choice" data-id="${m.id}" data-key="${spec.key}" data-v="${esc(c)}" class="${c === v ? 'on' : ''}">${esc(c)}</button>`).join('')}</span></div>`;
-  }
+  if (spec.kind === 'choice') return choiceHTML(spec, v, `data-act="choice" data-id="${m.id}" data-key="${spec.key}"`, help);
   return `<div class="prm${learn ? ' learnable' : ''}${learnTarget === target ? ' learning' : ''}" data-target="${target}"${help}>
     <label>${spec.label}</label>
     <input type="range" min="0" max="1000" step="1" value="${Math.round(toSlider(spec, v) * 1000)}" data-act="num" data-id="${m.id}" data-key="${spec.key}">
@@ -1189,7 +1277,17 @@ function routeClick(el) {
   }
   return false;
 }
+// A choice: a row of buttons, or a menu when there are many (Sync's note lengths). Both carry the
+// same data-act, so routeClick handles them (routeChange passes the menu's pick on).
+function choiceHTML(spec, v, attrs, help) {
+  if (spec.choices.length > 6) return `<div class="prm"${help}><label>${spec.label}</label><select ${attrs}>${spec.choices.map(c =>
+    `<option value="${esc(c)}" ${c === v ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></div>`;
+  return `<div class="prm"${help}><label>${spec.label}</label><span class="seg-btn">${spec.choices.map(c =>
+    `<button ${attrs} data-v="${esc(c)}" class="${c === v ? 'on' : ''}">${esc(c)}</button>`).join('')}</span></div>`;
+}
+
 function routeChange(el) {
+  if (el.tagName === 'SELECT' && (el.dataset.act === 'choice' || el.dataset.act === 'rack-choice')) { el.dataset.v = el.value; routeClick(el); return true; }
   if (el.dataset.act === 'rack-add' && el.value) {
     const m = modOf(el.dataset.id);
     m.rack.modules.push({ type: el.value, params: defaultParams(el.value) });
@@ -1358,7 +1456,7 @@ $('#modules').addEventListener('change', e => routeChange(e.target));
 
 const PICKER_GROUPS = [
   ['Make sound', ['osc', 'string', 'organ', 'sampler', 'granular', 'noise', 'fmop', 'drums']],
-  ['Shape it', ['filter', 'drive', 'ring', 'amp', 'space']],
+  ['Shape it', ['filter', 'vowel', 'drive', 'ring', 'amp', 'space']],
   ['Move things', ['env', 'lfo', 'glfo']],
   ['Effects', ['soundboard', 'resonance', 'reverb', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'rotary']],
 ];
@@ -1370,6 +1468,7 @@ const ICONS = {
   fmop: 'M2 12 C4 3 6 3 8 12 S11 21 12 12 S14 6 15 12 S17 16 18 12 S20 9 21 12',
   drums: 'M4 10 a8 3 0 1 0 16 0 a8 3 0 1 0 -16 0 M4 10 V16 a8 3 0 0 0 16 0 V10 M9 2 L12 8 M17 2 L14 8',
   filter: 'M2 9 H11 Q14 9 15 5 Q16 11 21 20',
+  vowel: 'M3 12 Q12 3 21 12 Q12 21 3 12 Z M8 12 Q12 9 16 12 Q12 15 8 12',
   drive: 'M2 12 L5 6 H10 L14 18 H19 L22 12',
   ring: 'M12 3 a9 9 0 1 0 0.01 0 M7.5 7.5 L16.5 16.5 M16.5 7.5 L7.5 16.5',
   amp: 'M3 19 L21 5 V19 Z',
@@ -1399,7 +1498,7 @@ const ICONS = {
 const icon = type => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[type] || ''}"/></svg>`;
 const BLURBS = {
   osc: 'A tone at the note\'s pitch', string: 'Plucked or struck strings', organ: 'Drawbars, percussion, click', rotary: 'Spinning speaker (Leslie)', glfo: 'Moves effects, one for all notes', sampler: 'Plays a recording', granular: 'Clouds from a recording', noise: 'Breath, wind, hiss', fmop: 'Bells, e-pianos, FM basses', drums: 'A synthesized kit',
-  filter: 'Darker or brighter', drive: 'Warmth to distortion', ring: 'Metallic, robotic', amp: 'Loudness over time', space: 'Around your head',
+  filter: 'Darker or brighter', vowel: 'Makes it talk (A E I O U)', drive: 'Warmth to distortion', ring: 'Metallic, robotic', amp: 'Loudness over time', space: 'Around your head',
   env: 'A shape over each note', lfo: 'Swings a setting back and forth',
   chorus: 'Wider, thicker', delay: 'Echoes, ping-pong, tape', soundboard: 'A piano\'s body, for strings', resonance: 'The pedal\'s halo of strings', reverb: 'Room, hall, plate, or a recording',
   phaser: 'Swirling sweep', flanger: 'Jet-plane sweep', tremolo: 'Pulsing or panning', eq: 'Bass, middle, treble', compressor: 'Evens out the level',
@@ -1514,8 +1613,7 @@ function rackHTML(m) {
   const prm = (k, e, spec) => {
     const v = e.params[spec.key], a = `data-id="${m.id}" data-k="${k}" data-key="${spec.key}"`, help = spec.help ? ` title="${esc(spec.help)}"` : '';
     if (spec.kind === 'file') return fileHTML(spec, v, `data-act="rack-file" ${a}`, help);
-    if (spec.kind === 'choice') return `<div class="prm"${help}><label>${spec.label}</label><span class="seg-btn">${spec.choices.map(c =>
-      `<button data-act="rack-choice" ${a} data-v="${esc(c)}" class="${c === v ? 'on' : ''}">${esc(c)}</button>`).join('')}</span></div>`;
+    if (spec.kind === 'choice') return choiceHTML(spec, v, `data-act="rack-choice" ${a}`, help);
     return `<div class="prm"${help}><label>${spec.label}</label><input type="range" min="0" max="1000" step="1" value="${Math.round(toSlider(spec, v) * 1000)}" data-act="rack-num" ${a}>
       <span class="val">${esc(formatValue(spec, v))}</span></div>`;
   };
@@ -1609,6 +1707,9 @@ async function refreshRecordings() {
   document.querySelectorAll('select[data-act="file"], select[data-act="pad-file"]').forEach(sel => { sel.innerHTML = fileOptions(sel.value); });
 }
 channel?.addEventListener('message', e => { if (e.data?.type === 'recordings-changed') refreshRecordings(); });
+// Tempo-synced LFOs and delays here follow the Sequencer's tempo.
+channel?.addEventListener('message', e => { if (e.data?.type === 'seq-state' && e.data.bpm) synth.setTempo(e.data.bpm); });
+channel?.postMessage({ type: 'get-seq-state' });
 // Opening a Sample menu checks for new recordings first (made in another tab or window).
 document.addEventListener('pointerdown', e => {
   if (e.target.closest('select[data-act="file"], select[data-act="pad-file"]')) refreshRecordings();
