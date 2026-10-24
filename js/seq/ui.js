@@ -15,6 +15,7 @@ import { STARTER_TRACKS, addStarterTrack, keepLanes, putClip, guessClipRole, tra
 import { STOCK } from './stock.js';
 import { portLabel, looksLikeSynthIn, looksLikeSynthOut } from '../core/midiports.js';
 import { soundReporter } from '../core/sounding.js';
+import { showAudioDelay } from '../core/audiodelay.js';
 import { openSoundPicker } from '../core/soundpicker.js';
 import { deviceForOut } from '../core/devices.js';
 import { storage, placeOf, stemOf } from '../core/storage.js';
@@ -2731,6 +2732,7 @@ for (const id of ['#keys-led', '#keys-last']) $(id).addEventListener('click', e 
   toast(`MIDI in: ${$('#keys-in').selectedOptions[0]?.textContent}`, 'ok');
 });
 $('#thru').checked = prefs.thru;
+showAudioDelay($('#audio-delay'), synth.context);
 $('#thru').onchange = e => { prefs.thru = e.target.checked; savePrefs(); };
 $('#clock-list').addEventListener('change', e => {
   prefs.clockOut = [...document.querySelectorAll('#clock-list input[value]:checked')].map(x => x.value);

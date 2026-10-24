@@ -51,6 +51,7 @@ export function setMasterFx(fx) { masterRack = fx; masterFx?.set(fx); }
 let tempo = 120;
 export function setTempo(bpm) { tempo = bpm; masterFx?.setTempo(bpm); }
 export const awake = () => !!ac;
+export const context = () => ac;
 
 // Everything this page plays, after the limiter (not the metronome): for recording the mix.
 export function mixOutput() { wake(); return out; }

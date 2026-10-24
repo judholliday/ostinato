@@ -254,8 +254,28 @@ function captureEvent(d, at) {
 }
 
 // Newest first. A take is still going (`live`) until the silence that ends it has passed.
-const allTakes = () => C.splitTakes(C.notesOf(cap.events, Date.now()), C.GAP_MS, cap.ranges).reverse()
-  .map(t => ({ ...t, live: t.open || (!t.kind && Date.now() - t.end < C.GAP_MS) })); // a performance ends when it stops
+// Takes, newest first; a take is still going (`live`) until the silence that ends it has passed (a
+// performance until it stops). Splitting every event on each redraw (tens of thousands after a long
+// session, every 400 ms while you play) stalled the page by up to ~20 ms, so keys played anywhere
+// came late: finished takes are kept (`settled`) and only the events after them are split again.
+// Anything but new events (forget, prune, undo, loading) makes a new events array, which starts over.
+let settled = null; // { events, rkey, upTo: index of the first event not in a settled take, takes (oldest first) }
+function allTakes() {
+  const now = Date.now(), rkey = cap.ranges.map(r => `${r.start}:${r.end}`).join();
+  if (!settled || settled.events !== cap.events || settled.rkey !== rkey || settled.upTo > cap.events.length) settled = { events: cap.events, rkey, upTo: 0, takes: [] };
+  const live = t => t.open || (!t.kind && now - t.end < C.GAP_MS);
+  const fresh = C.splitTakes(C.notesOf(cap.events.slice(settled.upTo), now), C.GAP_MS, cap.ranges);
+  let k = 0;
+  while (k < fresh.length && !live(fresh[k])) k++;
+  if (k > 0) {
+    const end = fresh[k - 1].end;
+    let i = settled.upTo;
+    while (i < cap.events.length && cap.events[i].t <= end) i++;
+    settled.takes.push(...fresh.slice(0, k));
+    settled.upTo = i;
+  }
+  return [...settled.takes, ...fresh.slice(k)].reverse().map(t => ({ ...t, live: live(t) }));
+}
 const findTake = id => allTakes().find(t => t.id === id);
 
 // A take's tempo: the sequencer's when played along, else what you set, else a guess.

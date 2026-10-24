@@ -9,6 +9,7 @@ import { storage, placeOf, stemOf, FACTORY_SAMPLES } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
 import { attachQwerty, qwertyBase, setQwertyBase } from '../core/qwerty.js';
 import { soundReporter } from '../core/sounding.js';
+import { showAudioDelay } from '../core/audiodelay.js';
 import { FACTORY, TYPES, typeOf, COLLECTIONS, isCollection, collectionFile } from './sounds.js';
 import { PAD_GROUPS, padParam, KIT_NOTES, DEFAULT_PADS, cleanPad, varyPad, padLength, padSoundKey } from './drums.js';
 import { openSoundPicker } from '../core/soundpicker.js';
@@ -54,6 +55,7 @@ const showAudio = () => {
 addEventListener('pointerdown', wake, true);
 addEventListener('keydown', wake, true);
 ac.onstatechange = showAudio;
+showAudioDelay($('#audio-delay'), ac);
 
 // ---------------------------------------------------------------------------------------------
 // State: the patch being edited, undo, the working copy kept in this browser
