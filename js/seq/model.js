@@ -32,8 +32,14 @@
 // `sound` is the XL sound a track uses ({ name, data: the program's bytes }), sent to the XL when
 // playback starts. `program` (0-127) is a Program Change sent to other gear when playback starts.
 // `vol` (0-127, 100 = normal) scales the computer sound, and is sent to MIDI gear as CC 7.
+// The mix (the Sequencer's Mixer): a track's `pan` (-1 left … 1 right; CC 10 to MIDI gear),
+// `reverb` and `delay` (0-1: how much it sends to the song's shared reverb and delay), `duck` (0-1:
+// how far it's pushed down each time the side-chain source plays) and `sidechain` (true on the one
+// track whose notes do the pushing, e.g. the drums; on a drum track only its kicks do). The song's
+// `mix`: { reverb: { size, damping }, delay: { sync, feedback, tone }, release (s: how long ducked
+// tracks take to come back) }. Sends, ducking and meters are for computer sounds only.
 
-import { normalizePatch, cleanRack } from '../lab/patch.js';
+import { normalizePatch, cleanRack, SYNC } from '../lab/patch.js';
 
 export const FORMAT = 'mkxl-seq';
 export const VERSION = 1;
@@ -84,13 +90,19 @@ const clamp = (v, lo, hi, fallback) => {
   const n = Math.round(Number(v));
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback;
 };
+// The same without rounding (mix levels, times), kept to 3 decimals.
+const clampF = (v, lo, hi, fallback) => {
+  const n = v === null || v === '' ? NaN : Number(v);
+  return Number.isFinite(n) ? Math.round(Math.min(hi, Math.max(lo, n)) * 1000) / 1000 : fallback;
+};
 
 export const newPattern = (length = 16) => ({ length, steps: [] });
 
 export function newTrack(index = 0, fields = {}) {
   const t = {
     name: `Track ${index + 1}`, out: COMPUTER, ch: 2, voice: VOICES[index % VOICES.length],
-    mode: 'steps', rate: '1/16', pattern: 'A', mute: false, solo: false, vol: 100, sound: null, program: null, inst: null, fx: null, feel: null,
+    mode: 'steps', rate: '1/16', pattern: 'A', mute: false, solo: false, vol: 100, pan: 0, reverb: 0, delay: 0, duck: 0, sidechain: false,
+    sound: null, program: null, inst: null, fx: null, feel: null,
     pool: { notes: [48, 51, 55], order: 'up', latch: true },
     patterns: Object.fromEntries(PATTERNS.map(p => [p, newPattern()])),
     ...fields,
@@ -104,7 +116,17 @@ export function newSong() {
     format: FORMAT, version: VERSION, name: 'Untitled', bpm: 120, swing: 50, scale: null, meter: '4/4',
     tracks: [newTrack(0, { name: 'Bass', voice: 'Bass' })],
     song: [{ bars: 4, play: ['A'] }],
-    masterFx: null,
+    masterFx: null, mix: cleanMix(null),
+  };
+}
+
+// The song's mix settings (see the top of this file), with defaults.
+export function cleanMix(m) {
+  const syncs = SYNC.filter(v => v !== 'off');
+  return {
+    reverb: { size: clampF(m?.reverb?.size, 0.3, 10, 2.5), damping: clampF(m?.reverb?.damping, 0, 1, 0.5) },
+    delay: { sync: syncs.includes(m?.delay?.sync) ? m.delay.sync : '1/8.', feedback: clampF(m?.delay?.feedback, 0, 0.9, 0.35), tone: clamp(m?.delay?.tone, 500, 16000, 4000) },
+    release: clampF(m?.release, 0.03, 1, 0.18),
   };
 }
 
@@ -113,7 +135,7 @@ export function newSong() {
 export function normalizeSong(raw) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.tracks)) throw new Error('not a sequencer song');
   const scale = raw.scale && SCALES[raw.scale.type] ? { root: clamp(raw.scale.root, 0, 11, 0), type: raw.scale.type } : null;
-  const tracks = raw.tracks.slice(0, MAX_TRACKS).map((t, ti) => normalizeTrack(t, ti));
+  const tracks = oneSidechain(raw.tracks.slice(0, MAX_TRACKS).map((t, ti) => normalizeTrack(t, ti)));
   if (!tracks.length) tracks.push(newTrack(0));
   const song = (Array.isArray(raw.song) ? raw.song : []).slice(0, 64).map(sec => ({
     bars: clamp(sec?.bars, 1, 64, 4),
@@ -130,9 +152,12 @@ export function normalizeSong(raw) {
     bpm: clamp(raw.bpm, 20, 300, 120),
     swing: clamp(raw.swing, 50, 75, 50),
     scale, meter: METERS.includes(raw.meter) ? raw.meter : '4/4', tracks, song,
-    masterFx: cleanFx(raw.masterFx),
+    masterFx: cleanFx(raw.masterFx), mix: cleanMix(raw.mix),
   };
 }
+
+// Only one track can be the side-chain source: the first that says so.
+const oneSidechain = tracks => { let seen = false; for (const t of tracks) { if (t.sidechain && seen) t.sidechain = false; seen ||= t.sidechain; } return tracks; };
 
 const midiNotes = list => (Array.isArray(list) ? list : []).map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 127);
 
@@ -275,6 +300,8 @@ function normalizeTrack(t, ti) {
     pattern: PATTERNS.includes(t?.pattern) ? t.pattern : 'A',
     mute: !!t?.mute, solo: !!t?.solo,
     vol: clamp(t?.vol, 0, 127, 100),
+    pan: clampF(t?.pan, -1, 1, 0), reverb: clampF(t?.reverb, 0, 1, 0), delay: clampF(t?.delay, 0, 1, 0), duck: clampF(t?.duck, 0, 1, 0),
+    sidechain: !!t?.sidechain,
     sound: cleanSound(t?.sound),
     inst: cleanInst(t?.inst),
     fx: cleanFx(t?.fx),

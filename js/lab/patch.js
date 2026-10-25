@@ -313,7 +313,7 @@ export const MODULES = {
     help: 'Evens out the level: loud parts are turned down, so the whole sound can be louder and punchier.',
     params: [num('threshold', 'Threshold', -60, 0, -20, { unit: 'dB', step: 1 }), num('ratio', 'Ratio', 1, 20, 4, { unit: ':1', curve: 'log' }),
       num('attack', 'Attack', 0.001, 0.2, 0.01, { unit: 's', curve: 'log' }), num('release', 'Release', 0.02, 1, 0.2, { unit: 's', curve: 'log' }),
-      num('gain', 'Make-up', 0, 24, 6, { unit: 'dB', step: 0.5 })],
+      num('gain', 'Make-up', -12, 24, 6, { unit: 'dB', step: 0.5, help: 'Level after compressing. The compressor already adds some make-up of its own (more the harder it works), so on a whole mix this is often below 0' })],
     targets: { threshold: { unit: 'dB', min: -60, max: 60 } },
   },
   shaper: {

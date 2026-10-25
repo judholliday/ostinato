@@ -41,7 +41,6 @@
     </details>
     </div>
     <label class="field">Swing <input type="range" id="swing" min="50" max="75"> <span id="swing-val"></span></label>
-    <span class="master-fx" id="master-fx"></span>
     <label class="field" title="Dims notes outside the scale and snaps notes played on the keyboard into it">Scale
       <select id="scale-root"></select>
       <select id="scale-type"></select>
@@ -81,6 +80,14 @@
       <span class="hint plain" id="song-sum"></span>
     </h2>
     <div class="song" id="song"></div>
+
+    <h2 class="section-head">
+      <button class="ghost collapse" id="mix-col" title="Show or hide the mixer">▸</button> Mixer
+      <span class="hint plain" id="mix-sum"></span>
+      <button class="ghost small plain" id="render-song" title="Render the whole song (once through its sections) to an audio file in Capture's Recordings, as one mix or one file per track (stems). Computer sounds only.">⤓ Render song…</button>
+    </h2>
+    <div class="render-bar" id="render-bar" hidden></div>
+    <div class="mixer" id="mixer" hidden></div>
 
 
     <h2 class="section-head">Tracks

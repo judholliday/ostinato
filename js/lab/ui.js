@@ -10,6 +10,7 @@ import { STATIC } from '../core/mode.js';
 import { attachQwerty, qwertyBase, setQwertyBase } from '../core/qwerty.js';
 import { soundReporter } from '../core/sounding.js';
 import { showAudioDelay } from '../core/audiodelay.js';
+import { FACTORY_RACKS, rackPatch } from './racks.js';
 import { FACTORY, TYPES, typeOf, COLLECTIONS, isCollection, collectionFile } from './sounds.js';
 import { PAD_GROUPS, padParam, KIT_NOTES, DEFAULT_PADS, cleanPad, varyPad, padLength, padSoundKey } from './drums.js';
 import { openSoundPicker } from '../core/soundpicker.js';
@@ -92,8 +93,15 @@ function changed({ coalesce = false, rebuild = false } = {}) {
   workTimer = setTimeout(() => store.set('working', { patch, fileName, factoryName, dirty }), 300);
   // The sequencer plays this instrument on tracks that use it: send it every change.
   clearTimeout(shareTimer);
-  shareTimer = setTimeout(() => channel?.postMessage({ type: 'instrument', name: patch.name, patch, link: link?.id }), 120);
+  shareTimer = setTimeout(share, 120);
   renderFileBar();
+}
+
+// Tells other pages about the change: the Sequencer plays this instrument on tracks that use it, or,
+// while editing a song's master effects, the rack.
+function share() {
+  if (link?.rack) channel?.postMessage({ type: 'rack-edit', link: link.id, name: patch.name, rack: rackOf(patch) });
+  else channel?.postMessage({ type: 'instrument', name: patch.name, patch, link: link?.id });
 }
 
 function load(raw, file, isDirty = false, factory = null) {
@@ -116,7 +124,7 @@ function restore(json) {
   synth.setPatch(patch);
   store.set('working', { patch, fileName, factoryName, dirty });
   renderAll();
-  channel?.postMessage({ type: 'instrument', name: patch.name, patch, link: link?.id });
+  share();
 }
 const undo = () => { if (undoStack.length) { redoStack.push(snapshot); restore(undoStack.pop()); } };
 const redo = () => { if (redoStack.length) { undoStack.push(snapshot); restore(redoStack.pop()); } };
@@ -163,7 +171,7 @@ function renderFileBar() {
   $('#glide-val').textContent = patch.glide ? `${Math.round(patch.glide * 1000)} ms` : 'off';
   $('#about').hidden = !patch.about;
   $('#about').textContent = patch.about || '';
-  $('#save').textContent = fileName ? 'Save' : 'Save to My Sounds';
+  $('#save').textContent = patch.kind === 'rack' ? (fileName ? 'Save rack' : 'Save as a rack') : fileName ? 'Save' : 'Save to My Sounds';
   $('#delete').hidden = !fileName;
   const type = typeOf(patch), types = TYPES.includes(type) ? TYPES : [...TYPES, type];
   if (document.activeElement !== $('#inst-type')) $('#inst-type').innerHTML = types.map(t => `<option ${t === type ? 'selected' : ''}>${esc(t)}</option>`).join('');
@@ -307,11 +315,13 @@ channel?.addEventListener('message', e => { if (e.data?.type === 'song-made') to
 // ---- a take's sound, opened from Capture (✎ Edit sound) ----
 // Changes made while linked carry `link`, so the take's loop plays them and Capture keeps them.
 // Opening another sound from the library ends the link.
-let link = null; // { id, title }
+let link = null; // { id, title, rack? }
 function renderLink() {
   const bar = $('#link-bar');
   bar.hidden = !link;
-  if (link) bar.innerHTML = `<div>🔗 Editing the sound of <b>${esc(link.title)}</b> from Capture: its loop plays your changes.</div>
+  if (link?.rack) bar.innerHTML = `<div>🔗 Editing the <b>master effects</b> of <b>${esc(link.title)}</b>: play the song (▶ above) and the Sequencer plays your changes as you make them. Add effects with + Add module; they run in the order they're connected. Save keeps the rack for other songs.</div>
+    <div class="link-actions"><button class="small" data-link="seq">← Sequencer</button><button class="ghost small" data-link="end" title="Stop sending changes to the song (it keeps what it has)">Done</button></div>`;
+  else if (link) bar.innerHTML = `<div>🔗 Editing the sound of <b>${esc(link.title)}</b> from Capture: its loop plays your changes.</div>
     <div class="link-actions"><button class="small" data-link="stop" title="Stop the loop playing in Capture">■ Stop loop</button>
     <button class="small" data-link="back">← Capture</button><button class="ghost small" data-link="end" title="Stop sending changes to Capture">Unlink</button></div>`;
 }
@@ -325,7 +335,26 @@ $('#link-bar').addEventListener('click', e => {
   const act = e.target.closest('[data-link]')?.dataset.link;
   if (act === 'stop') channel?.postMessage({ type: 'stop-audition' });
   else if (act === 'back') parent.postMessage({ type: 'switch-view', view: 'capture' }, location.origin);
+  else if (act === 'seq') parent.postMessage({ type: 'switch-view', view: 'sequencer' }, location.origin);
   else if (act === 'end') endLink();
+});
+// Edit in Sound Lab from the Sequencer's Master FX: the rack opens here as a rack (no sound of its
+// own), as your saved rack when one has its name and effects, so Save updates it.
+channel?.addEventListener('message', async e => {
+  const m = e.data || {};
+  if (m.type !== 'edit-rack') return;
+  const go = async () => {
+    await refreshSaved();
+    const fx = cleanRack(m.rack).modules, same = x => JSON.stringify(rackOf(x.patch).modules) === JSON.stringify(fx);
+    const mine = myRacks().find(x => x.name === m.name && same(x));
+    endLink();
+    load(rackPatch(m.name, fx), mine?.file || null);
+    link = { id: m.link, title: m.song || 'the song', rack: true };
+    renderLink();
+  };
+  // Unsaved edits here: ask in the page's bar (a browser dialog is ignored in some panes).
+  if (dirty) askUnsaved(`the master effects of ${m.song || 'the song'}`, () => { dirty = false; go(); });
+  else go();
 });
 channel?.addEventListener('message', e => {
   const m = e.data || {};
@@ -1515,6 +1544,8 @@ function openPicker(anchor) {
   }</div></div>`).join('') + `<div class="pick-group"><h4>Your effect racks</h4>${myRacks().length ? `<div class="pick-grid">${myRacks().map(x =>
     `<button class="pick mod-rack" data-rack="${esc(x.file)}" title="${esc(x.patch.modules.map(e => MODULES[e.type]?.label).join(' → '))}">${icon('rack')}<b>${esc(x.name)}</b><span>${esc(x.patch.modules.map(e => MODULES[e.type]?.label).join(' → '))}</span></button>`).join('')}</div>`
     : '<p class="hint">None yet. Build a chain of effects in any sound, then <b>Save effects as rack…</b> (under the module cards) to reuse it as one module.</p>'}</div>`
+    + `<div class="pick-group"><h4>Built-in racks</h4><div class="pick-grid">${FACTORY_RACKS.map(r =>
+      `<button class="pick mod-rack" data-factory-rack="${esc(r.name)}" title="${esc(r.about)}">${icon('rack')}<b>${esc(r.name)}</b><span>${esc(r.rack.modules.map(e => MODULES[e.type]?.label).join(' → '))}</span></button>`).join('')}</div></div>`
     + '<p class="hint">New modules start unconnected: connect them in the panel that opens, or drag from their dot.</p>';
   el.hidden = false;
   const r = anchor.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
@@ -1532,6 +1563,8 @@ $('#add-picker').addEventListener('keydown', e => { if (e.key === 'Escape') { e.
 $('#add-picker').addEventListener('click', e => {
   const r = e.target.closest('[data-rack]');
   if (r) { closePicker(); addRack(myRacks().find(x => x.file === r.dataset.rack)); return; }
+  const fr = FACTORY_RACKS.find(x => x.name === e.target.closest('[data-factory-rack]')?.dataset.factoryRack);
+  if (fr) { closePicker(); addRack({ name: fr.name, patch: rackPatch(fr.name, fr.rack.modules) }); return; }
   const b = e.target.closest('[data-type]');
   if (!b) return;
   closePicker();
@@ -1582,9 +1615,7 @@ async function saveRack(effects, suggested) {
   await refreshSaved();
   const clash = saved.find(x => x.file === fileFor(name));
   if (clash && !confirm(clash.patch?.kind === 'rack' ? `Replace your rack ${clash.name}?` : `${clash.name} is one of your sounds. Replace it with this rack?`)) return;
-  const modules = effects.map((e, k) => ({ id: `fx${k + 1}`, type: e.type, params: { ...e.params }, ...(e.off ? { off: true } : {}) }));
-  const rack = normalizePatch({ name, kind: 'rack', type: 'FX', voices: 1, volume: 1, modules,
-    audio: modules.map((m, k) => ({ from: m.id, to: modules[k + 1]?.id || 'out' })), mod: [], cc: {} }).patch;
+  const rack = rackPatch(name, effects);
   try {
     await storage.save('instruments', rack);
     await refreshSaved();
@@ -1736,7 +1767,8 @@ async function save() {
     renderFileBar();
     await refreshSaved();
     channel?.postMessage({ type: 'instruments-changed' });
-    toast(`Saved to My Sounds (${placeOf('instruments', file)}). It's in the Sequencer's Sound list too.`, 'ok');
+    toast(patch.kind === 'rack' ? `Saved the effect rack ${patch.name} (${placeOf('instruments', file)}). It's in every FX menu in the Sequencer, and in + Add module.`
+      : `Saved to My Sounds (${placeOf('instruments', file)}). It's in the Sequencer's Sound list too.`, 'ok');
   } catch (err) {
     toast(`Couldn't save: ${err.message}.${STATIC ? '' : ' Is serve.py running?'}`, 'err');
   }

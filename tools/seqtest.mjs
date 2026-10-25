@@ -681,4 +681,14 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
   assert.equal(back.tracks[1].notes.length, 1);
 }
 
+// The mix: per-track settings with decimals kept, one side-chain source, song mix defaults.
+{
+  const m = normalizeSong({ tracks: [{ pan: -0.35, reverb: 0.4, delay: 2, duck: 0.6, sidechain: true }, { sidechain: true }], mix: { reverb: { size: 4.25 }, delay: { sync: '1/4', feedback: 0.5 }, release: 0.3 } });
+  assert.deepEqual([m.tracks[0].pan, m.tracks[0].reverb, m.tracks[0].delay, m.tracks[0].duck], [-0.35, 0.4, 1, 0.6]);
+  assert.deepEqual(m.tracks.map(t => t.sidechain), [true, false], 'one side-chain source');
+  assert.deepEqual(m.mix, { reverb: { size: 4.25, damping: 0.5 }, delay: { sync: '1/4', feedback: 0.5, tone: 4000 }, release: 0.3 });
+  assert.deepEqual(normalizeSong({ tracks: [{}] }).mix.delay.sync, '1/8.', 'defaults');
+  assert.deepEqual(normalizeSong(JSON.parse(JSON.stringify(m))), m, 'mix survives a round trip');
+}
+
 console.log('ok — sequencer model and engine');

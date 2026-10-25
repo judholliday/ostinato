@@ -1,10 +1,27 @@
 # Ostinato: planned work
 
-Agreed with the user, not built yet. Move an item into CLAUDE.md's notes once it's built.
+Agreed with the user, not built yet. Move an item into CLAUDE.md's notes once it's built. ☁︎ = can be
+built in a cloud session on the public repo (no hardware or user data needed).
 
-Nothing planned right now. Built from here: takes remember what the sequencer played (backing), Oct 2026 (see CLAUDE.md).
+## Order agreed (Oct 2026)
 
-Left over from it:
+1. ~~Mixing~~ (built Oct 2026: see CLAUDE.md, Mixer and Render song).
+2. **Chord track**: a key and a progression (or typed chords) that other tracks follow: note pools
+   arpeggiate the current chord, basslines and 🎲/AI ideas fit the chords. ☁︎
+3. **Piano roll** for melodic tracks (free note lengths and pitches), and an **arrangement timeline**
+   (sections left to right, repeats and variations, automation lanes across the song, fills into new
+   sections). ☁︎
+
+## More ideas, not ordered
+
+- Chord and key detection of Capture takes ("what did I play?"), and turning them into a chord track.
+- Scenes: launch a row of patterns across tracks at once, mapped to MPK mini pads.
+- A performance effects pad (XY: filter sweep, stutter, delay throw) on the master. ☁︎
+- Chop to pads: slice a recording at its hits onto a drum kit's pads. ☁︎
+- A vocoder in the Sound Lab using the microphone.
+
+## Left over from earlier work
+
 - Free-time takes (sequencer stopped) have no backing (by design).
 - Capture's take editor and backing chunks count 4/4 bars.
 - The ⤓ .wav live pass (XL parts recorded through the audio input) hasn't been tried on hardware.

@@ -12,6 +12,8 @@ import { mutate, cross } from './breed.js';
 import { writeMidi, renderSong as songToMidi } from './midifile.js';
 import * as C from './capture.js';
 import { STARTER_TRACKS, addStarterTrack, keepLanes, putClip, guessClipRole, trackSound } from './putclip.js';
+import { Mixer } from './mixer.js';
+import { renderSongAudio, finish as finishRender, soundLength } from './songrender.js';
 import { STOCK } from './stock.js';
 import { portLabel, looksLikeSynthIn, looksLikeSynthOut } from '../core/midiports.js';
 import { soundReporter } from '../core/sounding.js';
@@ -22,7 +24,8 @@ import { storage, placeOf, stemOf } from '../core/storage.js';
 import { STATIC } from '../core/mode.js';
 import { QWERTY, QWERTY_LABEL, attachQwerty, qwertyRange, setQwertyScale } from '../core/qwerty.js';
 import { LabSynth, FxChain } from '../lab/engine.js';
-import { rackOf } from '../lab/patch.js';
+import { rackOf, SYNC, MODULES } from '../lab/patch.js';
+import { FACTORY_RACKS } from '../lab/racks.js';
 import { Tap, cut, encodeWav } from '../rec/audio.js';
 
 const $ = sel => document.querySelector(sel);
@@ -52,7 +55,7 @@ function toast(text, kind = '') {
 let song;
 let fileName = null; // the file in data/sequences/ this song was loaded from or saved to
 let dirty = false;
-const prefs = { songOpen: true, mode: 'loop', follow: true, soundFollows: true, keysIn: null, thru: true, clockOut: [], collapsed: [], click: 'rec', countIn: true, clickVol: 60, ...store.get('prefs', {}) };
+const prefs = { songOpen: true, mixOpen: false, mode: 'loop', follow: true, soundFollows: true, keysIn: null, thru: true, clockOut: [], collapsed: [], click: 'rec', countIn: true, clickVol: 60, ...store.get('prefs', {}) };
 const savePrefs = () => store.set('prefs', prefs);
 let views = []; // per track: { pat (pattern shown), page, collapsed, kbdLow, lastNote }
 let sel = { t: 0, i: 0, open: true };
@@ -153,6 +156,8 @@ const sounding = []; // MIDI notes the engine has started, so Stop can silence t
 // Track volume → computer-sound gain: 0-100 fades in (100 = normal), 100-127 boosts up to 4×.
 const gainOf = M.trackGain;
 const sendVolume = (t, port = outPort(t.out)) => { if (port) send(port, [0xb0 | (t.ch - 1), 7, t.vol]); };
+// A hardware track's pan, as CC 10 (64 = centre).
+const sendPan = (t, port = outPort(t.out)) => { if (port) send(port, [0xb0 | (t.ch - 1), 10, Math.round(64 + (t.pan || 0) * 63)]); };
 
 // The metronome rides on the engine's MIDI clock (24 pulses a quarter note), counted from each
 // bar's start: a click per beat of the bar's meter (quarters in x/4, eighths in x/8), the first one
@@ -179,6 +184,7 @@ const sink = {
     sounding.length = 0;
     synth.stopAll();
     for (const l of labSynths.values()) l.synth.allOff(true);
+    mixer?.reset();
   },
   cc(ti, cc, value, at) {
     const t = song.tracks[ti], port = t.out === M.COMPUTER ? null : outPort(t.out);
@@ -187,6 +193,7 @@ const sink = {
   },
   note(ti, note, vel, at, dur) {
     if (skipRecorded(ti, note, at)) return;
+    if (mixer && ducksAt(song.tracks[ti], note)) mixer.duckAt(audioTime(at));
     playNote(ti, note, vel, at, dur);
     logBacking('notes', { ti, tick: r1(engine.tickAt(at)), note, vel, len: r1(dur / engine.tickMs) });
   },
@@ -277,25 +284,36 @@ const later = (at, fn) => setTimeout(() => { if (engine.playing) fn(); }, Math.m
 
 // ---- Lab instruments: Computer tracks can play an instrument built in the Lab ----
 let instruments = []; // saved in data/instruments/: [{ file, name, patch }]
-let racks = []; // the Sound Lab's saved effect racks (instruments with kind 'rack'): [{ file, name, rack }]
+let racks = []; // the built-in effect racks and the Sound Lab's saved ones (instruments with kind 'rack'): [{ file, name, rack, factory? }]
+const factoryRacks = FACTORY_RACKS.map(r => ({ file: `factory:${r.name}`, name: r.name, rack: r.rack, about: r.about, factory: true }));
 const labSynths = new Map(); // track index -> { synth, json }
 
 async function refreshInstruments() {
   let all = [];
   try { all = await storage.list('instruments'); } catch { /* none */ }
   instruments = all.filter(x => !x.patch?.kind); // not racks or collections
-  racks = all.filter(x => x.patch?.kind === 'rack').map(x => ({ file: x.file, name: x.name, rack: rackOf(x.patch) })).filter(x => x.rack.modules.length);
+  racks = [...all.filter(x => x.patch?.kind === 'rack').map(x => ({ file: x.file, name: x.name, rack: rackOf(x.patch) })).filter(x => x.rack.modules.length), ...factoryRacks];
   renderTracks();
-  renderMasterFx();
+  renderMixer();
 }
 
 // ---- Effect racks from the Sound Lab: an insert on a Computer track, and the song's master ----
 // Each holds a copy of the rack (picking it again takes the saved version). Nothing is added for you.
 const trackFx = new Map(); // track index -> { chain, json }
+// The mix (mixer.js): each computer track's effects feed its strip (pan, duck, sends, meter).
+let mixer = null;
+function mixerOf() {
+  if (!mixer) { mixer = new Mixer(synth.wake(), synth.output()); mixer.setMix(song.mix, song.bpm); }
+  return mixer;
+}
+// The engine's time (performance.now() ms) on the test synth's audio clock.
+const audioTime = at => { const ac = synth.context(); return ac.currentTime + Math.max(0, at - performance.now()) / 1000; };
+// A note from the side-chain source ducks the others: on a drum track only its kicks.
+const ducksAt = (t, note) => t.sidechain && (!isDrums(t) || note === 35 || note === 36);
 // Where a Computer track's sound goes: its effects (straight through when none), then the master.
 function fxFor(ti) {
   let f = trackFx.get(ti);
-  if (!f) { f = { chain: new FxChain(synth.wake()), json: null }; f.chain.tempo = song.bpm; f.chain.output.connect(synth.output()); trackFx.set(ti, f); }
+  if (!f) { f = { chain: new FxChain(synth.wake()), json: null }; f.chain.tempo = song.bpm; f.chain.output.connect(mixerOf().strip(ti).input); mixer.setTrack(ti, song.tracks[ti]); trackFx.set(ti, f); }
   const fx = song.tracks[ti]?.fx || null, json = JSON.stringify(fx);
   if (json !== f.json) { f.chain.set(fx); f.json = json; }
   return f.chain.input;
@@ -308,13 +326,16 @@ function syncFx() {
   synth.setTempo(song.bpm);
   for (const f of trackFx.values()) f.chain.setTempo(song.bpm);
   for (const l of labSynths.values()) l.synth.setTempo(song.bpm);
+  if (mixer) { mixer.setMix(song.mix, song.bpm); song.tracks.forEach((t, ti) => { if (t.out === M.COMPUTER) mixer.setTrack(ti, t); else if (mixer.strips.has(ti)) mixer.setTrack(ti, { duck: 0 }); }); }
 }
 const rackFx = (r, was) => M.cleanFx({ name: r.name, rack: r.rack, mix: was?.mix ?? 1 });
 const sameRack = (fx, r) => !!r && JSON.stringify(fx.rack.modules) === JSON.stringify(r.rack.modules);
 // The FX menu's options: none, your racks, and this copy when it's no longer (or not quite) saved.
 function fxOptions(fx) {
   const saved = fx && racks.find(r => r.name === fx.name);
-  return `<option value="">none</option>${racks.map(r => `<option value="${esc(r.file)}"${saved === r && sameRack(fx, r) ? ' selected' : ''}>${esc(r.name)}${saved === r && !sameRack(fx, r) ? ' (saved version)' : ''}</option>`).join('')}${
+  const opt = r => `<option value="${esc(r.file)}"${saved === r && sameRack(fx, r) ? ' selected' : ''} title="${esc(r.about || r.rack.modules.map(e => MODULES[e.type]?.label).join(' → '))}">${esc(r.name)}${saved === r && !sameRack(fx, r) ? ` (${r.factory ? 'built-in' : 'saved'} version)` : ''}</option>`;
+  const mine = racks.filter(r => !r.factory);
+  return `<option value="">none</option>${mine.length ? `<optgroup label="Your racks">${mine.map(opt).join('')}</optgroup>` : ''}<optgroup label="Built in">${factoryRacks.map(opt).join('')}</optgroup>${
     fx && !(saved && sameRack(fx, saved)) ? `<option value="__copy" selected>${esc(fx.name)} (${saved ? 'this song\'s copy' : 'kept in this song'})</option>` : ''}`;
 }
 // Menu, bypass and mix for one rack slot; `act` prefixes the data-act names.
@@ -322,10 +343,6 @@ function fxHTML(fx, act, what, label = 'FX') {
   return `<label class="field" title="An effect rack from the Sound Lab on ${what} (save one there with Save effects as rack…). The song keeps its own copy.">${label} <select data-act="${act}">${fxOptions(fx)}</select></label>${fx
     ? `<button class="small ${fx.off ? 'ghost fx-off' : 'on'}" data-act="${act}-off" title="${fx.off ? 'Bypassed: click to hear the effects again' : 'On: click to bypass the effects'}">${fx.off ? 'Bypassed' : 'On'}</button>
        <label class="field" title="How much of the sound goes through the effects (the rest stays dry)">Mix <input type="range" class="fx-mix" data-act="${act}-mix" min="0" max="100" value="${Math.round(fx.mix * 100)}"></label>` : ''}`;
-}
-function renderMasterFx() {
-  const el = $('#master-fx');
-  if (el) el.innerHTML = fxHTML(song.masterFx, 'mfx', 'everything the computer plays, before the limiter (not MIDI instruments)', 'Master FX');
 }
 // A change in an FX menu: the picked rack, or none. Returns the new value.
 function pickFx(value, was) {
@@ -467,6 +484,7 @@ function prepareSounds() {
   for (const t of song.tracks) {
     if (t.out === M.COMPUTER) continue;
     if (t.vol !== 100) sendVolume(t); // left at 100, the instrument's own level is kept
+    if (t.pan) sendPan(t);
     const port = outPort(t.out);
     if (port && t.program !== null && !isXLOut(t.out)) send(port, [0xc0 | (t.ch - 1), t.program]);
   }
@@ -833,7 +851,181 @@ function renderAll() {
   renderTop();
   renderFileBar();
   renderSong();
+  renderMixer();
   renderTracks();
+}
+
+// ---- the Mixer (mixer.js does the sound) ----
+// One strip per track: level, pan, sends to the shared reverb and delay, how far it ducks when the
+// side-chain source plays, which track that source is, mute and solo, and a meter. Hardware tracks
+// get level and pan as CC 7 and CC 10; sends, ducking and meters are for computer sounds only.
+// A master strip holds the shared reverb and delay and the duck release.
+const pct = v => `${Math.round(v * 100)}%`;
+const panText = v => (Math.abs(v) < 0.02 ? 'C' : `${Math.round(Math.abs(v) * 100)} ${v < 0 ? 'L' : 'R'}`);
+function mixSlider(ti, key, label, v, min, max, step, text, help, disabled = false) {
+  return `<label class="mx-row${disabled ? ' off' : ''}" title="${esc(help)}"><span>${label}</span>
+    <input type="range" min="${min}" max="${max}" step="${step}" value="${v}" data-mix="${key}" data-t="${ti}" ${disabled ? 'disabled' : ''}><b>${esc(text)}</b></label>`;
+}
+function renderMixer() {
+  const el = $('#mixer');
+  el.hidden = !prefs.mixOpen;
+  $('#mix-col').textContent = prefs.mixOpen ? '▾' : '▸';
+  const sc = song.tracks.find(t => t.sidechain);
+  const mf = song.masterFx;
+  $('#mix-sum').textContent = prefs.mixOpen ? '' : [sc && `${sc.name} ducks ${song.tracks.filter(t => t.duck > 0 && !t.sidechain).length} track(s)`, mf && `Master FX: ${mf.name}${mf.off ? ' (bypassed)' : ''}`].filter(Boolean).join(' · ');
+  if (!prefs.mixOpen) return;
+  if (el.contains(document.activeElement) && document.activeElement.type === 'range') return; // don't rebuild under a drag
+  const m = song.mix;
+  el.innerHTML = song.tracks.map((t, ti) => {
+    const pc = t.out === M.COMPUTER, why = 'Computer sounds only: hardware plays through its own outputs';
+    return `<div class="strip${t.mute ? ' muted' : ''}" data-t="${ti}">
+      <div class="strip-name"><span class="dot" style="background:${COLORS[ti]}"></span>${esc(t.name)}</div>
+      <div class="meter" title="${pc ? 'Level (peak)' : 'No meter for hardware'}"><i data-meter="${ti}"></i></div>
+      ${mixSlider(ti, 'vol', 'Level', t.vol, 0, 127, 1, String(t.vol), 'Level (100 = as the sound was made); sent to hardware as CC 7')}
+      ${mixSlider(ti, 'pan', 'Pan', t.pan, -1, 1, 0.01, panText(t.pan), 'Left to right; sent to hardware as CC 10')}
+      ${mixSlider(ti, 'reverb', 'Reverb', t.reverb, 0, 1, 0.01, pct(t.reverb), pc ? 'How much goes to the shared reverb' : why, !pc)}
+      ${mixSlider(ti, 'delay', 'Delay', t.delay, 0, 1, 0.01, pct(t.delay), pc ? 'How much goes to the shared delay' : why, !pc)}
+      ${mixSlider(ti, 'duck', 'Duck', t.duck, 0, 1, 0.01, pct(t.duck), pc ? 'How far this track dips each time the side-chain source plays (its kicks, if it\'s a drum track)' : why, !pc || t.sidechain)}
+      <div class="mx-btns">
+        <label title="This track's notes duck the others (a drum track: its kicks only)"><input type="checkbox" data-mix="sidechain" data-t="${ti}" ${t.sidechain ? 'checked' : ''} ${pc ? '' : 'disabled'}> Side-chain</label>
+        <button class="small${t.mute ? ' on' : ''}" data-mix="mute" data-t="${ti}">M</button><button class="small${t.solo ? ' on' : ''}" data-mix="solo" data-t="${ti}">S</button>
+      </div>
+    </div>`;
+  }).join('') + `<div class="strip master">
+      <div class="strip-name">Shared effects</div>
+      ${mixSlider('m', 'revSize', 'Reverb', m.reverb.size, 0.3, 10, 0.1, `${m.reverb.size.toFixed(1)} s`, 'How long the shared reverb rings')}
+      ${mixSlider('m', 'revDamp', 'Damping', m.reverb.damping, 0, 1, 0.01, pct(m.reverb.damping), 'How much faster its highs fade')}
+      <label class="mx-row" title="The shared delay's echo time, locked to the tempo"><span>Delay</span><select data-mix="dlySync" data-t="m">${SYNC.filter(x => x !== 'off').map(x => `<option ${x === m.delay.sync ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      ${mixSlider('m', 'dlyFb', 'Echoes', m.delay.feedback, 0, 0.9, 0.01, pct(m.delay.feedback), 'How much each echo feeds the next')}
+      ${mixSlider('m', 'dlyTone', 'Tone', m.delay.tone, 500, 16000, 100, `${Math.round(m.delay.tone / 100) / 10} kHz`, 'How bright the echoes are')}
+      ${mixSlider('m', 'release', 'Release', m.release, 0.03, 1, 0.01, `${Math.round(m.release * 1000)} ms`, 'How long ducked tracks take to come back')}
+    </div>${masterStrip()}`;
+  startMeters();
+}
+// The last strip: Master FX, an effect rack on everything the computer plays (after the tracks, their
+// sends and the shared effects; before the limiter). MIDI instruments play through their own outputs.
+function masterStrip() {
+  const fx = song.masterFx, chain = fx?.rack.modules.map(e => `<span class="${e.off ? 'off' : ''}">${esc(MODULES[e.type]?.label || e.type)}</span>`).join(' → ');
+  return `<div class="strip master master-fx">
+    <div class="strip-name" title="The end of the chain: every computer track, the shared reverb and delay, then these effects, then the limiter">Master FX</div>
+    <label class="mx-row" title="An effect rack on the whole mix: a built-in one, or one you saved in the Sound Lab"><span>Rack</span><select data-act="mfx">${fxOptions(fx)}</select></label>
+    ${fx ? `<div class="mfx-chain hint">${chain}</div>
+    <label class="mx-row" title="How much of the mix goes through the rack (the rest stays dry)"><span>Mix</span><input type="range" data-act="mfx-mix" min="0" max="100" value="${Math.round(fx.mix * 100)}"><b>${Math.round(fx.mix * 100)}%</b></label>` : '<p class="hint">None. Pick a built-in rack, or build one in the Sound Lab.</p>'}
+    <div class="mx-btns">
+      ${fx ? `<button class="small ${fx.off ? 'ghost' : 'on'}" data-act="mfx-off" title="${fx.off ? 'Bypassed: click to hear the effects again' : 'On: click to bypass, to compare'}">${fx.off ? 'Bypassed' : 'On'}</button>` : ''}
+      <button class="small" data-act="mfx-edit" title="Open these effects in the Sound Lab to change them, add or remove effects; the Sequencer plays your changes as you make them">${fx ? 'Edit' : 'Build'} in Sound Lab</button>
+    </div>
+  </div>`;
+}
+function setMix(el) {
+  const k = el.dataset.mix, v = el.type === 'range' ? +el.value : el.value, m = song.mix;
+  if (el.dataset.t === 'm') {
+    if (k === 'revSize') m.reverb.size = v; else if (k === 'revDamp') m.reverb.damping = v;
+    else if (k === 'dlySync') m.delay.sync = v; else if (k === 'dlyFb') m.delay.feedback = v;
+    else if (k === 'dlyTone') m.delay.tone = v; else if (k === 'release') m.release = v;
+  } else {
+    const ti = +el.dataset.t, t = song.tracks[ti];
+    if (k === 'sidechain') song.tracks.forEach((x, i) => { x.sidechain = i === ti && el.checked; });
+    else t[k] = v;
+    if (k === 'vol') { if (t.out === M.COMPUTER) labFor(ti); else sendVolume(t); }
+    if (k === 'pan' && t.out !== M.COMPUTER) sendPan(t);
+  }
+  changed({ coalesce: true });
+  syncFx();
+  const b = el.closest('label')?.querySelector('b');
+  if (b) b.textContent = k === 'pan' ? panText(v) : k === 'vol' ? String(v) : k === 'revSize' ? `${v.toFixed(1)} s` : k === 'dlyTone' ? `${Math.round(v / 100) / 10} kHz` : k === 'release' ? `${Math.round(v * 1000)} ms` : pct(v);
+  if (k === 'sidechain') renderMixer();
+}
+$('#mixer').addEventListener('input', e => {
+  if (e.target.dataset.mix) setMix(e.target);
+  else if (e.target.dataset.act === 'mfx-mix' && song.masterFx) {
+    song.masterFx.mix = +e.target.value / 100;
+    e.target.closest('label').querySelector('b').textContent = `${e.target.value}%`;
+    changed({ coalesce: true });
+  }
+});
+$('#mixer').addEventListener('change', e => {
+  if (e.target.dataset.mix && e.target.type !== 'range') setMix(e.target);
+  else if (e.target.dataset.act === 'mfx') { song.masterFx = pickFx(e.target.value, song.masterFx); changed(); renderMixer(); }
+});
+$('#mixer').addEventListener('click', e => {
+  const act = e.target.closest('button[data-act]')?.dataset.act;
+  if (act === 'mfx-off' && song.masterFx) { if (song.masterFx.off) delete song.masterFx.off; else song.masterFx.off = true; changed(); renderMixer(); return; }
+  if (act === 'mfx-edit') { editMasterFx(); return; }
+  const b = e.target.closest('button[data-mix]');
+  if (!b) return;
+  const t = song.tracks[+b.dataset.t];
+  if (b.dataset.mix === 'mute') edit(+b.dataset.t, () => { t.mute = !t.mute; });
+  else { t.solo = !t.solo; changed(); }
+  renderMixer(); renderTracks();
+});
+$('#mix-col').onclick = () => { prefs.mixOpen = !prefs.mixOpen; savePrefs(); renderMixer(); };
+// Edit in Sound Lab: the Lab opens the master rack (or an empty one) linked to this song; every change
+// there comes back as `rack-edit` and is heard at once, so you can tweak it while the song plays.
+function editMasterFx() {
+  const fx = song.masterFx;
+  soundChannel?.postMessage({ type: 'edit-rack', link: 'master', song: song.name, name: fx?.name || `${song.name} master`, rack: fx?.rack || { name: 'Master', modules: [] } });
+  parent.postMessage({ type: 'switch-view', view: 'lab' }, location.origin);
+}
+function onRackEdit(m) {
+  if (m.link !== 'master') return;
+  const was = song.masterFx;
+  song.masterFx = M.cleanFx({ name: m.name, rack: { ...m.rack, name: m.name }, mix: was?.mix ?? 1, off: was?.off });
+  changed({ coalesce: true });
+  renderMixer();
+}
+// ⤓ Render song: the whole song offline (songrender.js) into Capture's Recordings, as one mix and,
+// if asked, one file per computer track (stems: each with its own sends and ducking).
+let rendering = false;
+function renderBar(html) { const el = $('#render-bar'); el.hidden = !html; el.innerHTML = html || ''; }
+$('#render-song').onclick = () => {
+  if (rendering) return;
+  const n = song.tracks.filter((t, ti) => t.out === M.COMPUTER && M.audible(song, ti)).length;
+  renderBar(n ? `<span>Render "${esc(song.name)}" once through its sections:</span>
+    <button class="small" data-render="mix">Mix</button>
+    <button class="small" data-render="stems">Mix + stems (${n} track${n === 1 ? '' : 's'})</button>
+    <button class="ghost small" data-render="cancel">Cancel</button>`
+    : `<span>Nothing to render: only computer sounds can be rendered (hardware: Capture's Print stems).</span> <button class="ghost small" data-render="cancel">OK</button>`);
+};
+$('#render-bar').addEventListener('click', async e => {
+  const k = e.target.closest('[data-render]')?.dataset.render;
+  if (!k) return;
+  if (k === 'cancel') { renderBar(''); return; }
+  rendering = true;
+  const t0 = performance.now(), base = `${stemOf(song.name)} ${stamp(Date.now())}`;
+  try {
+    const r = await renderSongAudio(song, { stems: k === 'stems', onProgress: what => renderBar(`<span>Rendering ${esc(what)}…</span>`) });
+    renderBar('<span>Saving…</span>');
+    const saved = [];
+    const len = r.mix && soundLength(r.mix, r.sampleRate); // stems the mix's length, so they line up
+    const save = async (chans, name) => { saved.push(await storage.save('audio', encodeWav(finishRender(chans, r.sampleRate, len || undefined), r.sampleRate), name)); };
+    if (r.mix) await save(r.mix, `${base} (mix)`);
+    for (const st of r.stems) await save(st.chans, `${base} (${stemOf(st.name)})`);
+    soundChannel?.postMessage({ type: 'recordings-changed' });
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    renderBar(`<span>Saved ${saved.length} file${saved.length === 1 ? '' : 's'} to Capture's Recordings (${Math.round(r.seconds)} s of song in ${secs} s).${
+      r.missing.length ? ` Not included (hardware): ${esc(r.missing.join(', '))}; Capture's Print stems records those.` : ''}</span>
+      <button class="ghost small" data-render="cancel">OK</button>`);
+  } catch (err) {
+    renderBar(`<span>Couldn't render: ${esc(err.message)}</span> <button class="ghost small" data-render="cancel">OK</button>`);
+  } finally { rendering = false; }
+});
+// Meters: peak level in dB (-48 … 0), about 20 times a second while the mixer is open. (A timer, not
+// animation frames: frames started while this tab's frame was hidden never came.)
+let meterTimer = null;
+function startMeters() {
+  if (meterTimer) return;
+  meterTimer = setInterval(() => {
+    if (!prefs.mixOpen) { clearInterval(meterTimer); meterTimer = null; return; }
+    if (!mixer || !onScreen()) return; // (no mixer until the first computer note)
+    for (const [ti, pk] of mixer.levels()) {
+      const i = document.querySelector(`#mixer [data-meter="${ti}"]`);
+      if (!i) continue;
+      const db = pk > 0 ? 20 * Math.log10(pk) : -99;
+      i.style.width = `${Math.max(0, Math.min(100, (db + 48) / 48 * 100))}%`;
+      i.classList.toggle('hot', db > -1);
+    }
+  }, 50);
 }
 
 function renderTop() {
@@ -849,7 +1041,6 @@ function renderTop() {
   $('#scale-root').disabled = !song.scale;
   document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.m === prefs.mode));
   $('#follow').checked = prefs.follow;
-  renderMasterFx();
   syncFx();
 }
 
@@ -905,6 +1096,7 @@ function renderTracks() {
   $('#tracks').innerHTML = song.tracks.map((_, ti) => trackHTML(ti)).join('');
   song.tracks.forEach((_, ti) => paintPlayhead(ti));
   $('#add-track').disabled = song.tracks.length >= M.MAX_TRACKS;
+  renderMixer(); // names, mutes and tracks added or removed
 }
 
 function renderTrack(ti) {
@@ -2122,6 +2314,7 @@ function onRecorderMessage(m) {
     case 'sequences-changed': refreshOpenList(); return true;
     case 'new-song-from-sounds': songFromSounds(m); return true;
     // Capture making an audio file: the master effects, and a track's settings if it plays on one.
+    case 'rack-edit': onRackEdit(m); return true;
     case 'get-mix': soundChannel?.postMessage({ type: 'mix', masterFx: song.masterFx || null, track: song.tracks[m.ti] ? trackCopy(m.ti) : null }); return true;
     case 'clips-changed': loadClips(); return true;
     case 'set-tempo': song.bpm = Math.max(20, Math.min(300, Math.round(m.bpm))); changed(); renderTop(); postSeqState(); return true;
@@ -2642,23 +2835,6 @@ function barWords(m) {
   const { n, d } = M.meterParts(m), words = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen'];
   return d === 4 ? `${words[n]} beat${n === 1 ? '' : 's'}` : `${words[n]} eighth notes`;
 }
-$('#master-fx').addEventListener('change', e => {
-  if (e.target.dataset.act !== 'mfx') return;
-  song.masterFx = pickFx(e.target.value, song.masterFx);
-  changed();
-  renderMasterFx();
-});
-$('#master-fx').addEventListener('click', e => {
-  if (e.target.closest('[data-act]')?.dataset.act !== 'mfx-off' || !song.masterFx) return;
-  if (song.masterFx.off) delete song.masterFx.off; else song.masterFx.off = true;
-  changed();
-  renderMasterFx();
-});
-$('#master-fx').addEventListener('input', e => {
-  if (e.target.dataset.act !== 'mfx-mix' || !song.masterFx) return;
-  song.masterFx.mix = +e.target.value / 100;
-  changed({ coalesce: true });
-});
 $('#play').onclick = () => play();
 $('#stop').onclick = stop;
 $('#rec').onclick = () => setRec(!rec.on);
