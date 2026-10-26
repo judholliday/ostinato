@@ -1,9 +1,10 @@
 // Offline checks for the sequencer model and timing engine: node tools/seqtest.mjs
 // (also run by tools/selftest.mjs)
 import assert from 'node:assert/strict';
-import { normalizeSong, newSong, newTrack, putStep, removeStep, stepAt, coverMap, maxLen, noteSteps,
+import { autoValue, normalizeSong, newSong, newTrack, putStep, removeStep, stepAt, coverMap, maxLen, noteSteps, rollNotes, setRollNotes, mapNotes,
   poolOrder, inScale, snapToScale, addTrack, removeTrack, copyPattern, cleanPattern, guessRole, MAX_STEPS, laneValue } from '../js/seq/model.js';
 import { Engine } from '../js/seq/engine.js';
+import { parseProgression, commonProgressions } from '../js/seq/chords.js';
 import { randomIdea, euclid, seeded } from '../js/seq/generate.js';
 import { STOCK } from '../js/seq/stock.js';
 import { writeMidi, readMidi, renderSong } from '../js/seq/midifile.js';
@@ -689,6 +690,115 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
   assert.deepEqual(m.mix, { reverb: { size: 4.25, damping: 0.5 }, delay: { sync: '1/4', feedback: 0.5, tone: 4000 }, release: 0.3 });
   assert.deepEqual(normalizeSong({ tracks: [{}] }).mix.delay.sync, '1/8.', 'defaults');
   assert.deepEqual(normalizeSong(JSON.parse(JSON.stringify(m))), m, 'mix survives a round trip');
+}
+
+// The chord track: tracks that follow it move, fit or arpeggiate; others play as written.
+{
+  const bar = (notes, len = 4) => ({ length: 16, steps: notes.map((n, k) => ({ i: k * len, notes: [].concat(n), vel: 100, gate: 80, len })) });
+  const s = normalizeSong({
+    bpm: 120, scale: { root: 0, type: 'major' }, chords: 'Am | F | C G | Zz',
+    tracks: [
+      { name: 'Bass', role: 'bass', follow: 'move', patterns: { A: bar([36, 36, 43, 36]) } },
+      { name: 'Keys', role: 'chords', follow: 'fit', patterns: { A: { length: 16, steps: [{ i: 0, notes: [48, 52, 55], vel: 100, gate: 90, len: 16 }] } } },
+      { name: 'Arp', mode: 'pool', follow: 'move', pool: { notes: [60, 64, 67], order: 'up' }, patterns: { A: bar([[], [], [], []]) } },
+      { name: 'Lead', patterns: { A: bar([60]) } },
+    ],
+    song: [{ bars: 4, play: ['A', 'A', 'A', 'A'] }],
+  });
+  assert.deepEqual(parseProgression(s.chords).errors, ['Zz']);
+  const r = renderSong(s), at = (ti, tick) => r.tracks[ti].notes.filter(n => n.tick === tick).map(n => n.note).sort((a, b) => a - b);
+  assert.deepEqual([0, 96, 192, 384, 768, 960].map(t => at(0, t)), [[33], [33], [40], [41], [36], [38]], 'bass moves by scale steps (the shorter way): A, F, then C and G (its G moves to D)');
+  assert.deepEqual([at(1, 0), at(1, 384), at(1, 768)], [[48, 52, 57], [48, 53, 57], [48, 52, 55]], 'keys fit to Am, F, C');
+  assert.deepEqual([0, 96, 192, 288, 384].map(t => at(2, t)), [[57], [60], [64], [57], [69]], 'the pool arpeggiates the chord (Am from A3, then F from F4, carrying on its walk)');
+  assert.deepEqual(at(3, 384), [60], 'tracks that don\'t follow play as written');
+  // In song mode one progression runs across the sections, counted in bars (a 3/4 section gets one
+  // chord per bar too), and starts again when the song does.
+  const t = normalizeSong({ ...s, chords: 'Am | F | C | G', song: [{ bars: 2, play: ['A', null, null, null] }, { bars: 1, meter: '3/4', play: ['A', null, null, null] }] });
+  const tn = renderSong(t).tracks[0].notes, bass = tick => tn.filter(n => n.tick === tick).map(n => n.note);
+  assert.deepEqual([bass(0), bass(384), bass(768)], [[33], [41], [36]], 'Am, F, then C in section 2');
+  assert.equal(normalizeSong({ ...t, song: [{ bars: 1, play: ['A'], chords: 'D' }] }).song[0].chords, undefined, 'sections have no chords of their own');
+  assert.deepEqual(normalizeSong(JSON.parse(JSON.stringify(t))), t, 'chords survive a round trip');
+  assert.equal(commonProgressions({ root: 9, type: 'minor' })[0].text, 'Am | F | C | G');
+}
+
+// The piano roll: notes as a list, each its own length, held notes carrying on under later ones.
+{
+  const pat = { length: 16, steps: [{ i: 0, notes: [], vel: 100, gate: 60, len: 1 }, { i: 4, notes: [60], vel: 90, gate: 50, len: 2, prob: 50 }] };
+  setRollNotes(pat, [{ i: 0, note: 48, len: 16, vel: 100 }, { i: 0, note: 60, len: 2, vel: 70 }, { i: 4, note: 62, len: 2, vel: 90 }, { i: 8, note: 64, len: 4, vel: 110 },
+    { i: 10, note: 64, len: 2, vel: 100 }, { i: 15, note: 67, len: 9, vel: 100 }]);
+  assert.deepEqual(pat.steps[0], { i: 0, notes: [48, 60], vel: 100, gate: 100, len: 4, nv: { 60: 70 }, nl: { 48: 16, 60: 2 } }, 'a step for notes starting together; the lowest note\'s length is cut to the next step, kept in nl');
+  assert.deepEqual(pat.steps[1], { i: 4, notes: [62], vel: 90, gate: 50, len: 2, prob: 50 }, 'an existing step keeps its gate and chance');
+  assert.deepEqual(rollNotes(pat).map(x => [x.i, x.note, x.len]), [[0, 48, 16], [0, 60, 2], [4, 62, 2], [8, 64, 2], [10, 64, 2], [15, 67, 1]], 'same pitch cut short; lengths end at the pattern');
+  assert.deepEqual(cleanPattern(JSON.parse(JSON.stringify(pat))), pat, 'survives cleaning');
+  const s = normalizeSong({ bpm: 120, tracks: [{ name: 'Keys', patterns: { A: pat } }], song: [{ bars: 1, play: ['A'] }] });
+  const notes = renderSong(s).tracks[0].notes;
+  assert.deepEqual(notes.filter(n => n.tick === 0).map(n => [n.note, n.dur]).sort(), [[48, 384], [60, 48]], 'the held note sounds its whole length under the others');
+  // A take: a held note with others starting under it keeps sounding.
+  const tp = takeToPattern([{ pos: 0, len: 384, note: 48, vel: 100 }, { pos: 96, len: 48, note: 60, vel: 100 }, { pos: 192, len: 48, note: 62, vel: 100 }], 24);
+  assert.deepEqual(rollNotes(tp).map(x => [x.i, x.note, x.len]), [[0, 48, 16], [4, 60, 2], [8, 62, 2]], 'a take keeps each note\'s length');
+  const st = { i: 0, notes: [48, 60], vel: 100, len: 4, nv: { 60: 70 }, nl: { 48: 16 } };
+  assert.deepEqual(mapNotes(st, n => n + 2), { i: 0, notes: [50, 62], vel: 100, len: 4, nv: { 62: 70 }, nl: { 50: 16 } }, 'transposing keeps per-note velocity and length');
+}
+
+// Song mode: start at a section, loop one, jump at the next bar; the chord track counts song bars.
+{
+  const one = n => ({ length: 16, steps: [{ i: 0, notes: [n], vel: 100, gate: 50, len: 1 }] });
+  const song = normalizeSong({ bpm: 120, chords: 'C | D | E | F', tracks: [{ name: 'Lead', patterns: { A: one(60), B: one(62), C: one(64) } }],
+    song: [{ bars: 1, play: ['A'], name: 'Intro' }, { bars: 2, play: ['B'] }, { bars: 1, play: ['C'] }] });
+  assert.equal(song.song[0].name, 'Intro');
+  const go = (setup, ms, act) => {
+    let t = 1000;
+    const out = [];
+    const e = new Engine({ song: () => song, now: () => t, sink: { note: (ti, n, v, at) => out.push(n), bar: (sec) => out.push(`§${sec}`) } });
+    e.mode = 'song';
+    setup(e);
+    e.play();
+    for (; t < 1000 + ms; t += 25) { act?.(e, t); e.pump(); }
+    return { out, e };
+  };
+  // Bars last 2 s at 120 BPM; a note on each bar's first step.
+  assert.deepEqual(go(e => { e.from = 1; }, 7900).out.filter(x => typeof x === 'number'), [62, 62, 64, 60], 'from section 2: B, B, C, then the top');
+  assert.deepEqual(go(e => { e.from = 1; e.loopSection = 1; }, 7900).out.filter(x => typeof x === 'number'), [62, 62, 62, 62], 'looping section 2');
+  const j = go(() => {}, 5900, (e, t) => { if (t === 1500) e.jumpTo = 2; });
+  assert.deepEqual(j.out.filter(x => typeof x === 'number'), [60, 64, 60], 'a jump waits for the next bar');
+  const c = go(e => { e.from = 2; }, 1900);
+  assert.equal(c.e.chordFor(song, 0).chord.name, 'F', 'starting at section 3 (bar 4) plays bar 4\'s chord');
+}
+
+// Fills: a track plays another pattern in its section's last bar, then the next section as usual.
+{
+  const one = n => ({ length: 16, steps: [{ i: 0, notes: [n], vel: 100, gate: 50, len: 1 }, { i: 8, notes: [n], vel: 100, gate: 50, len: 1 }] });
+  const song = normalizeSong({ bpm: 120, tracks: [{ name: 'Drums', patterns: { A: one(36), C: one(38) } }, { name: 'Bass', patterns: { A: one(40), C: one(41) } }],
+    song: [{ bars: 2, play: ['A', 'A'], fill: ['C', null] }, { bars: 1, play: ['A', null], fill: [null, 'C'] }, { bars: 1, play: ['A', 'A'], fill: 'x' }] });
+  assert.deepEqual(song.song.map(s => s.fill), [['C', null], [null, 'C'], undefined]);
+  const r = renderSong(song);
+  assert.deepEqual(r.tracks[0].notes.map(n => n.note), [36, 36, 38, 38, 36, 36, 36, 36], 'the drums fill bar 2, then go on with A');
+  assert.deepEqual(r.tracks[1].notes.map(n => n.note), [40, 40, 40, 40, 41, 41, 40, 40], 'a track silent in its section still plays its fill');
+  const s2 = JSON.parse(JSON.stringify(song));
+  s2.tracks.push(s2.tracks[0]); s2.song.forEach(s => { s.play.push('A'); s.fill?.push(null); });
+  assert.deepEqual(normalizeSong(s2).song[0].fill, ['C', null, null], 'one entry per track');
+}
+
+// Automation: lanes across the song, sent every sixteenth when the value changes, as CCs in the .mid.
+{
+  const one = n => ({ length: 16, steps: [{ i: 0, notes: [n], vel: 100, gate: 50, len: 1 }] });
+  const song = normalizeSong({ bpm: 120, tracks: [{ name: 'Pad', vol: 100, patterns: { A: one(60) } }, { name: 'Bass', patterns: { A: one(36) } }],
+    song: [{ bars: 2, play: ['A', 'A'] }, { bars: 1, play: ['A', 'A'] }],
+    auto: [{ ti: 0, target: 'filter', points: [{ at: 2, v: 1 }, { at: 0, v: 0 }] }, { ti: 0, target: 'level', points: [{ at: 0, v: 0.5 }] },
+      { ti: 1, target: 'cc', cc: 1, points: [{ at: 1, v: 1 }] }, { ti: 5, target: 'level', points: [] }, { ti: 1, target: 'cc', cc: 'x', points: [] }] });
+  assert.equal(song.auto.length, 3, 'lanes for missing tracks or bad CCs are dropped');
+  assert.deepEqual(song.auto[0].points.map(p => p.at), [0, 2], 'points in order');
+  assert.equal(autoValue(song.auto[0].points, 1), 0.5);
+  assert.equal(autoValue(song.auto[0].points, 3), 1, 'holds after the last point');
+  const r = renderSong(song), f = r.autos.filter(a => a.target === 'filter');
+  assert.deepEqual([f[0].tick, f[0].v], [0, 0]);
+  assert.ok(f.some(a => a.tick === 384 && Math.abs(a.v - 0.5) < 0.01), 'halfway at bar 2');
+  assert.equal(f.at(-1).tick, 768, 'stops sending once it holds');
+  assert.deepEqual(r.tracks[0].ccs.filter(c => c.cc === 7), [{ tick: 0, cc: 7, v: 50 }], 'level as CC 7 (× the track\'s level)');
+  assert.ok(r.tracks[1].ccs.some(c => c.cc === 1 && c.v === 127), 'a CC lane');
+  const s2 = JSON.parse(JSON.stringify(song));
+  removeTrack(s2, 0);
+  assert.deepEqual(s2.auto.map(l => [l.ti, l.target]), [[0, 'cc']], 'removing a track removes its lanes and renumbers the rest');
 }
 
 console.log('ok — sequencer model and engine');

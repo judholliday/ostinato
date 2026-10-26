@@ -1,6 +1,6 @@
 // The Sequencer's mix for computer sounds (model.js: a track's pan, reverb, delay, duck, sidechain;
 // the song's mix). Each track's sound, after its own effects, goes through a strip:
-//   input → pan → duck (side-chain gain) → meter → out (the master)
+//   input → ride → filter → pan → duck (side-chain gain) → meter → out (the master)
 //                                        ↘ reverb send → the shared reverb ↘
 //                                        ↘ delay send  → the shared delay  → out
 // The shared reverb and delay are fully wet (the dry sound comes from the strip). Ducking is
@@ -8,6 +8,8 @@
 // exactly on the beat. Works on any AudioContext, live or offline (rendering the song). No DOM.
 import { reverbImpulse } from '../lab/engine.js';
 import { syncBeats } from '../lab/patch.js';
+
+const OPEN = ac => Math.min(20000, ac.sampleRate / 2 - 500); // the strip filter when not automated
 
 export class Mixer {
   constructor(ac, out) {
@@ -56,10 +58,13 @@ export class Mixer {
     let s = this.strips.get(ti);
     if (s) return s;
     const ac = this.ac;
-    s = { input: ac.createGain(), pan: ac.createStereoPanner(), duck: ac.createGain(), meter: ac.createAnalyser(), rev: ac.createGain(), dly: ac.createGain(), amount: 0 };
+    s = { input: ac.createGain(), ride: ac.createGain(), lp: ac.createBiquadFilter(), pan: ac.createStereoPanner(), duck: ac.createGain(), meter: ac.createAnalyser(), rev: ac.createGain(), dly: ac.createGain(), amount: 0 };
     s.meter.fftSize = 512;
     s.rev.gain.value = 0; s.dly.gain.value = 0;
-    s.input.connect(s.pan).connect(s.duck).connect(this.out);
+    s.lp.type = 'lowpass';
+    s.lp.Q.value = 0.9;
+    s.lp.frequency.value = OPEN(ac);
+    s.input.connect(s.ride).connect(s.lp).connect(s.pan).connect(s.duck).connect(this.out);
     s.duck.connect(s.meter);
     s.duck.connect(s.rev).connect(this.revIn);
     s.duck.connect(s.dly).connect(this.dlyIn);
@@ -89,10 +94,19 @@ export class Mixer {
       g.setTargetAtTime(1, t + 0.012, rel / 3);
     }
   }
-  // Back to full level at once (Stop).
+  // Song automation at audio time `t`: 'level' rides the track's level (0-1 × as set), 'filter' sweeps
+  // a low-pass from 60 Hz (0) to open (1).
+  automate(ti, target, v, t) {
+    const s = this.strip(ti);
+    if (target === 'level') s.ride.gain.setTargetAtTime(v, t, 0.03);
+    else if (target === 'filter') s.lp.frequency.setTargetAtTime(Math.min(OPEN(this.ac), 60 * (20000 / 60) ** v), t, 0.03);
+  }
+  // Back to full level at once, and automation undone (Stop, or leaving song mode).
   reset() {
     const now = this.ac.currentTime;
-    for (const s of this.strips.values()) { s.duck.gain.cancelScheduledValues(now); s.duck.gain.setTargetAtTime(1, now, 0.01); }
+    for (const s of this.strips.values()) {
+      for (const [p, v] of [[s.duck.gain, 1], [s.ride.gain, 1], [s.lp.frequency, OPEN(this.ac)]]) { p.cancelScheduledValues(now); p.setTargetAtTime(v, now, 0.01); }
+    }
   }
 
   // Each strip's peak level now (0-1+), for meters.

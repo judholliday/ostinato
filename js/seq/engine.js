@@ -9,7 +9,8 @@
 //   sink        { note(ti, note, vel, atMs, durMs), cc(ti, controller, value, atMs), clock(atMs), start(atMs), stop(atMs),
 //                 step(ti, pos, pattern, atMs, silent, notes), bar(section, barInSection, atMs) }
 // and calls pump() every ~25 ms while playing.
-import { barTicks, meterAt, CLOCK_TICKS, RATES, SWUNG_RATES, stepAt, noteSteps, poolOrder, audible, laneValue, velOf, spanOf, stepGroups, feelNote } from './model.js';
+import { chordAt, chordPool, moveNote, fitNotes, referenceRoot } from './chords.js';
+import { autoValue, barTicks, meterAt, CLOCK_TICKS, RATES, SWUNG_RATES, stepAt, noteSteps, poolOrder, audible, laneValue, velOf, spanOf, stepGroups, feelNote } from './model.js';
 
 export const LOOKAHEAD_MS = 120;
 const START_DELAY_MS = 40; // so the first notes aren't already late when they're sent
@@ -20,6 +21,11 @@ export class Engine {
     this.playing = false;
     this.mode = 'loop'; // 'loop': each track loops its own pattern; 'song': follow the song sections
     this.queued = new Map(); // track index -> pattern to switch to at the next bar (loop mode)
+    // Song mode: where playing starts (`from`), a section to go to at the next bar (`jumpTo`), and a
+    // section played over and over instead of moving on (`loopSection`).
+    this.from = 0;
+    this.jumpTo = null;
+    this.loopSection = null;
   }
 
   get tickMs() { return 60000 / (this.anchor.bpm * 96); }
@@ -35,6 +41,8 @@ export class Engine {
     this.enterSong = this.mode === 'song';
     this.nextBar = 0;
     this.nextClock = 0;
+    this.bars = []; // the latest bars' { tick, len, n }: n = bars since the chord track started
+    this.autoSent = []; // the last value sent on each automation lane
     this.tracks = song.tracks.map(t => this.trackState(t, 0));
     this.queued.clear();
     this.playing = true;
@@ -58,6 +66,7 @@ export class Engine {
   setMode(mode) {
     if (mode === this.mode) return;
     this.mode = mode;
+    this.autoSent = []; // automation is sent afresh in song mode, and undone by the page outside it
     if (mode === 'song') this.enterSong = true; // starts at section 1 on the next bar
   }
 
@@ -102,7 +111,11 @@ export class Engine {
       if (this.tickTime(tick) > horizon) break;
       if (tick === this.nextBar) { this.bar(song, tick); this.nextBar += this.barLength(song); continue; }
       this.tracks.forEach((ts, ti) => { if (ts.next === tick) this.step(song, ti, ts); });
-      if (tick === this.nextClock) { this.sink.clock?.(this.tickTime(tick)); this.nextClock += CLOCK_TICKS; }
+      if (tick === this.nextClock) {
+        this.sink.clock?.(this.tickTime(tick));
+        if (tick % 24 === 0) this.automate(song, tick);
+        this.nextClock += CLOCK_TICKS;
+      }
     }
   }
 
@@ -114,9 +127,22 @@ export class Engine {
 
   bar(song, tick) {
     this.secBar++;
+    let n = (this.bars.at(-1)?.n ?? -1) + 1;
     if (this.mode === 'song') {
-      if (this.enterSong) { this.enterSong = false; this.enterSection(song, 0, tick); }
-      else if (this.secBar >= song.song[this.section].bars) this.enterSection(song, (this.section + 1) % song.song.length, tick);
+      const last = song.song.length - 1, ok = k => (k === null ? null : Math.max(0, Math.min(last, k)));
+      if (this.enterSong) { this.enterSong = false; this.enterSection(song, ok(this.jumpTo) ?? ok(this.from) ?? 0, tick); }
+      else if (this.jumpTo !== null) this.enterSection(song, ok(this.jumpTo), tick);
+      else if (this.secBar >= song.song[this.section].bars) this.enterSection(song, ok(this.loopSection) ?? (this.section + 1) % song.song.length, tick);
+      this.jumpTo = null;
+      // The chord track counts bars from the top of the song, wherever playing started or jumped to.
+      if (this.secBar === 0) n = song.song.slice(0, this.section).reduce((a, s) => a + s.bars, 0);
+      // Fills: in a section's last bar, tracks with a fill switch to it (from its first step), even
+      // ones silent in the section (drums dropping out, then a fill back in).
+      const sec = song.song[this.section];
+      if (sec.fill && this.secBar === sec.bars - 1) this.tracks.forEach((ts, ti) => {
+        const f = sec.fill[ti];
+        if (f) Object.assign(ts, { pattern: f, pos: 0, next: tick, silent: false, poolIdx: -1, count: -1 });
+      });
     } else {
       for (const [ti, pattern] of this.queued) {
         const ts = this.tracks[ti];
@@ -126,6 +152,9 @@ export class Engine {
       // Coming back from song mode, un-silence tracks.
       this.tracks.forEach((ts, ti) => { if (ts.silent) Object.assign(ts, { silent: false, pattern: song.tracks[ti].pattern, pos: 0, next: tick, count: -1 }); });
     }
+    // Kept for a while: the chord track is asked about notes up to a lookahead ahead of now.
+    this.bars.push({ tick, len: this.barLength(song), n });
+    if (this.bars.length > 4) this.bars.shift();
     this.sink.bar?.(this.section, this.secBar, this.tickTime(tick));
   }
 
@@ -138,6 +167,31 @@ export class Engine {
       Object.assign(ts, { silent: p === null, pos: 0, next: tick, poolIdx: -1, count: -1 });
       if (p) ts.pattern = p;
     });
+  }
+
+  // Automation lanes (song mode only), every sixteenth note: each lane's value at the song's bar,
+  // sent when it has changed.
+  automate(song, tick) {
+    if (this.mode !== 'song' || this.enterSong || !song.auto?.length) return;
+    const b = this.bars.findLast(x => x.tick <= tick);
+    if (!b) return;
+    const at = b.n + (tick - b.tick) / b.len;
+    song.auto.forEach((lane, k) => {
+      const v = autoValue(lane.points, at);
+      if (v === null || Math.abs(v - (this.autoSent[k] ?? -1)) < 0.003) return;
+      this.autoSent[k] = v;
+      this.sink.auto?.(lane.ti, lane, v, this.tickTime(tick));
+    });
+  }
+
+  // The chord track at `tick` (in a recent bar): { chord, bar, slot, text } (chord null = no chord
+  // there), or null without one. It counts bars from where playback started (loop mode) or from the
+  // top of the song (song mode), across sections.
+  chordFor(song, tick) {
+    const text = song.chords, b = this.bars?.findLast(x => x.tick <= tick);
+    if (!text || !b) return null;
+    const at = chordAt(text, b.n + Math.floor((tick - b.tick) / b.len), ((tick - b.tick) % b.len) / b.len);
+    return at && { ...at, text };
   }
 
   step(song, ti, ts) {
@@ -154,6 +208,8 @@ export class Engine {
     // Swing delays every second step: 50% is straight, 66% a triplet feel, 75% dotted.
     if (!pat.beats && SWUNG_RATES.has(track.rate) && Math.floor(ts.next / rate) % 2 === 1) at += (song.swing / 100 - 0.5) * 2 * stepMs;
 
+    // Following the chord track (chords.js): note-pool tracks play the chord, others move or fit to it.
+    const ch = track.follow && !ts.silent ? this.chordFor(song, ts.next) : null, chord = ch?.chord;
     let played = [];
     for (const g of ts.silent ? [] : stepGroups(pat, ts.pos, ts.count)) {
       const s = g.s;
@@ -161,23 +217,25 @@ export class Engine {
       if (s.prob && this.rng() * 100 >= s.prob) continue;
       let notes = g.notes;
       if (track.mode === 'pool') {
-        const list = poolOrder(this.pool(ti), track.pool.order);
+        const list = poolOrder(chord ? chordPool(chord, this.pool(ti)) : this.pool(ti), track.pool.order);
         if (!list.length) notes = [];
         else if (track.pool.order === 'random') notes = [list[Math.floor(this.rng() * list.length)]];
         else { ts.poolIdx = (ts.poolIdx + 1) % list.length; notes = [list[ts.poolIdx]]; }
       }
-      played = played.concat(notes);
+      // Notes keep their own velocity and feel (from the written note) wherever they move to.
+      const to = !chord || track.mode === 'pool' ? null
+        : track.follow === 'fit' ? fitNotes(notes, chord) : new Map(notes.map(n => [n, moveNote(n, chord, referenceRoot(song, ch.text), song.scale)]));
+      played = played.concat(to ? notes.map(n => to.get(n)) : notes);
       if (audible(song, ti)) {
         // End a hair early so a note at 100% gate is off before the next one on the same key.
         const rat = s.rat || 1;
         // The track's feel moves each note a little and varies how hard it's played.
         const feel = track.feel, play = (n, t, dur) => {
           const f = feelNote(feel, n, velOf(s, n), this.rng);
-          this.sink.note?.(ti, n, f.vel, t + f.dt, dur);
+          this.sink.note?.(ti, to ? to.get(n) : n, f.vel, t + f.dt, dur);
         };
         if (rat === 1) {
-          const dur = Math.max(5, noteSteps(s, pat.length) * stepMs - 2);
-          for (const n of notes) play(n, at, dur);
+          for (const n of notes) play(n, at, Math.max(5, noteSteps(s, pat.length, n) * stepMs - 2));
         } else {
           // A ratchet repeats the note evenly across its length; gate applies to each repeat.
           const each = Math.max(1, Math.min(s.len, pat.length - s.i)) * stepMs / rat;

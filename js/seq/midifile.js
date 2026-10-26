@@ -58,7 +58,7 @@ function vlq(n) {
 // included, muted or not (mute them in the DAW instead).
 export function renderSong(song, { seed = 1 } = {}) {
   const copy = { ...song, tracks: song.tracks.map(t => ({ ...t, mute: false, solo: false })) };
-  const out = copy.tracks.map(() => []), ccs = copy.tracks.map(() => []);
+  const out = copy.tracks.map(() => []), ccs = copy.tracks.map(() => []), autos = [];
   let now = 0, t0 = 0;
   const tickMs = 60000 / (song.bpm * TICKS_PER_BEAT);
   const engine = new Engine({
@@ -67,6 +67,13 @@ export function renderSong(song, { seed = 1 } = {}) {
       start(at) { t0 = at; },
       note(ti, note, vel, at, dur) { out[ti].push({ tick: (at - t0) / tickMs, dur: dur / tickMs, note, vel }); },
       cc(ti, cc, v, at) { ccs[ti].push({ tick: Math.round((at - t0) / tickMs), cc, v }); },
+      // Automation: kept as values (for rendering audio) and as the CC hardware would get (the .mid).
+      auto(ti, lane, v, at) {
+        const tick = Math.round((at - t0) / tickMs);
+        autos.push({ ti, target: lane.target, v, tick });
+        const cc = lane.target === 'level' ? 7 : lane.target === 'filter' ? 74 : lane.cc;
+        ccs[ti].push({ tick, cc, v: lane.target === 'level' ? Math.round(Math.min(127, copy.tracks[ti].vol) * v) : Math.round(v * 127) });
+      },
     },
   });
   engine.mode = 'song';
@@ -80,7 +87,7 @@ export function renderSong(song, { seed = 1 } = {}) {
   while (now < endMs) { now += 500; engine.pump(); }
   engine.stop();
   return {
-    name: song.name, bpm: song.bpm, bars, meters,
+    name: song.name, bpm: song.bpm, bars, meters, autos: autos.filter(a => a.tick < end),
     tracks: copy.tracks.map((t, ti) => ({
       name: t.name, ch: t.ch, program: t.program,
       notes: out[ti].filter(n => Math.round(n.tick) < end)

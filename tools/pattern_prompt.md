@@ -64,6 +64,16 @@ rhythm should walk through (they're played in the track's pool order, e.g. up).
   meters (5/4, 7/8…) phrase in the bar's groupings (7/8 as 2+2+3 or 3+2+2) and accent its first
   step; a pattern whose length isn't a whole number of bars drifts against the bar, which can be
   the point.
+- The context may give `chords`: the song's chord progression ("Am | F | C G": bars separated by
+  "|", chords in a bar sharing it) and how this track uses it (`chords.track`):
+  - "moves with the chords": the sequencer moves the pattern to each chord's root as it plays. Write
+    it over the given `writeOver` chord only (the key's tonic), never the changes themselves, or
+    they're applied twice.
+  - "fits to the chords": the sequencer moves every note to the nearest note of the current chord.
+    Write the rhythm, register and voicing you want; any chord will do.
+  - "plays as written": fit the notes to the progression yourself. The pattern starts with the
+    progression's first bar; if it's shorter than the progression it repeats under every chord, so
+    favour notes that suit them all (or the first chord's, for a one-bar pattern under one chord).
 - Swing is applied by the sequencer to every second step; write straight, it handles the feel.
 - When asked to vary the current pattern, keep its identity (rhythm, key notes, register) and
   change some details: a few notes, an extra rhythm, a different ending.

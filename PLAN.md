@@ -6,11 +6,10 @@ built in a cloud session on the public repo (no hardware or user data needed).
 ## Order agreed (Oct 2026)
 
 1. ~~Mixing~~ (built Oct 2026: see CLAUDE.md, Mixer and Render song).
-2. **Chord track**: a key and a progression (or typed chords) that other tracks follow: note pools
-   arpeggiate the current chord, basslines and 🎲/AI ideas fit the chords. ☁︎
-3. **Piano roll** for melodic tracks (free note lengths and pitches), and an **arrangement timeline**
-   (sections left to right, repeats and variations, automation lanes across the song, fills into new
-   sections). ☁︎
+2. ~~Chord track~~ (built Oct 2026: see CLAUDE.md, Chord track).
+3. ~~Piano roll~~ and the **arrangement timeline** with fills and automation lanes (built Oct 2026:
+   see CLAUDE.md). Possible next: chords per section on the timeline, more automation targets
+   (sends, pan, effect settings). ☁︎
 
 ## More ideas, not ordered
 

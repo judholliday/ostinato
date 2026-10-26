@@ -15,7 +15,7 @@ import { ensureFx } from '../lab/fxworklet.js';
 const LEAD = 0.05; // seconds of silence before bar 1
 
 // Renders `tis` (track indexes) of the song with the full mix; returns [left, right] at sampleRate.
-async function renderTracks(song, notes, tis, { seconds, sampleRate, heard }) {
+async function renderTracks(song, notes, tis, { seconds, sampleRate, heard, autos }) {
   const ctx = new OfflineAudioContext(2, Math.ceil(seconds * sampleRate), sampleRate);
   await ensureFx(ctx);
   const master = ctx.createGain();
@@ -53,6 +53,7 @@ async function renderTracks(song, notes, tis, { seconds, sampleRate, heard }) {
     const drums = song.tracks[src].mode === 'steps' && M.roleOf(song.tracks[src]) === 'drums';
     for (const n of notes[src]) if (!drums || n.note === 35 || n.note === 36) mixer.duckAt(at(n.tick));
   }
+  for (const a of autos) if (tis.includes(a.ti)) mixer.automate(a.ti, a.target, a.v, at(a.tick));
   await Promise.all(synths.map(({ s }) => s.ready()));
   for (const { s, ti } of synths) for (const n of notes[ti]) s.play(n.note, n.vel, at(n.tick), Math.max(0.02, n.dur * tickS));
   const buf = await ctx.startRendering();
@@ -62,7 +63,7 @@ async function renderTracks(song, notes, tis, { seconds, sampleRate, heard }) {
 // The song as audio: { mix: [L, R] | null, stems: [{ ti, name, chans }], missing: [track names],
 // sampleRate, seconds }. Muted tracks are left out (solo works as when playing).
 export async function renderSongAudio(song, { mix = true, stems = false, sampleRate = 48000, tail = 4, onProgress } = {}) {
-  const { tracks } = renderSong(song);
+  const { tracks, autos } = renderSong(song);
   const notes = tracks.map(t => t.notes);
   const heard = song.tracks.map((_, ti) => M.audible(song, ti));
   const computer = song.tracks.map((t, ti) => ti).filter(ti => heard[ti] && song.tracks[ti].out === M.COMPUTER && notes[ti].length);
@@ -70,10 +71,10 @@ export async function renderSongAudio(song, { mix = true, stems = false, sampleR
   const seconds = LEAD + M.songTicks(song) * 60 / (song.bpm * M.TICKS_PER_BEAT) + tail;
   const out = { mix: null, stems: [], missing, sampleRate, seconds };
   if (!computer.length) return out;
-  if (mix) { onProgress?.('the mix'); out.mix = await renderTracks(song, notes, computer, { seconds, sampleRate, heard }); }
+  if (mix) { onProgress?.('the mix'); out.mix = await renderTracks(song, notes, computer, { seconds, sampleRate, heard, autos }); }
   if (stems) for (const ti of computer) {
     onProgress?.(song.tracks[ti].name);
-    out.stems.push({ ti, name: song.tracks[ti].name, chans: await renderTracks(song, notes, [ti], { seconds, sampleRate, heard }) });
+    out.stems.push({ ti, name: song.tracks[ti].name, chans: await renderTracks(song, notes, [ti], { seconds, sampleRate, heard, autos }) });
   }
   return out;
 }

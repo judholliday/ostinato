@@ -7,14 +7,17 @@
 //                pool: { notes, order, latch },
 //                patterns: { A: { length, steps: [{ i, notes, vel, gate, len, prob?, rat?, nv? }],
 //                                 cc?: [{ cc, glide, steps: [{ i, v }] }], beats?, laneLen? }, B, C, D } }],
-//     meter: '4/4', song: [{ bars, play: ['A', null, ...], meter? }], masterFx }   // a section's meter overrides the song's   // play[] has one entry per track; null = silent
+//     meter: '4/4', song: [{ bars, play: ['A', null, ...], meter?, name?, fill? }], masterFx }   // a section's meter overrides the song's   // play[] has one entry per track; null = silent
 //
 // Steps are stored sparsely: only steps that play a note, each with its start index `i`, the MIDI
 // notes it plays (several = a chord; empty on note-pool tracks), velocity 1-127, gate (% of its
 // last step that the note sounds for) and len (how many steps the note is held across). Optional:
 // prob (1-99: the % chance the step plays; absent = always) and rat (2-8: the note repeats that
-// many times across its length, a ratchet; absent = once), and nv ({ note: velocity } for notes
-// that play at their own velocity, e.g. a ghost snare under a hat; absent = all at `vel`).
+// many times across its length, a ratchet; absent = once), nv ({ note: velocity } for notes that
+// play at their own velocity, e.g. a ghost snare under a hat; absent = all at `vel`) and nl ({ note:
+// steps } for notes held for their own length, set in the piano roll; absent = all `len`). A step's
+// `len` never reaches past the next step, but a note's `nl` may: in the piano roll a held note can
+// carry on under the next ones.
 //
 // `beats` (1-16): the pattern's steps are spread evenly over that many beats instead of each being
 // one `rate` long, so 5 steps in 4 beats plays five against the other tracks' four (a polyrhythm).
@@ -38,6 +41,13 @@
 // track whose notes do the pushing, e.g. the drums; on a drum track only its kicks do). The song's
 // `mix`: { reverb: { size, damping }, delay: { sync, feedback, tone }, release (s: how long ducked
 // tracks take to come back) }. Sends, ducking and meters are for computer sounds only.
+// Automation (song mode, across the whole song): `auto` = [{ ti, target: 'level' | 'filter' | 'cc',
+// cc (for 'cc'), points: [{ at: song bars from the top (fractional), v: 0-1 }] }]. Between points the
+// value moves in a straight line; before the first and after the last it holds. Level is a ride on
+// the track's level (1 = as set), Filter a low-pass from closed (0) to open (1); hardware gets CC 7,
+// CC 74 or the lane's CC.
+// The chord track (chords.js): the song's `chords` (a progression typed like a lead sheet, "Am | F |
+// C G"; '' = none), and a track's `follow` ('move' | 'fit'; absent = plays as written).
 
 import { normalizePatch, cleanRack, SYNC } from '../lab/patch.js';
 
@@ -102,7 +112,7 @@ export function newTrack(index = 0, fields = {}) {
   const t = {
     name: `Track ${index + 1}`, out: COMPUTER, ch: 2, voice: VOICES[index % VOICES.length],
     mode: 'steps', rate: '1/16', pattern: 'A', mute: false, solo: false, vol: 100, pan: 0, reverb: 0, delay: 0, duck: 0, sidechain: false,
-    sound: null, program: null, inst: null, fx: null, feel: null,
+    sound: null, program: null, inst: null, fx: null, feel: null, follow: null,
     pool: { notes: [48, 51, 55], order: 'up', latch: true },
     patterns: Object.fromEntries(PATTERNS.map(p => [p, newPattern()])),
     ...fields,
@@ -113,10 +123,10 @@ export function newTrack(index = 0, fields = {}) {
 
 export function newSong() {
   return {
-    format: FORMAT, version: VERSION, name: 'Untitled', bpm: 120, swing: 50, scale: null, meter: '4/4',
+    format: FORMAT, version: VERSION, name: 'Untitled', bpm: 120, swing: 50, scale: null, meter: '4/4', chords: '',
     tracks: [newTrack(0, { name: 'Bass', voice: 'Bass' })],
     song: [{ bars: 4, play: ['A'] }],
-    masterFx: null, mix: cleanMix(null),
+    masterFx: null, mix: cleanMix(null), auto: [],
   };
 }
 
@@ -144,6 +154,8 @@ export function normalizeSong(raw) {
       return p === null ? null : PATTERNS.includes(p) ? p : 'A';
     }),
     ...(METERS.includes(sec?.meter) ? { meter: sec.meter } : {}),
+    ...(typeof sec?.name === 'string' && sec.name.trim() ? { name: sec.name.trim().slice(0, 24) } : {}),
+    ...cleanFill(sec?.fill, tracks.length),
   }));
   if (!song.length) song.push({ bars: 4, play: tracks.map(() => 'A') });
   return {
@@ -151,10 +163,48 @@ export function normalizeSong(raw) {
     name: String(raw.name ?? 'Untitled').slice(0, 60) || 'Untitled',
     bpm: clamp(raw.bpm, 20, 300, 120),
     swing: clamp(raw.swing, 50, 75, 50),
-    scale, meter: METERS.includes(raw.meter) ? raw.meter : '4/4', tracks, song,
+    scale, meter: METERS.includes(raw.meter) ? raw.meter : '4/4', chords: cleanChords(raw.chords), tracks, song, auto: cleanAuto(raw.auto, tracks.length),
     masterFx: cleanFx(raw.masterFx), mix: cleanMix(raw.mix),
   };
 }
+
+export const AUTO_TARGETS = { level: 'Level', filter: 'Filter', cc: 'CC' };
+export const MAX_AUTO = 8;
+export function cleanAuto(raw, n) {
+  const lanes = [];
+  for (const l of Array.isArray(raw) ? raw : []) {
+    const ti = Number.isInteger(l?.ti) && l.ti >= 0 && l.ti < n ? l.ti : -1, target = AUTO_TARGETS[l?.target] ? l.target : null;
+    const cc = target === 'cc' ? clamp(l.cc, 1, 119, -1) : null;
+    if (ti < 0 || !target || cc === -1 || lanes.length >= MAX_AUTO) continue;
+    if (lanes.some(x => x.ti === ti && x.target === target && x.cc === cc)) continue;
+    const points = (Array.isArray(l.points) ? l.points : []).map(p => ({ at: clampF(p?.at, 0, 1024, -1), v: clampF(p?.v, 0, 1, -1) }))
+      .filter(p => p.at >= 0 && p.v >= 0).sort((a, b) => a.at - b.at).slice(0, 256);
+    lanes.push({ ti, target, ...(target === 'cc' ? { cc } : {}), points });
+  }
+  return lanes;
+}
+// An automation lane's value at a song position (bars from the top), or null with no points.
+export function autoValue(points, at) {
+  if (!points.length) return null;
+  if (at <= points[0].at) return points[0].v;
+  for (let k = 1; k < points.length; k++) {
+    const a = points[k - 1], b = points[k];
+    if (at <= b.at) return b.at === a.at ? b.v : a.v + (b.v - a.v) * (at - a.at) / (b.at - a.at);
+  }
+  return points.at(-1).v;
+}
+
+// A section's fills: `fill` has one entry per track, the pattern that track plays in the section's
+// last bar instead (a drum fill into the next section; also when the track is silent in the
+// section), or null. Absent when no track has one.
+function cleanFill(raw, n) {
+  const fill = Array.from({ length: n }, (_, ti) => (Array.isArray(raw) && PATTERNS.includes(raw[ti]) ? raw[ti] : null));
+  return fill.some(Boolean) ? { fill } : {};
+}
+
+// A chord progression's text (chords.js parses it), tidied: one line, at most 400 characters.
+export const cleanChords = c => (typeof c === 'string' ? c.replace(/\s+/g, ' ').trim().slice(0, 400) : '');
+export const FOLLOWS = ['move', 'fit'];
 
 // Only one track can be the side-chain source: the first that says so.
 const oneSidechain = tracks => { let seen = false; for (const t of tracks) { if (t.sidechain && seen) t.sidechain = false; seen ||= t.sidechain; } return tracks; };
@@ -177,11 +227,19 @@ export function cleanPattern(p, { length, onlyBelow = MAX_STEPS } = {}) {
     const nv = {};
     if (s.nv && typeof s.nv === 'object') for (const n of step.notes) { const x = clamp(s.nv[n], 1, 127, step.vel); if (x !== step.vel) nv[n] = x; }
     if (Object.keys(nv).length) step.nv = nv;
+    const nl = {}; // all given for now (even ones equal to len): they matter if len is cut below
+    if (s.nl && typeof s.nl === 'object') for (const n of step.notes) if (s.nl[n] !== undefined) nl[n] = clamp(s.nl[n], 1, MAX_STEPS, step.len);
+    if (Object.keys(nl).length) step.nl = nl;
     steps.push(step);
   }
   steps.sort((a, b) => a.i - b.i);
-  // A note can't hold over the next one.
-  steps.forEach((s, k) => { if (steps[k + 1]) s.len = Math.min(s.len, steps[k + 1].i - s.i); });
+  // A step's length can't hold over the next one; notes given their own length (nl) still can.
+  steps.forEach((s, k) => {
+    const gap = steps[k + 1] ? steps[k + 1].i - s.i : Infinity;
+    if (s.len > gap && s.nl) for (const n of s.notes) if (s.nl[n] === undefined) s.nl[n] = s.len;
+    s.len = Math.min(s.len, gap);
+    if (s.nl) { for (const n of Object.keys(s.nl)) if (s.nl[n] === s.len) delete s.nl[n]; if (!Object.keys(s.nl).length) delete s.nl; }
+  });
   const cc = cleanLanes(p?.cc, onlyBelow);
   const out = cc.length ? { length, steps, cc } : { length, steps };
   if (p?.beats) out.beats = clamp(Math.round(p.beats), 1, 16, 4);
@@ -306,6 +364,7 @@ function normalizeTrack(t, ti) {
     inst: cleanInst(t?.inst),
     fx: cleanFx(t?.fx),
     feel: cleanFeel(t?.feel),
+    follow: FOLLOWS.includes(t?.follow) ? t.follow : null,
     program: Number.isInteger(t?.program) && t.program >= 0 && t.program <= 127 ? t.program : null,
     pool: {
       notes: notes(t?.pool?.notes).slice(0, 16),
@@ -355,9 +414,65 @@ export function removeStep(pattern, i) {
 }
 
 // How long a step's note sounds, in steps: all but its last held step, plus the gate of the last.
-export function noteSteps(step, patternLength) {
-  const held = Math.max(1, Math.min(step.len, patternLength - step.i));
+// With `note`, that note's own length (nl) if it has one.
+export function noteSteps(step, patternLength, note) {
+  const held = Math.max(1, Math.min(note === undefined ? step.len : lenOf(step, note), patternLength - step.i));
   return held - 1 + step.gate / 100;
+}
+export const lenOf = (s, n) => s.nl?.[n] ?? s.len;
+
+// ---- the piano roll: a pattern as separate notes ----
+
+// Every note that starts in the pattern: [{ i, note, len, vel }] (len in steps, to the pattern's end
+// at most).
+export function rollNotes(pat) {
+  return pat.steps.filter(s => s.i < pat.length).flatMap(s => s.notes.map(note => ({ i: s.i, note, len: Math.min(lenOf(s, note), pat.length - s.i), vel: velOf(s, note) })));
+}
+
+// Rebuilds a pattern's notes from a list like rollNotes() returns. Notes starting together share a
+// step (the loudest sets its velocity and the lowest its length; others keep theirs in nv and nl),
+// which keeps its gate, chance and ratchet; new steps get gate 100, so a note sounds as long as it's
+// drawn. A note of the same pitch starting under a held one cuts it short. Steps without notes stay.
+export function setRollNotes(pat, list) {
+  const keep = new Map(pat.steps.map(s => [s.i, s]));
+  const byKey = new Map();
+  for (const x of list) {
+    const i = Math.round(x.i), note = Math.round(x.note);
+    if (!(i >= 0 && i < pat.length && note >= 0 && note <= 127)) continue;
+    byKey.set(`${i}:${note}`, { i, note, len: Math.max(1, Math.min(Math.round(x.len) || 1, pat.length - i)), vel: Math.max(1, Math.min(127, Math.round(x.vel) || 100)) });
+  }
+  const notes = [...byKey.values()].sort((a, b) => a.note - b.note || a.i - b.i);
+  notes.forEach((x, k) => { const nx = notes[k + 1]; if (nx && nx.note === x.note && nx.i < x.i + x.len) x.len = Math.max(1, nx.i - x.i); });
+  const groups = new Map();
+  for (const x of notes) { if (!groups.has(x.i)) groups.set(x.i, []); groups.get(x.i).push(x); }
+  const empty = pat.steps.filter(s => !s.notes.length && !groups.has(s.i));
+  const starts = [...new Set([...groups.keys(), ...empty.map(s => s.i)])].sort((a, b) => a - b);
+  pat.steps = starts.map((i, k) => {
+    const g = groups.get(i);
+    if (!g) return keep.get(i);
+    const old = keep.get(i), gap = (starts[k + 1] ?? pat.length) - i, vel = Math.max(...g.map(x => x.vel)), len = Math.min(g[0].len, gap);
+    const s = { i, notes: g.map(x => x.note), vel, gate: old?.notes.length ? old.gate : 100, len };
+    if (old?.prob) s.prob = old.prob;
+    if (old?.rat) s.rat = old.rat;
+    const nv = Object.fromEntries(g.filter(x => x.vel !== vel).map(x => [x.note, x.vel]));
+    const nl = Object.fromEntries(g.filter(x => x.len !== len).map(x => [x.note, x.len]));
+    if (Object.keys(nv).length) s.nv = nv;
+    if (Object.keys(nl).length) s.nl = nl;
+    return s;
+  });
+  return pat;
+}
+
+// A step's notes moved by fn (e.g. transposed), keeping each note's own velocity and length.
+export function mapNotes(s, fn) {
+  const moved = s.notes.map(n => [n, fn(n)]), own = key => {
+    if (!s[key]) return;
+    const m = Object.fromEntries(moved.filter(([n]) => s[key][n] !== undefined).map(([n, to]) => [to, s[key][n]]));
+    if (Object.keys(m).length) s[key] = m; else delete s[key];
+  };
+  own('nv'); own('nl');
+  s.notes = [...new Set(moved.map(([, to]) => to))].sort((a, b) => a - b);
+  return s;
 }
 
 // How many ticks one pass of a pattern lasts at a track's rate (its `beats`, if fitted).
@@ -401,7 +516,7 @@ export function drumStep(i, hits, fields = {}) {
 }
 
 export const copyPattern = p => ({ length: p.length, ...(p.beats ? { beats: p.beats } : {}), ...(p.laneLen ? { laneLen: { ...p.laneLen } } : {}),
-  steps: p.steps.map(s => ({ ...s, notes: [...s.notes], ...(s.nv ? { nv: { ...s.nv } } : {}) })),
+  steps: p.steps.map(s => ({ ...s, notes: [...s.notes], ...(s.nv ? { nv: { ...s.nv } } : {}), ...(s.nl ? { nl: { ...s.nl } } : {}) })),
   ...(p.cc?.length ? { cc: p.cc.map(l => ({ ...l, steps: l.steps.map(s => ({ ...s })) })) } : {}) });
 
 // ---- note pool ----
@@ -447,7 +562,7 @@ export function addTrack(song, fields = {}) {
   if (song.tracks.length >= MAX_TRACKS) return null;
   const t = newTrack(song.tracks.length, fields);
   song.tracks.push(t);
-  song.song.forEach(sec => sec.play.push('A'));
+  song.song.forEach(sec => { sec.play.push('A'); sec.fill?.push(null); });
   return t;
 }
 
@@ -474,5 +589,6 @@ export function guessRole(track) {
 export function removeTrack(song, ti) {
   if (song.tracks.length <= 1) return;
   song.tracks.splice(ti, 1);
-  song.song.forEach(sec => sec.play.splice(ti, 1));
+  song.song.forEach(sec => { sec.play.splice(ti, 1); sec.fill?.splice(ti, 1); if (sec.fill && !sec.fill.some(Boolean)) delete sec.fill; });
+  if (song.auto) song.auto = song.auto.filter(l => l.ti !== ti).map(l => (l.ti > ti ? { ...l, ti: l.ti - 1 } : l));
 }
