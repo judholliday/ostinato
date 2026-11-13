@@ -8,7 +8,7 @@
 //     sound, source: { take }, created, modified }
 // pos/len in ticks (96 a beat) from the clip's start; sound as in core/sounding.js (or null).
 import * as C from '../seq/capture.js';
-import { TICKS_PER_BEAT, TICKS_PER_BAR, PATTERNS, RATES, ROLES, normalizeSong } from '../seq/model.js';
+import { TICKS_PER_BEAT, TICKS_PER_BAR, PATTERNS, MAX_PATTERNS, RATES, ROLES, normalizeSong, patternNames } from '../seq/model.js';
 import { putClip, songWithClip, soundFits, outKind, guessClipRole, roleName, backingSlice, backingTracks, backingToPlay, songFromBacking, trackSound } from '../seq/putclip.js';
 import { DEVICES } from '../core/devices.js';
 import { writeMidi } from '../seq/midifile.js';
@@ -180,7 +180,7 @@ function putTarget() {
   }
   if (ed.putTo === '__new' || ed.putTo === '__backing') return { tracks: [], name: ed.putName || '', isNew: true, fromBacking: ed.putTo === '__backing' };
   const song = ed.putSong?.file === ed.putTo ? ed.putSong.song : null;
-  return song && { name: song.name, tracks: song.tracks.map((t, ti) => ({ ti, name: t.name, mode: t.mode, rate: t.rate, pattern: t.pattern, out: outKind(t.out), soundName: t.inst?.name || t.sound?.name || '' })) };
+  return song && { name: song.name, tracks: song.tracks.map((t, ti) => ({ ti, name: t.name, mode: t.mode, rate: t.rate, pattern: t.pattern, patterns: patternNames(t), out: outKind(t.out), soundName: t.inst?.name || t.sound?.name || '' })) };
 }
 async function chooseSong(v) {
   ed.putTo = v;
@@ -210,7 +210,8 @@ function putForm([a, b]) {
   if (target.isNew || (ed.putTi !== 'new' && !tracks.some(t => t.ti === ed.putTi))) ed.putTi = target.isNew ? 'new' : tracks.find(t => t.mode !== 'pool')?.ti ?? 'new';
   const isNew = ed.putTi === 'new', t = tracks.find(x => x.ti === ed.putTi);
   const rate = isNew ? '1/16' : t.rate;
-  if (!PATTERNS.includes(ed.putPat)) ed.putPat = isNew ? 'A' : t.pattern;
+  const pats = isNew ? PATTERNS : t.patterns || PATTERNS; // the track's patterns (A-D and any more), or "+ New pattern"
+  if (!pats.includes(ed.putPat) && ed.putPat !== '__new') ed.putPat = isNew ? 'A' : t.pattern;
   const s = chosenSound(), fits = C.barsPerPattern(RATES[rate] || 24), bars = Math.ceil((b - a) / TICKS_PER_BAR);
   // A new track takes an XL sound only if the XL is connected (it plays on the XL's port).
   const ok = isNew ? !!s && (s.kind === 'xl' ? !!seq?.xlOut : soundFits(s, 'computer'))
@@ -227,13 +228,13 @@ function putForm([a, b]) {
     <label class="field">Track <select id="put-track">${tracks.map(x => `<option value="${x.ti}" ${x.ti === ed.putTi ? 'selected' : ''} ${x.mode === 'pool' ? 'disabled' : ''}>${esc(x.name)}${x.mode === 'pool' ? ' (note pool)' : ''}</option>`).join('')}
       <option value="new" ${isNew ? 'selected' : ''}>+ New track</option></select></label>
     ${isNew ? `<label class="field" title="What the new track is for: it sets its editor and the ideas it's offered">As <select id="put-role">${roles.map(r => `<option value="${r}" ${r === ed.putRole ? 'selected' : ''}>${esc(roleName(r))}</option>`).join('')}</select></label>` : ''}
-    <label class="field" ${target.fromBacking ? 'hidden' : ''}>Pattern <select id="put-pat">${PATTERNS.map(p => `<option ${p === ed.putPat ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+    <label class="field" ${target.fromBacking ? 'hidden' : ''}>Pattern <select id="put-pat">${pats.map(p => `<option ${p === ed.putPat ? 'selected' : ''}>${p}</option>`).join('')}${!isNew && pats.length < MAX_PATTERNS ? `<option value="__new" ${ed.putPat === '__new' ? 'selected' : ''}>+ New pattern</option>` : ''}</select></label>
     <label class="field" title="${why}">
       <input type="checkbox" id="put-sound" ${ed.giveSound ? 'checked' : ''} ${ok ? '' : 'disabled'}> Give ${esc(trackName)} this sound${s ? ` (${esc(s.name)})` : ''}</label>
     <span class="hint">${barsText(b - a)} at ${rate} steps${bars > fits ? `; a pattern holds ${fits} bars, so only the first ${fits} go in` : ''}.
       ${target.fromBacking ? `A new song at ${ed.bpm} BPM recreating what the Sequencer played (${esc(backingTracks(ed.backing).join(', '))}), plus yours on a new ${esc(roleName(ed.putRole).toLowerCase())} track.`
         : isNew ? `A new ${esc(roleName(ed.putRole).toLowerCase())} track${ed.giveSound ? '' : ' with its starter sound'}${target.isNew ? ` in a new song at ${ed.bpm} BPM` : ''}.`
-        : `Replaces pattern ${ed.putPat}${target.current ? '; Undo in the sequencer brings it back' : ` in the saved song "${esc(target.name)}"`}.`}</span>
+        : ed.putPat === '__new' ? `Goes into a new pattern of ${esc(trackName)}.` : `Replaces pattern ${ed.putPat}${target.current ? '; Undo in the sequencer brings it back' : ` in the saved song "${esc(target.name)}"`}.`}</span>
     <button class="accent" data-ed="put-go">Put in</button><button class="ghost small" data-ed="put-cancel">Cancel</button>
   </div>`;
 }

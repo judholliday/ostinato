@@ -59,6 +59,26 @@ assert.deepEqual(cleanPatch(STARTERS[1]), STARTERS[1], 'normalizing twice change
   assert.equal(formatValue(paramOf('amp', 'attack'), 0.005), '5 ms');
   assert.equal(newId({ modules: [{ id: 'osc1' }, { id: 'osc3' }] }, 'osc'), 'osc2');
 }
+{
+  // The arpeggiator: settings cleaned, and the order of notes for each mode.
+  const { cleanArp, arpOrder } = await import('../js/lab/patch.js');
+  assert.equal(cleanArp({ mode: 'sideways' }), null, 'unknown mode = off');
+  assert.deepEqual(cleanArp({ mode: 'up', rate: '1/3', octaves: 9, gate: 7 }), { mode: 'up', rate: '1/16', octaves: 4, gate: 1 });
+  assert.equal(normalizePatch({ ...STARTERS[0], arp: { mode: 'off' } }).patch.arp, undefined, 'off is not stored');
+  assert.deepEqual(normalizePatch({ ...STARTERS[0], arp: { mode: 'down' } }).patch.arp, { mode: 'down', rate: '1/16', octaves: 1, gate: 0.6 });
+  assert.equal(cleanArp({ mode: 'up', latch: true }).latch, true, 'latch kept');
+  assert.ok(!('latch' in cleanArp({ mode: 'up', latch: 'yes' })), 'latch only when true');
+  const held = [{ note: 64, vel: 90, seq: 0 }, { note: 60, vel: 100, seq: 1 }, { note: 67, vel: 80, seq: 2 }];
+  const notes = (mode, octaves = 1) => arpOrder(held, { mode, octaves }).map(n => n.note);
+  assert.deepEqual(notes('up'), [60, 64, 67]);
+  assert.deepEqual(notes('down'), [67, 64, 60]);
+  assert.deepEqual(notes('up-down'), [60, 64, 67, 64], 'the top and bottom notes aren\'t repeated');
+  assert.deepEqual(notes('played'), [64, 60, 67]);
+  assert.deepEqual(notes('up', 2), [60, 64, 67, 72, 76, 79]);
+  assert.deepEqual(notes('up-down', 2), [60, 64, 67, 72, 76, 79, 76, 72, 67, 64]);
+  assert.deepEqual(arpOrder([{ note: 120, vel: 1, seq: 0 }], { mode: 'up', octaves: 3 }).map(n => n.note), [120], 'no notes above 127');
+  assert.equal(arpOrder(held, { mode: 'up', octaves: 1 })[0].vel, 100, 'each note keeps its velocity');
+}
 for (const [type, spec] of Object.entries(MODULES)) {
   for (const p of spec.params) assert.ok(p.kind === 'choice' ? p.choices.includes(p.def) : p.kind === 'file' ? p.def === '' : p.def >= p.min && p.def <= p.max, `${type}.${p.key} default in range`);
 }

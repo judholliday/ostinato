@@ -828,9 +828,248 @@ const MORE = [
     audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, { from: 'osc3', to: 'filter1' }, ...chain('filter1', 'amp1', 'hall1', 'out')],
     mod: [{ from: 'breath', to: 'filter1.cutoff', amount: 700 }],
   },
+  // ---- self-playing: hold a key and tempo-synced LFOs play a pattern (they start with the note, so
+  // play on the beat). Square LFOs on pitch make the steps: each adds or takes away half an interval,
+  // and the oscillator is tuned up by half of all of them, so the lowest step is the key you hold. The
+  // square LFO's flat parts sit at ±0.848, not ±1 (the browser scales the wave so its overshoot at the
+  // edges peaks at 1; measured), so an amount of 708 moves the pitch ±600 cents, 413 ±350, 177 ±150. A
+  // 'rise' LFO with a negative amount starts each step loud (or bright) and lets it fall.
+  {
+    name: 'Octave Hopper', play: 'mono', type: 'Bass', voices: 2, volume: 0.6,
+    about: 'Hold one key: it plays eighth notes hopping between that note and the octave above, each one plucked by the filter, which also opens over every bar. Follows the song\'s tempo.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', octave: -1, semi: 6, level: 0.7 }), mod('osc', 'osc2', { wave: 'square', octave: -1, semi: 6, level: 0.3 }),
+      mod('filter', 'filter1', { cutoff: 520, resonance: 5, keytrack: 0.4 }),
+      mod('lfo', 'hop', { wave: 'square', sync: '1/4' }), mod('lfo', 'pluck', { wave: 'rise', sync: '1/8' }), mod('lfo', 'bar', { wave: 'rise', sync: '1/1' }),
+      mod('drive', 'drive1', { amount: 0.3 }), mod('amp', 'amp1', { attack: 0.003, decay: 0.2, sustain: 1, release: 0.08, level: 0.5 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'drive1', 'amp1', 'out')],
+    mod: [{ from: 'hop', to: 'osc1.pitch', amount: -708 }, { from: 'hop', to: 'osc2.pitch', amount: -708 },
+      { from: 'pluck', to: 'filter1.cutoff', amount: -1500 }, { from: 'pluck', to: 'amp1.level', amount: -0.3 }, { from: 'bar', to: 'filter1.cutoff', amount: 900 }],
+  },
+  {
+    name: 'Staircase Sequence', play: 'mono', type: 'Pluck', voices: 2, volume: 0.6,
+    about: 'Hold one key for an eight-step sixteenth-note pattern up a minor seventh chord: root, octave, fifth, fifth above, then the same from the minor third and seventh. Three square LFOs make it (an octave, a fifth and a minor third): change their amounts for other chords. Follows the tempo.',
+    modules: [mod('osc', 'osc1', { wave: 'pulse', pw: 0.35, semi: 11, level: 0.6 }), mod('osc', 'osc2', { wave: 'saw', semi: 11, fine: 7, level: 0.35 }),
+      mod('filter', 'filter1', { cutoff: 900, resonance: 4, keytrack: 0.5 }),
+      mod('lfo', 'octave', { wave: 'square', sync: '1/8' }), mod('lfo', 'fifth', { wave: 'square', sync: '1/4' }), mod('lfo', 'third', { wave: 'square', sync: '1/2' }),
+      mod('lfo', 'pluck', { wave: 'rise', sync: '1/16' }),
+      mod('amp', 'amp1', { attack: 0.003, decay: 0.2, sustain: 1, release: 0.1, level: 0.45 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.35, tone: 3500, mix: 0.22 }), mod('reverb', 'reverb1', { type: 'plate', size: 1.6, mix: 0.12 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'delay1', 'reverb1', 'out')],
+    mod: [...['osc1', 'osc2'].flatMap(o => [{ from: 'octave', to: `${o}.pitch`, amount: -708 }, { from: 'fifth', to: `${o}.pitch`, amount: -413 }, { from: 'third', to: `${o}.pitch`, amount: -177 }]),
+      { from: 'pluck', to: 'filter1.cutoff', amount: -1800 }, { from: 'pluck', to: 'amp1.level', amount: -0.35 }],
+  },
+  {
+    name: 'Computer Room', play: 'mono', type: 'FX', voices: 2, volume: 0.7,
+    about: 'Hold a key: a 1960s mainframe thinking aloud. A random pitch on every sixteenth, up to an octave either side of the key, in a four-bar pattern that repeats (a new one each time Ostinato starts). Follows the tempo.',
+    modules: [mod('osc', 'osc1', { wave: 'square', level: 0.5 }), mod('osc', 'osc2', { wave: 'sine', octave: 1, level: 0.3 }),
+      mod('filter', 'filter1', { slope: '12', cutoff: 2600, resonance: 4, keytrack: 1 }),
+      mod('lfo', 'think', { wave: 'random', sync: '1/16' }), mod('lfo', 'blip', { wave: 'rise', sync: '1/16' }),
+      mod('amp', 'amp1', { attack: 0.002, decay: 0.2, sustain: 1, release: 0.05, level: 0.45 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.3, tone: 5000, mix: 0.2 }), mod('reverb', 'reverb1', { type: 'room', size: 0.8, mix: 0.15 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'delay1', 'reverb1', 'out')],
+    mod: [{ from: 'think', to: 'osc1.pitch', amount: 1200 }, { from: 'think', to: 'osc2.pitch', amount: 1200 }, { from: 'think', to: 'filter1.cutoff', amount: 1200 },
+      { from: 'blip', to: 'amp1.level', amount: -0.4 }],
+  },
+  {
+    name: 'Polyrhythm Chord', type: 'Pluck', voices: 8, volume: 0.6,
+    about: 'Each note is three plucked tones repeating at different speeds (eighths, eighth triplets and dotted sixteenths), so a held chord ripples and never quite repeats. Follows the tempo.',
+    modules: [mod('osc', 'osc1', { wave: 'triangle', level: 0.3 }), mod('osc', 'osc2', { wave: 'saw', octave: 1, level: 0.14 }), mod('osc', 'osc3', { wave: 'pulse', pw: 0.3, octave: -1, level: 0.18 }),
+      mod('lfo', 'eighths', { wave: 'rise', sync: '1/8' }), mod('lfo', 'triplets', { wave: 'rise', sync: '1/8t' }), mod('lfo', 'dotted', { wave: 'rise', sync: '1/16.' }),
+      mod('filter', 'filter1', { slope: '12', cutoff: 2600, resonance: 1, keytrack: 0.6 }),
+      mod('amp', 'amp1', { attack: 0.004, decay: 0.3, sustain: 1, release: 0.5, velocity: 0.5 }),
+      mod('chorus', 'chorus1', { rate: 0.4, mix: 0.25 }), mod('reverb', 'reverb1', { type: 'hall', size: 2.8, mix: 0.25 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, { from: 'osc3', to: 'filter1' }, ...chain('filter1', 'amp1', 'chorus1', 'reverb1', 'out')],
+    mod: [{ from: 'dotted', to: 'osc1.level', amount: -0.3 }, { from: 'triplets', to: 'osc2.level', amount: -0.14 }, { from: 'eighths', to: 'osc3.level', amount: -0.18 }],
+  },
+  {
+    name: 'Bouncing Ball', type: 'FX', voices: 6, volume: 0.6,
+    about: 'Each note is dropped: it bounces, faster and quieter, for about five seconds. Not tied to the tempo.',
+    modules: [mod('fmop', 'op1', { ratio: 1, fm: 1.2, attack: 0.001, decay: 6, sustain: 0, release: 0.3, velocity: 0.6, level: 0.8 }),
+      mod('fmop', 'op2', { ratio: 2.76, attack: 0.001, decay: 0.6, sustain: 0.2, release: 0.2, level: 0.5 }),
+      mod('lfo', 'bounce', { wave: 'rise', rate: 2.2 }), mod('env', 'faster', { attack: 5, decay: 1, sustain: 1, release: 0.3 }),
+      mod('reverb', 'reverb1', { type: 'room', size: 0.9, mix: 0.2 })],
+    audio: [{ from: 'op2', to: 'op1' }, ...chain('op1', 'reverb1', 'out')],
+    mod: [{ from: 'bounce', to: 'op1.level', amount: -0.4 }, { from: 'bounce', to: 'op1.fm', amount: -1.2 }, { from: 'faster', to: 'bounce.rate', amount: 16 }],
+  },
+  {
+    name: 'Gate Pad', type: 'Pad', voices: 8, volume: 0.55,
+    about: 'A wide supersaw chopped in time: a sixteenth-note gate crossed with a slower one three sixteenths long, so held chords get a rolling accent pattern. Follows the tempo.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 5, spread: 22, level: 0.6 }), mod('osc', 'osc2', { wave: 'saw', octave: -1, level: 0.25 }),
+      mod('filter', 'filter1', { slope: '12', cutoff: 3200, resonance: 1.5, keytrack: 0.5 }),
+      mod('lfo', 'gate', { wave: 'square', sync: '1/8' }), mod('lfo', 'accent', { wave: 'square', sync: '1/4.' }), mod('lfo', 'sweep', { wave: 'triangle', sync: '4/1' }),
+      mod('amp', 'amp1', { attack: 0.01, decay: 0.3, sustain: 1, release: 0.4, velocity: 0.3, level: 0.4 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.3, tone: 4000, mix: 0.2 }), mod('reverb', 'reverb1', { type: 'hall', size: 2.5, mix: 0.2 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'delay1', 'reverb1', 'out')],
+    mod: [{ from: 'gate', to: 'amp1.level', amount: 0.25 }, { from: 'accent', to: 'amp1.level', amount: 0.15 }, { from: 'sweep', to: 'filter1.cutoff', amount: 1400 }],
+  },
+
+  // ---- more granular, from the second set of factory samples ----
+  {
+    name: 'Frozen Piano', volume: 1, type: 'Pad', voices: 6,
+    about: 'A piano chord stopped in time: grains creep through the first moments after the strike, so a key holds the chord (transposed) for as long as you like.',
+    modules: [mod('granular', 'gr1', { file: 'factory/Piano Chord (C4).wav', root: 60, position: 0.06, spread: 0.05, scan: 0.03, size: 0.28, density: 28, jitter: 4, width: 0.9, level: 0.9 }),
+      mod('amp', 'amp1', { attack: 0.5, decay: 1, sustain: 1, release: 3, level: 0.8 }), COMP(), mod('reverb', 'reverb1', { type: 'hall', size: 5, mix: 0.35 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Bowed Cloud', volume: 1, type: 'Strings', voices: 6,
+    about: 'Many overlapping slices of one bowed note, each slightly out of tune with the rest: a string section made from a single player.',
+    modules: [mod('granular', 'gr1', { file: 'factory/Bowed Note (C3).wav', root: 48, position: 0.5, spread: 0.5, scan: 0.02, size: 0.22, density: 36, jitter: 9, width: 1, level: 0.9 }),
+      mod('amp', 'amp1', { attack: 0.7, decay: 1, sustain: 1, release: 1.8, level: 0.8 }), COMP(),
+      mod('chorus', 'chorus1', { rate: 0.3, depth: 0.4, mix: 0.25 }), mod('reverb', 'reverb1', { type: 'hall', size: 3.5, mix: 0.3 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'chorus1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Slow Motion Voice', volume: 1, type: 'Pad', voices: 6,
+    about: 'A voice moving through its vowels (ah, eh, ee, oh, oo) at an eighth of its speed, whatever key you play.',
+    modules: [mod('granular', 'gr1', { file: 'factory/Vowel Phrase (C3).wav', root: 48, position: 0.02, spread: 0.02, scan: 0.125, size: 0.12, density: 40, jitter: 5, width: 0.7, level: 0.9 }),
+      mod('amp', 'amp1', { attack: 0.3, decay: 1, sustain: 1, release: 1.5, level: 0.8 }), COMP(), mod('reverb', 'reverb1', { type: 'hall', size: 3.5, mix: 0.3 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Speech Shards', volume: 0.75, type: 'FX', voices: 4,
+    about: 'The same voice broken into tiny pieces taken from anywhere in the phrase and thrown up to a fifth up or down: chattering, like a crowd of small robots.',
+    modules: [mod('granular', 'gr1', { file: 'factory/Vowel Phrase (C3).wav', root: 48, position: 0.5, spread: 1, scan: 0, size: 0.045, density: 22, jitter: 700, width: 1, level: 1 }),
+      mod('amp', 'amp1', { attack: 0.02, decay: 0.5, sustain: 1, release: 0.6, level: 0.8 }), COMP(),
+      mod('delay', 'delay1', { mode: 'ping-pong', time: 0.23, feedback: 0.4, tone: 4000, mix: 0.3 }), mod('reverb', 'reverb1', { type: 'room', size: 1.2, mix: 0.18 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'delay1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Beat Dust', volume: 1, type: 'FX', voices: 4,
+    about: 'A two-bar drum loop (100 bpm) in grains: every key plays it at the same speed but a different pitch, C4 as recorded. Position (on the mod wheel in the Sound Lab) moves where it starts; raise Spread to grind it to dust, or set Scan to 0 to hold one moment.',
+    modules: [mod('granular', 'gr1', { file: 'factory/Drum Loop (100 bpm).wav', root: 60, position: 0, spread: 0.012, scan: 1, size: 0.07, density: 45, jitter: 0, width: 0.5, level: 1 }),
+      mod('amp', 'amp1', { attack: 0.005, decay: 0.5, sustain: 1, release: 0.3, level: 0.8 }), mod('crusher', 'crush1', { bits: 10, hold: 3, mix: 0.4 }), mod('compressor', 'limit1', { threshold: -10, ratio: 12, attack: 0.001, release: 0.1, gain: 5 })],
+    audio: chain('gr1', 'amp1', 'crush1', 'limit1', 'out'),
+    cc: { 1: 'gr1.position' },
+  },
+  {
+    name: 'Time Stretch Keys', volume: 1, type: 'Bell', voices: 6,
+    about: 'A music-box phrase that plays at the same speed on every key, only higher or lower: play chords and the phrase harmonises with itself.',
+    modules: [mod('granular', 'gr1', { file: 'factory/Music Box Phrase (C5).wav', root: 72, position: 0, spread: 0.004, scan: 1, size: 0.09, density: 40, jitter: 0, width: 0.6, level: 0.9 }),
+      mod('amp', 'amp1', { attack: 0.01, decay: 1, sustain: 1, release: 1.5, level: 0.8 }), COMP(), mod('reverb', 'reverb1', { type: 'plate', size: 2.5, mix: 0.25 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Vinyl Dust', volume: 1, type: 'FX', voices: 2,
+    about: 'Record crackle and hiss for as long as you hold a key, never repeating the same way. Put it on its own track under a song; higher keys are brighter.',
+    modules: [mod('granular', 'gr1', { file: 'factory/Vinyl Crackle.wav', root: 60, position: 0.5, spread: 1, scan: 0.3, size: 0.4, density: 8, jitter: 60, width: 1, level: 1 }),
+      mod('amp', 'amp1', { attack: 0.2, decay: 1, sustain: 1, release: 0.8, velocity: 0.3, level: 0.8 }),
+      mod('compressor', 'gain1', { threshold: 0, ratio: 1, gain: 9 })], // only its make-up gain: crackle is quiet (a working compressor made the pops louder)
+    audio: chain('gr1', 'amp1', 'gain1', 'out'),
+  },
 ].map(cleanPatch);
 
-export const FACTORY = [...STARTERS, ...MORE, ...KEYS.map(cleanPatch)];
+// ---- arpeggiated: sounds above with the arpeggiator switched on (hold a chord) ----
+const arped = (base, name, type, arp, about, extra = {}) => cleanPatch({ ...JSON.parse(JSON.stringify([...STARTERS, ...MORE, ...KEYS].find(p => p.name === base))), name, type, arp, about, ...extra });
+const ARPS = [
+  arped('Saw Arp', 'Climbing Saws', 'Pluck', { mode: 'up', rate: '1/16', octaves: 2, gate: 0.5 }, 'Hold a chord: its notes run upward in sixteenths over two octaves, again and again. Arp (beside Play) sets the direction, speed, octaves and how short the notes are.'),
+  arped('Glass Arp', 'Glass Rain', 'Bell', { mode: 'random', rate: '1/16', octaves: 3, gate: 0.4 }, 'Hold a chord: its notes fall at random across three octaves, a glassy pluck on every sixteenth with a ping-pong echo.'),
+  arped('Dub Chord', 'Chord Pulse', 'Keys', { mode: 'chord', rate: '1/8.', octaves: 1, gate: 0.35 }, 'Hold a chord: it stabs again every dotted eighth, into the echo.', { volume: 0.5 }),
+  arped('Square Bass', 'Rolling Bass', 'Bass', { mode: 'up-down', rate: '1/16', octaves: 2, gate: 0.7 }, 'Hold one note for octaves in sixteenths, or two or three for a bass line that rolls up and back down.'),
+  arped('Nylon Pluck', 'Thumb and Fingers', 'Pluck', { mode: 'played', rate: '1/8t', octaves: 1, gate: 0.9 }, 'Hold a chord: it plays the notes in the order you pressed them, in triplets, like a picked guitar pattern. Press the bass note first.'),
+];
+
+// ---- strange things ----
+// An endless rise or fall (a Shepard tone): six sines, each sweeping six octaves around the key
+// and then jumping back, a sixth of a cycle after one another (the LFOs' Start at), so they're always
+// an octave apart. Each is loudest in the middle of its sweep and silent at the ends (a raised
+// cosine: six of them a sixth apart always add up to the same level), so it makes its jump unheard.
+// (The first version swept seven sines one octave and jumped them all together, each landing where
+// its neighbour had been: the jump takes the LFO some 20 ms, and all seven sliding down an octave
+// at once made a pop.) Pitch amounts are × 1.18 because a rise LFO's ramp runs ±0.848 (see above).
+const shepard = (name, dir, about) => {
+  const N = 6, L = 0.2, ks = [...Array(N).keys()];
+  return {
+    name, type: 'FX', voices: 2, volume: 0.6, about,
+    modules: [...ks.flatMap(k => [mod('osc', `osc${k + 1}`, { wave: 'sine', level: L / 2 }),
+      mod('lfo', `sweep${k + 1}`, { wave: 'rise', rate: 0.02, phase: k / N }), mod('lfo', `fade${k + 1}`, { wave: 'sine', rate: 0.02, phase: (k / N + 0.75) % 1 })]),
+      mod('amp', 'amp1', { attack: 0.6, decay: 1, sustain: 1, release: 1.5, velocity: 0.3 }),
+      mod('chorus', 'chorus1', { rate: 0.2, depth: 0.3, mix: 0.2 }), mod('reverb', 'reverb1', { type: 'hall', size: 3.5, mix: 0.3 })],
+    audio: [...ks.map(k => ({ from: `osc${k + 1}`, to: 'amp1' })), ...chain('amp1', 'chorus1', 'reverb1', 'out')],
+    mod: ks.flatMap(k => [{ from: `sweep${k + 1}`, to: `osc${k + 1}.pitch`, amount: dir * 3600 * 1.18 }, { from: `fade${k + 1}`, to: `osc${k + 1}.level`, amount: L / 2 }]),
+  };
+};
+// A bell after Jean-Claude Risset's (1969): eleven sine partials at his ratios, the low ones ringing
+// longest, two pairs a hertz or two apart so the hum beats. [ratio, cents, length, level]
+const RISSET = [[0.56, 0, 1, 1], [0.56, 12, 0.9, 0.67], [0.92, 0, 0.65, 1], [0.92, 12, 0.55, 1.8], [1.19, 0, 0.325, 2.67], [1.7, 0, 0.35, 1.67],
+  [2, 0, 0.25, 1.46], [2.74, 0, 0.2, 1.33], [3, 0, 0.15, 1.33], [3.76, 0, 0.1, 1], [4.07, 0, 0.075, 1.33]];
+const STRANGE = [
+  shepard('Endless Riser', 1, 'A tone that climbs for as long as you hold it and never gets any higher (a Shepard tone): six sines an octave apart rising together, each fading out at the top and coming back in at the bottom. About eight seconds an octave; to change the speed, give all twelve LFOs the same new Rate.'),
+  shepard('Endless Faller', -1, 'The same illusion going down: it sinks for ever and never arrives.'),
+  {
+    name: 'Big Arrival', type: 'FX', voices: 2, volume: 0.5,
+    about: 'Hold one low note (around C3) for ten seconds: twenty-one saws start in a wavering cluster around it and slide apart into a huge chord five octaves wide, the filter opening as they arrive.',
+    modules: [...[[-2, 0], [-1, 0], [0, 0], [0, 7], [1, 0], [1, 7], [2, 0]].map(([octave, semi], k) => mod('osc', `osc${k + 1}`, { wave: 'saw', octave, semi, unison: 3, spread: 14, level: 0.3 })),
+      mod('env', 'gather', { attack: 0.001, decay: 5, sustain: 0, release: 5 }), mod('env', 'open', { attack: 7, decay: 1, sustain: 1, release: 3 }),
+      mod('lfo', 'waver1', { wave: 'random', rate: 5, depth: 0 }), mod('lfo', 'waver2', { wave: 'random', rate: 3.3, depth: 0 }),
+      mod('filter', 'filter1', { cutoff: 500, resonance: 1, keytrack: 0.3 }), mod('amp', 'amp1', { attack: 2.5, decay: 1, sustain: 1, release: 3, velocity: 0.2 }),
+      mod('reverb', 'reverb1', { type: 'hall', size: 4, mix: 0.25 })],
+    audio: [...[1, 2, 3, 4, 5, 6, 7].map(k => ({ from: `osc${k}`, to: 'filter1' })), ...chain('filter1', 'amp1', 'reverb1', 'out')],
+    // Where each oscillator starts, in cents from where it ends: all within a few semitones of the key.
+    mod: [...[2500, 1350, -150, -550, -1050, -1800, -2250].flatMap((cents, k) => [{ from: 'gather', to: `osc${k + 1}.pitch`, amount: cents },
+      { from: k % 2 ? 'waver2' : 'waver1', to: `osc${k + 1}.pitch`, amount: 120 }]),
+      { from: 'gather', to: 'waver1.depth', amount: 1 }, { from: 'gather', to: 'waver2.depth', amount: 1 }, { from: 'open', to: 'filter1.cutoff', amount: 4200 }],
+  },
+  {
+    name: 'Dial-Up', type: 'FX', voices: 4, volume: 0.55,
+    about: 'A modem trying to connect: warbling tones that jump about, bursts of hiss, all down a telephone line. Each key argues at its own pitch; hold several.',
+    modules: [mod('osc', 'osc1', { wave: 'sine', level: 0.6 }), mod('osc', 'osc2', { wave: 'sine', octave: 1, semi: 7, level: 0.35 }), mod('noise', 'noise1', { level: 0.12 }),
+      mod('lfo', 'warble', { wave: 'square', rate: 23 }), mod('lfo', 'jump1', { wave: 'random', rate: 2.6 }), mod('lfo', 'jump2', { wave: 'random', rate: 1.4 }), mod('lfo', 'hiss', { wave: 'random', rate: 0.9 }),
+      mod('filter', 'filter1', { type: 'bandpass', slope: '12', cutoff: 1500, resonance: 0.8, keytrack: 0.3 }),
+      mod('amp', 'amp1', { attack: 0.005, decay: 0.2, sustain: 1, release: 0.08, velocity: 0.2 }), mod('crusher', 'crush1', { bits: 8, hold: 5, mix: 1 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, { from: 'noise1', to: 'filter1' }, ...chain('filter1', 'amp1', 'crush1', 'out')],
+    mod: [{ from: 'warble', to: 'osc1.pitch', amount: 140 }, { from: 'jump1', to: 'osc1.pitch', amount: 1300 }, { from: 'jump2', to: 'osc2.pitch', amount: 900 },
+      { from: 'jump2', to: 'osc2.level', amount: 0.3 }, { from: 'hiss', to: 'noise1.level', amount: 0.2 }],
+  },
+  {
+    name: 'Geiger Choir', type: 'FX', voices: 6, volume: 0.7,
+    about: 'Clicks through a singing mouth. Low keys tick a few times a second, like a Geiger counter with a voice; each octave up doubles the rate, and the mod wheel speeds everything up until the clicks blur into a sung note.',
+    // A saw six octaves below the key: C4 clicks about four times a second.
+    modules: [mod('osc', 'osc1', { wave: 'saw', octave: -3, level: 1 }), mod('env', 'down', { attack: 0.001, decay: 1, sustain: 1, release: 2 }),
+      mod('lfo', 'chance', { wave: 'random', rate: 6 }), mod('lfo', 'mouth', { wave: 'random', rate: 0.5 }),
+      mod('vowel', 'vowel1', { vowel: 2, resonance: 16 }), mod('amp', 'amp1', { attack: 0.005, decay: 0.3, sustain: 1, release: 0.4, velocity: 0.3 }),
+      LIMIT(), mod('reverb', 'reverb1', { type: 'hall', size: 3, mix: 0.35 })], // single clicks and a sung note are very different levels
+    audio: chain('osc1', 'vowel1', 'amp1', 'limit1', 'reverb1', 'out'),
+    mod: [{ from: 'down', to: 'osc1.pitch', amount: -3600 }, { from: 'chance', to: 'osc1.pitch', amount: 1400 }, { from: 'wheel', to: 'osc1.pitch', amount: 4800 }, { from: 'mouth', to: 'vowel1.vowel', amount: 2 }],
+  },
+  {
+    name: 'Orbiting Bees', type: 'FX', voices: 6, volume: 0.6,
+    about: 'A swarm for each note, circling your head (wear headphones). Seven detuned saws, ring-modulated and wavering; more notes, more swarms, each going round on its own path.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 7, spread: 80, level: 0.6 }), mod('lfo', 'dart', { wave: 'random', rate: 11 }), mod('lfo', 'drift', { wave: 'sine', rate: 0.35 }),
+      mod('ring', 'ring1', { ratio: 0.5, fine: 30, mix: 0.6 }), mod('filter', 'filter1', { type: 'bandpass', slope: '12', cutoff: 1100, resonance: 2.5, keytrack: 1 }),
+      mod('amp', 'amp1', { attack: 0.4, decay: 0.5, sustain: 1, release: 1.2, velocity: 0.3 }), mod('space', 'space1', { distance: 1.2, spread: 180, orbit: 0.35 }),
+      mod('compressor', 'gain1', { threshold: 0, ratio: 1, gain: 11 })], // only its make-up gain: the swarm comes out of the filter and the distance quiet
+    audio: chain('osc1', 'ring1', 'filter1', 'amp1', 'space1', 'gain1', 'out'),
+    mod: [{ from: 'dart', to: 'osc1.pitch', amount: 70 }, { from: 'drift', to: 'osc1.pitch', amount: 45 }, { from: 'drift', to: 'filter1.cutoff', amount: 500 }],
+  },
+  {
+    name: 'Singing Glass', type: 'Bell', voices: 6, volume: 0.6,
+    about: 'A wet finger round the rim of a wine glass: a pure tone that swells in slowly and beats against itself, into a shimmer. Push the mod wheel up to freeze what\'s sounding into a drone, and play over it.',
+    modules: [mod('osc', 'osc1', { wave: 'sine', level: 0.55 }), mod('osc', 'osc2', { wave: 'sine', fine: 5, level: 0.35 }), mod('osc', 'osc3', { wave: 'sine', octave: 1, semi: 2, fine: 40, level: 0.05 }),
+      mod('noise', 'noise1', { level: 0.5 }), mod('filter', 'rim', { type: 'bandpass', slope: '12', cutoff: 524, resonance: 18, keytrack: 1 }),
+      mod('lfo', 'finger', { wave: 'sine', rate: 3.7, delay: 1 }), mod('amp', 'amp1', { attack: 1.1, decay: 1, sustain: 1, release: 2.5, velocity: 0.4, level: 0.6 }),
+      mod('freeze', 'freeze1', { size: 0.8 }), mod('shimmer', 'shimmer1', { size: 6, shimmer: 0.45, mix: 0.35 })],
+    audio: [{ from: 'osc1', to: 'amp1' }, { from: 'osc2', to: 'amp1' }, { from: 'osc3', to: 'amp1' }, { from: 'noise1', to: 'rim' }, { from: 'rim', to: 'amp1' }, ...chain('amp1', 'freeze1', 'shimmer1', 'out')],
+    mod: [{ from: 'finger', to: 'amp1.level', amount: 0.1 }, { from: 'wheel', to: 'freeze1.frozen', amount: 1 }],
+  },
+  {
+    name: 'Risset Bells', type: 'Bell', voices: 6, volume: 0.6,
+    about: 'A bell built from eleven pure tones that die away one by one, highest first, until only a slowly beating hum is left, fading over ten seconds or so (after Jean-Claude Risset, 1969). Let it ring.',
+    modules: [...RISSET.map(([ratio, fine, len, level], k) => mod('fmop', `op${k + 1}`, { ratio, fine, attack: 0.002, decay: 10 * len, sustain: 0, release: 10 * len, velocity: 0.7, level: 0.1 * level })),
+      mod('reverb', 'reverb1', { type: 'hall', size: 4, mix: 0.25 })],
+    audio: [...RISSET.map((r, k) => ({ from: `op${k + 1}`, to: 'reverb1' })), { from: 'reverb1', to: 'out' }],
+  },
+  {
+    name: 'Backwards Piano', volume: 1, type: 'Keys', voices: 6,
+    about: 'A piano chord played backwards: it swells out of nothing for three seconds and ends on the strike (keep holding and, after a silence, it swells again). Press three seconds before you want it to land (five beats at 100 bpm).',
+    modules: [mod('granular', 'gr1', { file: 'factory/Piano Chord (C4).wav', root: 60, position: 0.5, spread: 0.008, scan: -1, size: 0.1, density: 40, jitter: 0, width: 0.6, level: 1 }),
+      mod('amp', 'amp1', { attack: 0.05, decay: 1, sustain: 1, release: 0.6, level: 0.8 }), COMP(),
+      mod('delay', 'delay1', { mode: 'tape', time: 0.38, feedback: 0.3, wobble: 0.5, mix: 0.2 }), mod('reverb', 'reverb1', { type: 'hall', size: 3.5, mix: 0.25 })],
+    audio: chain('gr1', 'amp1', 'comp1', 'delay1', 'reverb1', 'out'),
+  },
+].map(cleanPatch);
+
+export const FACTORY = [...STARTERS, ...MORE, ...ARPS, ...STRANGE, ...KEYS.map(cleanPatch)];
 
 // ---- collections: sounds that belong together (a genre, a set for one kind of track) ----
 // Factory collections are below; yours are saved instruments of kind 'collection':
@@ -861,6 +1100,12 @@ export const COLLECTIONS = [
     sounds: ['Berlin Sequence', 'Sync Sequence', 'Glass Arp', 'Saw Arp', 'CS Strings', 'Slow Swell Drone', 'Memory Bells'] },
   { title: 'Hazy Nostalgia', about: 'Warped, slightly out-of-tune tape pads and leads, worn keys and dusty drums.',
     sounds: ['Warped Tape Pad', 'Nostalgic Lead', 'Lo-Fi Keys', 'Tape Choir', 'Dusty Kit', 'Elastic Bass', 'Environmental Marimba'] },
+  { title: 'Self-Playing', about: 'Hold a key or a chord and they play a pattern by themselves, in time with the song: arpeggios, hopping basses, a stepped sequence, random computer bleeps, rippling chords, a chopped pad, a bouncing ball.',
+    sounds: ['Climbing Saws', 'Glass Rain', 'Chord Pulse', 'Rolling Bass', 'Thumb and Fingers', 'Octave Hopper', 'Staircase Sequence', 'Computer Room', 'Polyrhythm Chord', 'Gate Pad', 'Bouncing Ball', 'Pump Pad', 'Berlin Sequence'] },
+  { title: 'Strange Things', about: 'Illusions and oddities: tones that rise for ever, a chord that gathers out of a cluster, a modem, clicks that sing, swarms round your head, a glass you can freeze, bells that turn into drones, a piano backwards.',
+    sounds: ['Endless Riser', 'Endless Faller', 'Big Arrival', 'Dial-Up', 'Geiger Choir', 'Orbiting Bees', 'Singing Glass', 'Risset Bells', 'Backwards Piano', 'Computer Room', 'Bouncing Ball', 'Speech Shards', 'Broken Radio'] },
+  { title: 'Grain Clouds', about: 'Recordings played as clouds of tiny grains: frozen pianos and choirs, slow-motion voices, a drum loop at any pitch, record crackle.',
+    sounds: ['Frozen Piano', 'Bowed Cloud', 'Slow Motion Voice', 'Speech Shards', 'Beat Dust', 'Time Stretch Keys', 'Vinyl Dust', 'Grain Choir', 'Glass Cloud', 'Slow Music Box', 'Wind Grains', 'Crushed Grains', 'Shimmer Wash', 'Tape Choir'] },
 ].map(c => ({ ...c, factory: true, sounds: c.sounds.filter(n => FACTORY.some(p => p.name === n)).map(name => ({ name, mine: false })) }));
 
 export const isCollection = p => p?.kind === 'collection';

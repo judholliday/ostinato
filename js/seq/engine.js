@@ -6,11 +6,12 @@
 //   song()      the current song (read live, so edits take effect while playing)
 //   now()       the current time in ms (performance.now() in the browser)
 //   pool(ti)    the notes a note-pool track should walk through right now
-//   sink        { note(ti, note, vel, atMs, durMs), cc(ti, controller, value, atMs), clock(atMs), start(atMs), stop(atMs),
+//   sink        { note(ti, note, vel, atMs, durMs, gridMs), cc(ti, controller, value, atMs), clock(atMs), start(atMs), stop(atMs),
 //                 step(ti, pos, pattern, atMs, silent, notes), bar(section, barInSection, atMs) }
-// and calls pump() every ~25 ms while playing.
+// and calls pump() every ~25 ms while playing. gridMs is when the note's step falls on the grid
+// (before swing, its timing offset and feel), e.g. to leave out notes past the end of a render.
 import { chordAt, chordPool, moveNote, fitNotes, referenceRoot } from './chords.js';
-import { autoValue, barTicks, meterAt, CLOCK_TICKS, RATES, SWUNG_RATES, stepAt, noteSteps, poolOrder, audible, laneValue, velOf, spanOf, stepGroups, feelNote } from './model.js';
+import { autoValue, barTicks, meterAt, CLOCK_TICKS, RATES, SWUNG_RATES, stepAt, noteSteps, poolOrder, audible, laneValue, velOf, spanOf, stepGroups, feelNote, offOf, earliest } from './model.js';
 
 export const LOOKAHEAD_MS = 120;
 const START_DELAY_MS = 40; // so the first notes aren't already late when they're sent
@@ -36,6 +37,7 @@ export class Engine {
     const song = this.song();
     const t0 = this.now() + START_DELAY_MS + delay;
     this.anchor = { tick: 0, ms: t0, bpm: song.bpm };
+    this.startMs = t0; // nothing plays before the first beat, however early its timing offset
     this.section = 0;
     this.secBar = -1;
     this.enterSong = this.mode === 'song';
@@ -105,7 +107,8 @@ export class Engine {
       this.anchor = { tick, ms: this.tickTime(tick), bpm: song.bpm };
     }
 
-    const horizon = this.now() + this.lookahead;
+    // Steps played early (negative timing offsets) are scheduled that much further ahead.
+    const horizon = this.now() + this.lookahead + this.earlyMs(song);
     for (let guard = 0; guard < 10000; guard++) {
       const tick = this.frontier();
       if (this.tickTime(tick) > horizon) break;
@@ -117,6 +120,16 @@ export class Engine {
         this.nextClock += CLOCK_TICKS;
       }
     }
+  }
+
+  // The most any track's patterns play ahead of the grid, in ms.
+  earlyMs(song) {
+    let e = 0;
+    for (const t of song.tracks) for (const pat of Object.values(t.patterns)) {
+      const k = pat?.steps?.length ? earliest(pat) : 0;
+      if (k) e = Math.max(e, k * spanOf(pat, RATES[t.rate]) / pat.length * this.tickMs);
+    }
+    return e;
   }
 
   frontier() { return Math.min(this.nextBar, this.nextClock, ...this.tracks.map(t => t.next)); }
@@ -204,7 +217,8 @@ export class Engine {
     // Steps are `rate` long, or the pattern's `beats` shared out evenly (rounded to whole ticks
     // from the start of the pass, so a pass always lasts exactly its beats).
     const span = spanOf(pat, rate), stepMs = span / pat.length * this.tickMs;
-    let at = this.tickTime(ts.next);
+    const grid = this.tickTime(ts.next);
+    let at = grid;
     // Swing delays every second step: 50% is straight, 66% a triplet feel, 75% dotted.
     if (!pat.beats && SWUNG_RATES.has(track.rate) && Math.floor(ts.next / rate) % 2 === 1) at += (song.swing / 100 - 0.5) * 2 * stepMs;
 
@@ -230,9 +244,11 @@ export class Engine {
         // End a hair early so a note at 100% gate is off before the next one on the same key.
         const rat = s.rat || 1;
         // The track's feel moves each note a little and varies how hard it's played.
+        // Its timing offset (a fraction of a step, per note or for the step) comes on top of swing.
         const feel = track.feel, play = (n, t, dur) => {
-          const f = feelNote(feel, n, velOf(s, n), this.rng);
-          this.sink.note?.(ti, to ? to.get(n) : n, f.vel, t + f.dt, dur);
+          const f = feelNote(feel, n, velOf(s, n), this.rng), off = offOf(s, n);
+          if (off) t = Math.max(this.startMs, t + off * stepMs);
+          this.sink.note?.(ti, to ? to.get(n) : n, f.vel, t + f.dt, dur, grid);
         };
         if (rat === 1) {
           for (const n of notes) play(n, at, Math.max(5, noteSteps(s, pat.length, n) * stepMs - 2));

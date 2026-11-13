@@ -5,13 +5,31 @@
 //   const synth = new LabSynth(audioContext, destinationNode);
 //   synth.setPatch(patch);
 //   synth.play(60, 100, synth.atTime(performance.now()), 0.5);   // or noteOn / noteOff
-import { MODULES, isSource, zoneFor, DRAWBAR_HARMONIC, syncBeats, VOWELS, FORMANT_GAINS } from './patch.js';
+import { MODULES, isSource, zoneFor, DRAWBAR_HARMONIC, syncBeats, VOWELS, FORMANT_GAINS, arpOrder } from './patch.js';
 import { ALIASES, padSoundKey } from './drums.js';
-import { ensureFx, fxReady, WORKLET_FX, WORKLET_VOICES } from './fxworklet.js';
+import { ensureFx, fxReady, WORKLET_FX, WORKLET_VOICES, WORKLET_HELPED } from './fxworklet.js';
 import { fft } from '../core/spectral.js';
 
 const OSC_TYPES = { saw: 'sawtooth', square: 'square', triangle: 'triangle', sine: 'sine' };
 const LFO_TYPES = { sine: 'sine', triangle: 'triangle', square: 'square', saw: 'sawtooth' };
+// An LFO wave that starts part-way through its cycle (`phase` 0-1): the same shapes as the browser's
+// own (and 'rise'), from their sine series b(k), each harmonic turned by k × the phase.
+const LFO_SERIES = {
+  sine: k => (k === 1 ? 1 : 0),
+  triangle: k => (k % 2 ? 8 / (Math.PI * Math.PI * k * k) * (k % 4 === 1 ? 1 : -1) : 0),
+  square: k => (k % 2 ? 4 / (Math.PI * k) : 0),
+  saw: k => 2 / (Math.PI * k) * (k % 2 ? 1 : -1),
+  rise: k => -2 / (Math.PI * k),
+};
+function lfoWave(ac, cache, wave, phase) {
+  const key = `${wave}@${phase}`, waves = (cache.lfoWaves ||= new Map());
+  if (!waves.has(key)) {
+    const H = wave === 'sine' ? 1 : wave === 'rise' ? 64 : 512, re = new Float32Array(H + 1), im = new Float32Array(H + 1), b = LFO_SERIES[wave] || LFO_SERIES.sine;
+    for (let k = 1; k <= H; k++) { re[k] = b(k) * Math.sin(2 * Math.PI * k * phase); im[k] = b(k) * Math.cos(2 * Math.PI * k * phase); }
+    waves.set(key, ac.createPeriodicWave(re, im));
+  }
+  return waves.get(key);
+}
 const STEP = 128; // samples per step of the random LFO's buffer
 
 // Shared buffers and curves, made once per AudioContext.
@@ -87,6 +105,21 @@ function driveCurve(ac, amount) {
   if (!cache.has(key)) {
     const k = 0.5 + key / 100 * 30, c = new Float32Array(1024);
     for (let i = 0; i < c.length; i++) { const x = i / (c.length - 1) * 2 - 1; c[i] = Math.tanh(k * x) / Math.tanh(k); }
+    cache.set(key, c);
+  }
+  return cache.get(key);
+}
+// The Rotary's amp: tanh(g·x)/g, so quiet signals pass at their own level (driveCurve's gain of
+// up to ×30 made the old Drive 0.15 a ×5 clipper on every organ) and only loud ones are rounded
+// off: g = 2 × Drive, so 0 = clean, 0.15 rounds off big chords a little, 1 = overdriven. The curve
+// spans ±ROTARY_ROOM (the input is scaled down to fit, the output isn't), since an organ chord
+// peaks well above 1 and a WaveShaper clips everything outside its curve.
+const ROTARY_ROOM = 4;
+function rotaryAmpCurve(ac, drive) {
+  const cache = assets(ac).drives, key = 'rotary' + Math.round(drive * 100);
+  if (!cache.has(key)) {
+    const g = 2 * Math.round(drive * 100) / 100, c = new Float32Array(1025);
+    for (let i = 0; i < c.length; i++) { const x = (i / (c.length - 1) * 2 - 1) * ROTARY_ROOM; c[i] = g ? Math.tanh(g * x) / g : x; }
     cache.set(key, c);
   }
   return cache.get(key);
@@ -239,12 +272,13 @@ function shaperCurve(type, drive) {
 }
 // A drawbar registration as one waveform: each bar is a harmonic of the 16' tone (16' = 1,
 // 5 1/3' = 3, 8' = 2 … 1' = 16), 3 dB quieter per step below 8, not normalised (more bars, louder,
-// as on the organ). Cached per context and registration.
+// as on the organ). With percussion on, the 1' bar is silent: the organ's percussion takes its key
+// contact. Cached per context and registration.
 const organWaves = new WeakMap();
 function organWave(ac, p) {
   let m = organWaves.get(ac);
   if (!m) organWaves.set(ac, m = new Map());
-  const bars = Array.from({ length: 9 }, (_, k) => Math.round(p[`bar${k + 1}`] || 0)), key = bars.join('');
+  const bars = Array.from({ length: 9 }, (_, k) => (k === 8 && p.perc && p.perc !== 'off' ? 0 : Math.round(p[`bar${k + 1}`] || 0))), key = bars.join('');
   if (!m.has(key)) {
     const imag = new Float32Array(17), real = new Float32Array(17);
     bars.forEach((d, k) => { if (d > 0) imag[DRAWBAR_HARMONIC[k]] += 0.28 * 10 ** ((d - 8) * 3 / 20); });
@@ -428,6 +462,13 @@ export class LabSynth {
     this.onSample = null; // called with a file name when it has loaded
     this.loading = Promise.resolve(); // settles when everything loadSamples() started has loaded
     this.padWait = []; // ready() calls waiting for pad sounds to render
+    this.arp = { holds: [], next: null, index: 0, seq: 0, last: -1 }; // the arpeggiator (see arpPump)
+    // Rendering offline, every note is given before rendering starts: the arpeggiator works its
+    // steps out then (it can't as each note arrives, since a chord's other notes come after).
+    if (typeof OfflineAudioContext !== 'undefined' && ac instanceof OfflineAudioContext) {
+      const start = ac.startRendering.bind(ac);
+      ac.startRendering = () => { this.arpPump(ac.length / ac.sampleRate); return start(); };
+    }
   }
 
   // Loads every recording the patch uses, so notes can start them at once (a note played before
@@ -447,7 +488,8 @@ export class LabSynth {
     for (const k of this.samples.keys()) if (k.startsWith('sound:') && !sounds.has(k)) this.samples.delete(k);
     if ([...sounds.keys()].some(k => !this.samples.has(k))) loads.push(this.renderPadSounds());
     // Effects that need the worklet: load it, then rebuild the effects that waited for it.
-    const usesFx = (this.patch?.modules || []).some(m => WORKLET_FX.includes(m.type) || WORKLET_VOICES.includes(m.type) || m.rack?.modules.some(e => WORKLET_FX.includes(e.type)));
+    const fx = t => WORKLET_FX.includes(t) || WORKLET_HELPED.includes(t);
+    const usesFx = (this.patch?.modules || []).some(m => fx(m.type) || WORKLET_VOICES.includes(m.type) || m.rack?.modules.some(e => fx(e.type)));
     if (usesFx && !fxReady(this.ac)) loads.push(ensureFx(this.ac).then(ok => { if (ok && this.fxPending) { this.fxPending = false; this.buildGlobals(); } }));
     this.loading = Promise.all(loads);
   }
@@ -491,7 +533,7 @@ export class LabSynth {
     return a;
   }
   // Is a note held right now (keys down, or sustained)?
-  holding() { return this.voices.some(v => !v.released); }
+  holding() { return this.voices.some(v => !v.released) || this.arp.holds.some(h => h.to === Infinity); }
 
   atTime(ms) { return Math.max(this.ac.currentTime, this.ac.currentTime + (ms - performance.now()) / 1000); }
 
@@ -504,6 +546,8 @@ export class LabSynth {
     const shape = p => JSON.stringify([p.modules.map(m => [m.id, ...fx(m), m.rack?.modules.map(fx)]), p.audio, p.mod.map(m => [m.from, m.to])]);
     const old = this.patch;
     this.patch = patch;
+    if (old && !old.arp !== !patch.arp) { this.allOff(); } // arpeggiator switched on or off: held keys are let go
+    if (old?.arp?.latch && patch.arp && !patch.arp.latch) this.arpUnlatch(); // Latch off: the latched keys stop
     this.loadSamples();
     if (old && shape(old) === shape(patch)) {
       for (const m of patch.modules) {
@@ -863,24 +907,85 @@ export class LabSynth {
         state: v => to('frozen', v === 'frozen' ? 1 : 0), mix: v => mix(v) };
       g.targets = Object.fromEntries(['bits', 'hold', 'chance', 'frozen'].map(k => [k, node.parameters.get(k) ? [node.parameters.get(k)] : []]));
       mix(p.mix);
+    } else if (m.type === 'scanner') {
+      // The tonewheel organ's vibrato scanner: a tapped delay line (about 1 ms, 9 LC stages)
+      // swept up and back by a 16-pole capacitive switch at 412 rpm, ≈ 6.9 Hz, so the delay moves
+      // in a triangle: V3 sweeps the whole line, V2 about half, V1 about a third (Hammond-Leslie
+      // FAQ; stefanv.com). Chorus (C1–C3) mixes it with the dry signal, equal parts at equal power
+      // (halves lost ~3 dB where the two beat). The line also
+      // acts as a sweeping low-pass; that isn't modelled (its cutoff isn't published).
+      const SWEEP = { 1: 0.00033, 2: 0.0005, 3: 0.001 };
+      const d = ac.createDelay(0.005), lfo = ac.createOscillator(), amt = ac.createGain();
+      lfo.type = 'triangle'; lfo.frequency.value = 6.9;
+      lfo.connect(amt).connect(d.delayTime);
+      input.connect(d).connect(wet);
+      lfo.start(t);
+      g.nodes.push(d, lfo, amt);
+      const setMode = v => {
+        const sweep = SWEEP[v[1]] || SWEEP[3];
+        d.delayTime.setValueAtTime(0.0002 + sweep / 2, ac.currentTime); amt.gain.setValueAtTime(sweep / 2, ac.currentTime);
+        if (v[0] === 'C') mix(Math.SQRT1_2, Math.SQRT1_2); else mix(1, 0);
+      };
+      setMode(p.mode);
+      g.set = { mode: setMode };
     } else if (m.type === 'rotary') {
-      // Highs to the horn, lows to the drum (crossover at 800 Hz). Each rotor: a sine LFO moving
-      // a short delay (the Doppler wobble), the volume and the pan (a quarter turn apart). Their
-      // speeds come from a control signal (slow 0 … fast 1, plus the wheel) through a very slow
-      // low-pass: the inertia, horn quicker than drum.
-      const SPEEDS = { horn: [0.8, 6.7], drum: [0.67, 5.8] };
-      const pre = ac.createWaveShaper(), lowF = ac.createBiquadFilter(), highF = ac.createBiquadFilter(), speed = ac.createConstantSource();
-      pre.curve = driveCurve(ac, p.drive);
-      lowF.type = 'lowpass'; highF.type = 'highpass'; lowF.frequency.value = highF.frequency.value = 800;
+      // Highs to the horn, lows to the drum: an 800 Hz Linkwitz-Riley crossover (two Butterworths
+      // a side), whose halves add back up flat (a single pair left a ~10 dB hole at 800 Hz).
+      // Recorded with two mics (left and right, 120° apart), each hearing every rotor along a few
+      // paths, as Smith, Serafin, Abel & Berners model it (DAFx 2002): straight from the rotor and
+      // off two of the cabinet's walls, each path a delay that follows the rotor's distance along
+      // its direction (the Doppler wobble, each path's a little different: the chorus), a gain
+      // and, for the horn, a low-pass that opens as the horn's mouth turns towards it (a horn
+      // beams its highs, so they swing more than its lows); plus a little of the horn's sound
+      // leaking out unmoved. Horn radius ~0.25 m (±0.74 ms, about ±50 cents at tremolo); the drum
+      // is a rotating scoop in front of a fixed woofer, so it's mostly a swing in level with very
+      // little Doppler (Henricksen 1981). Their speeds come from a control signal (slow 0 … fast
+      // 1, plus the wheel) through a lag that spins up faster than it coasts down, as a Leslie's
+      // do: the horn gets 90% of the way in Inertia seconds up and 1.5× that down, the drum 4.5×
+      // and 6.5× (reported: horn ~1–1.5 s up, ~1.5–2 s down; drum ~5 s up, ~7 s down). The lag
+      // runs in the worklet; until it has loaded, a first-order filter with the spin-up times
+      // stands in.
+      const SPEEDS = { horn: [0.8, 6.7], drum: [0.67, 5.8] }, LAGS = { horn: [1, 1.5], drum: [4.5, 6.5] };
+      const MICS = [-60, 60]; // degrees
+      // Per rotor, at Depth 1: Doppler (s of delay swing), level swing, the horn's beam (low-pass
+      // Hz, swinging ±1 octave); each path's direction (degrees from its mic), delay and level.
+      const ROTORS = {
+        horn: { doppler: 0.00074, am: 0.4, beam: 5000, leak: 0.12,
+          paths: [{ dir: 0, delay: 0.0015, level: 1 }, { dir: 110, delay: 0.0032, level: 0.45 }, { dir: -130, delay: 0.0047, level: 0.35 }] },
+        drum: { doppler: 0.00008, am: 0.5,
+          paths: [{ dir: 0, delay: 0.0015, level: 1 }, { dir: 140, delay: 0.003, level: 0.5 }] },
+      };
+      const merge = ac.createChannelMerger(2);
+      merge.connect(wet);
+      g.nodes.push(merge);
+      const fit = ac.createGain(), pre = ac.createWaveShaper(), speed = ac.createConstantSource();
+      const lowF = [0, 1].map(() => ac.createBiquadFilter()), highF = [0, 1].map(() => ac.createBiquadFilter());
+      pre.curve = rotaryAmpCurve(ac, p.drive);
+      pre.oversample = p.drive > 0 ? '2x' : 'none';
+      fit.gain.value = 1 / ROTARY_ROOM;
+      // Web Audio's low/high-pass Q is a resonance in dB: Butterworth (Q 1/√2) = −3.01 dB.
+      for (const f of lowF) { f.type = 'lowpass'; f.frequency.value = 800; f.Q.value = 20 * Math.log10(Math.SQRT1_2); }
+      for (const f of highF) { f.type = 'highpass'; f.frequency.value = 800; f.Q.value = 20 * Math.log10(Math.SQRT1_2); }
+      lowF[0].connect(lowF[1]); highF[0].connect(highF[1]);
       speed.offset.value = p.speed === 'fast' ? 1 : 0;
       speed.start(t);
-      input.connect(pre);
-      g.nodes.push(pre, lowF, highF, speed);
-      const rotor = (name, band, inertia, amDepth, panDepth, dopp) => {
+      input.connect(fit).connect(pre);
+      g.nodes.push(fit, pre, ...lowF, ...highF, speed);
+      if (!fxReady(ac)) this.fxPending = true;
+      const tau = (name, inertia, k) => LAGS[name][k] * inertia / Math.LN10; // 90% of the way = 2.3 τ
+      const rotor = (name, band) => {
         const [slow, fast] = SPEEDS[name];
-        const base = ac.createConstantSource(), span = ac.createGain(), lag = ac.createBiquadFilter();
+        const base = ac.createConstantSource(), span = ac.createGain();
         base.offset.value = slow; span.gain.value = fast - slow;
-        lag.type = 'lowpass'; lag.frequency.value = 1 / (2 * Math.PI * inertia); lag.Q.value = 0.5;
+        let lag;
+        if (fxReady(ac)) {
+          lag = new AudioWorkletNode(ac, 'ost-slew', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 1, channelCountMode: 'explicit' });
+          lag.parameters.get('up').value = tau(name, p.inertia, 0);
+          lag.parameters.get('down').value = tau(name, p.inertia, 1);
+        } else {
+          const a = Math.exp(-1 / (tau(name, p.inertia, 0) * ac.sampleRate));
+          lag = ac.createIIRFilter([1 - a], [1, -a]);
+        }
         speed.connect(span).connect(lag);
         base.connect(lag);
         if (p.wheel !== 'off') { this.wheel.connect(span); g.nodes.push({ disconnect: () => { try { this.wheel.disconnect(span); } catch { /* gone */ } } }); }
@@ -888,27 +993,55 @@ export class LabSynth {
         sin.frequency.value = cos.frequency.value = 0;
         cos.setPeriodicWave(assets(ac).cosine);
         lag.connect(sin.frequency); lag.connect(cos.frequency);
-        const delay = ac.createDelay(0.02), am = ac.createGain(), pan = ac.createStereoPanner(), level = ac.createGain();
-        const dAmt = ac.createGain(), aAmt = ac.createGain(), pAmt = ac.createGain();
-        delay.delayTime.value = 0.002; dAmt.gain.value = dopp * p.depth;
-        am.gain.value = 1 - amDepth * p.depth / 2; aAmt.gain.value = amDepth * p.depth / 2;
-        pAmt.gain.value = panDepth * p.depth;
-        sin.connect(dAmt).connect(delay.delayTime);
-        sin.connect(aAmt).connect(am.gain);
-        cos.connect(pAmt).connect(pan.pan);
-        level.gain.value = name === 'horn' ? p.balance * 2 : (1 - p.balance) * 2;
-        pre.connect(band).connect(delay).connect(am).connect(pan).connect(level).connect(wet);
         base.start(t); sin.start(t); cos.start(t);
-        g.nodes.push(base, span, lag, sin, cos, delay, am, pan, level, dAmt, aAmt, pAmt);
-        return { level, dAmt, aAmt, pAmt, am, amDepth, panDepth, dopp, lag, inertia };
+        g.nodes.push(base, span, lag, sin, cos);
+        const spec = ROTORS[name], k = Math.sqrt(0.5 / spec.paths.reduce((e, q) => e + q.level ** 2, (spec.leak || 0) ** 2));
+        const buses = [0, 1].map(ch => { const b = ac.createGain(); b.gain.value = (name === 'horn' ? p.balance : 1 - p.balance) * 2; b.connect(merge, 0, ch); g.nodes.push(b); return b; });
+        const out = band[1], paths = [];
+        pre.connect(band[0]);
+        MICS.forEach((mic, ch) => {
+          for (const q of spec.paths) {
+            // How far the rotor points along this path: cos(θ − φ) = cos θ cos φ + sin θ sin φ.
+            const phi = (mic + q.dir) * Math.PI / 180, toward = ac.createGain(), ps = ac.createGain(), pc = ac.createGain();
+            ps.gain.value = Math.sin(phi); pc.gain.value = Math.cos(phi);
+            sin.connect(ps).connect(toward); cos.connect(pc).connect(toward);
+            const delay = ac.createDelay(0.02), am = ac.createGain(), level = ac.createGain(), dAmt = ac.createGain(), aAmt = ac.createGain();
+            delay.delayTime.value = q.delay;
+            level.gain.value = q.level * k;
+            toward.connect(dAmt).connect(delay.delayTime);
+            toward.connect(aAmt).connect(am.gain);
+            let into = am;
+            const path = { dAmt, aAmt, am };
+            if (spec.beam) {
+              const lp = ac.createBiquadFilter(), fAmt = ac.createGain();
+              lp.type = 'lowpass'; lp.frequency.value = spec.beam; lp.Q.value = 20 * Math.log10(Math.SQRT1_2);
+              toward.connect(fAmt).connect(lp.detune);
+              am.connect(lp); into = lp;
+              path.fAmt = fAmt;
+              g.nodes.push(lp, fAmt);
+            }
+            out.connect(delay).connect(am);
+            into.connect(level).connect(buses[ch]);
+            g.nodes.push(toward, ps, pc, delay, am, level, dAmt, aAmt);
+            paths.push(path);
+          }
+          if (spec.leak) { const lk = ac.createGain(); lk.gain.value = spec.leak * k; out.connect(lk).connect(buses[ch]); g.nodes.push(lk); }
+        });
+        return { name, buses, paths, spec, lag };
       };
-      const horn = rotor('horn', highF, p.inertia, 0.6, 0.8, 0.0008), drum = rotor('drum', lowF, p.inertia * 3, 0.3, 0.35, 0.0003);
-      const depthTo = v => [horn, drum].forEach(r => { r.dAmt.gain.value = r.dopp * v; r.am.gain.value = 1 - r.amDepth * v / 2; r.aAmt.gain.value = r.amDepth * v / 2; r.pAmt.gain.value = r.panDepth * v; });
+      const horn = rotor('horn', highF), drum = rotor('drum', lowF);
+      const depthTo = v => [horn, drum].forEach(r => r.paths.forEach(q => {
+        q.dAmt.gain.value = -r.spec.doppler * v; // pointing along the path = nearer = shorter
+        q.am.gain.value = 1 - r.spec.am * v / 2; q.aAmt.gain.value = r.spec.am * v / 2;
+        if (q.fAmt) q.fAmt.gain.value = 1200 * v;
+      }));
+      depthTo(p.depth);
       g.set = {
         speed: v => speed.offset.setValueAtTime(v === 'fast' ? 1 : 0, ac.currentTime),
-        depth: depthTo, drive: v => { pre.curve = driveCurve(ac, v); },
-        balance: v => { horn.level.gain.setTargetAtTime(v * 2, ac.currentTime, 0.02); drum.level.gain.setTargetAtTime((1 - v) * 2, ac.currentTime, 0.02); },
-        inertia: v => { horn.lag.frequency.value = 1 / (2 * Math.PI * v); drum.lag.frequency.value = 1 / (2 * Math.PI * v * 3); },
+        depth: depthTo,
+        drive: v => { pre.curve = rotaryAmpCurve(ac, v); pre.oversample = v > 0 ? '2x' : 'none'; },
+        balance: v => { horn.buses.forEach(b => b.gain.setTargetAtTime(v * 2, ac.currentTime, 0.02)); drum.buses.forEach(b => b.gain.setTargetAtTime((1 - v) * 2, ac.currentTime, 0.02)); },
+        inertia: v => [horn, drum].forEach(r => { if (r.lag.parameters) { r.lag.parameters.get('up').value = tau(r.name, v, 0); r.lag.parameters.get('down').value = tau(r.name, v, 1); } }),
         mix: v => mix(v),
       };
       g.targets = { speed: [speed.offset] };
@@ -973,7 +1106,78 @@ export class LabSynth {
   }
 
   // ---- notes ----
+  // With the arpeggiator on, keys aren't played but held for it (arpPump plays them).
   noteOn(note, vel, t0 = this.ac.currentTime) {
+    if (this.patch?.arp) { this.arpHold(note, vel, t0, Infinity); return null; }
+    return this.startNote(note, vel, t0);
+  }
+  noteOff(note, t = this.ac.currentTime) {
+    const h = this.arp.holds.find(x => x.note === note && x.to === Infinity && !x.latched);
+    if (!h) { this.stopNote(note, t); return; }
+    // Latch: a key let go keeps playing, until a new key goes down with all the others up.
+    if (this.patch?.arp?.latch) h.latched = true; else { h.to = t; this.arpPump(); }
+  }
+  play(note, vel, t0, dur) {
+    if (this.patch?.arp) this.arpHold(note, vel, t0, t0 + dur); else this.playNote(note, vel, t0, dur);
+  }
+
+  // ---- the arpeggiator (patch.arp) ----
+  // Keys are "holds" ({ note, vel, from, to }: `to` is Infinity until a live key is let go; notes
+  // from the sequencer come with their end). A clock steps at the arp's rate from the moment the
+  // first key goes down, playing one of the notes held at each step; when a step finds no key
+  // held, the clock stops, and starts again (from the top of the pattern) with the next key. Steps
+  // are worked out a little ahead (120 ms) on a timer in a worker, which browsers don't slow down
+  // in background tabs; offline, all at once before rendering.
+  arpHold(note, vel, from, to) {
+    const a = this.arp;
+    // Latched keys with no finger left on any key: a new key (a live one) starts a new set.
+    if (to === Infinity && !a.holds.some(h => h.to === Infinity && !h.latched)) for (const h of a.holds) if (h.latched && h.to === Infinity) h.to = from;
+    for (const h of a.holds) if (h.note === note && h.to === Infinity) h.to = from;
+    a.holds.push({ note, vel, from, to, seq: a.seq++ });
+    if (a.next == null) { a.next = from; a.index = 0; }
+    if (!this.offline()) { this.arpTicker(true); this.arpPump(); }
+  }
+  offline() { return typeof OfflineAudioContext !== 'undefined' && this.ac instanceof OfflineAudioContext; }
+  arpPump(horizon = this.ac.currentTime + 0.12) {
+    const a = this.arp, arp = this.patch?.arp;
+    if (!arp) { a.holds = []; a.next = null; this.arpTicker(false); return; }
+    while (a.next != null && a.next < horizon) {
+      const t = a.next, held = a.holds.filter(h => h.from <= t + 1e-4 && h.to > t + 1e-4);
+      if (!held.length) {
+        // Nobody's holding a key: wait for the next one, and start the pattern again there.
+        const coming = a.holds.filter(h => h.from > t).map(h => h.from);
+        a.next = coming.length ? Math.min(...coming) : null;
+        a.index = 0;
+        continue;
+      }
+      const step = syncBeats(arp.rate) * 60 / (this.tempo || 120), len = Math.max(0.02, step * arp.gate);
+      const order = arpOrder(held, arp);
+      if (arp.mode === 'chord') for (const h of held) this.playNote(h.note, h.vel, t, len);
+      else {
+        let k = a.index % order.length;
+        if (arp.mode === 'random') { k = Math.floor(Math.random() * order.length); if (k === a.last && order.length > 1) k = (k + 1) % order.length; a.last = k; }
+        this.playNote(order[k].note, order[k].vel, t, len);
+      }
+      a.index++;
+      a.next = t + step;
+    }
+    const now = this.ac.currentTime;
+    a.holds = a.holds.filter(h => h.to > now - 0.5);
+    if (!a.holds.length && a.next == null) this.arpTicker(false);
+  }
+  arpTicker(on) {
+    const a = this.arp;
+    if (!on) { a.ticker?.terminate(); clearInterval(a.timer); a.ticker = a.timer = null; return; }
+    if (a.ticker || a.timer) return;
+    try {
+      a.ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 25)'], { type: 'text/javascript' })));
+      a.ticker.onmessage = () => this.arpPump();
+    } catch { a.timer = setInterval(() => this.arpPump(), 25); }
+  }
+  arpOff() { this.arp.holds = []; this.arp.next = null; this.arpTicker(false); }
+  arpUnlatch(t = this.ac.currentTime) { for (const h of this.arp.holds) if (h.latched && h.to === Infinity) h.to = t; this.arpPump(); }
+
+  startNote(note, vel, t0 = this.ac.currentTime) {
     if (!this.patch) return null;
     if (this.patch.play === 'mono' || this.patch.play === 'legato') return this.monoOn(note, vel, t0);
     for (const v of this.voices) if (v.note === note && !v.released) this.release(v, t0);
@@ -988,13 +1192,13 @@ export class LabSynth {
     this.tellResonance(t0);
     return v;
   }
-  noteOff(note, t = this.ac.currentTime) {
+  stopNote(note, t = this.ac.currentTime) {
     if (this.patch?.play === 'mono' || this.patch?.play === 'legato') { this.monoOff(note, t); return; }
     for (const v of this.voices) if (v.note === note && !v.released) this.release(v, t);
   }
-  play(note, vel, t0, dur) {
+  playNote(note, vel, t0, dur) {
     if (this.patch?.play === 'mono' || this.patch?.play === 'legato') { this.monoOn(note, vel, t0); this.monoOff(note, t0 + dur); return; }
-    const v = this.noteOn(note, vel, t0);
+    const v = this.startNote(note, vel, t0);
     if (v) this.release(v, t0 + dur);
   }
 
@@ -1051,6 +1255,7 @@ export class LabSynth {
 
   // Fast fade on everything (Stop, or a rebuild).
   allOff(now = false) {
+    this.arpOff();
     const t = this.ac.currentTime;
     for (const v of this.voices) if (now || !v.released) this.kill(v, t);
   }
@@ -1256,11 +1461,20 @@ export class LabSynth {
         relParams.push(out.gain);
         tail = Math.max(tail, 0.03);
         if (p.perc !== 'off') {
+          // One percussion envelope for the whole manual, as on the organ: it starts when a key goes
+          // down with no other key held, and every note sounds it at its level then (so chords
+          // struck together all get it, a legato line only at its start). Fast fades 60 dB in about
+          // 1 s, slow in about 4 (Hammond-Leslie FAQ; an A-105 measured ~1 and ~5 s). It's 3 dB
+          // stronger against the drawbars than it would be alone, the balance of the organ, which
+          // drops the drawbars 3 dB while percussion is on.
+          const tau = p.percDecay === 'fast' ? 1 / 6.9 : 4 / 6.9;
+          const held = this.voices.some(v => v.t0 <= t0 + 1e-6 && !(v.released && v.relAt <= t0 + 1e-6));
+          if (p.percTrig === 'every note' || !held || this.percAt == null) this.percAt = t0;
           const po = src(ac.createOscillator()), pe = keep(ac.createGain());
           po.frequency.value = hz(note) * (p.perc === 'second' ? 2 : 3);
           pitchIn(po.detune);
-          pe.gain.setValueAtTime(0.45, t0);
-          pe.gain.setTargetAtTime(0, t0, p.percDecay === 'fast' ? 0.07 : 0.2);
+          pe.gain.setValueAtTime(0.45 * Math.SQRT2 * Math.exp(-(t0 - this.percAt) / tau), t0);
+          pe.gain.setTargetAtTime(0, t0, tau);
           po.connect(pe).connect(out);
         }
         if (p.click > 0) {
@@ -1274,6 +1488,7 @@ export class LabSynth {
         }
         const rewave = () => osc.setPeriodicWave(organWave(ac, m.params));
         for (let k = 1; k <= 9; k++) set[`${m.id}.bar${k}`] = rewave;
+        set[`${m.id}.perc`] = rewave; // the 1' bar goes quiet or comes back
         set[`${m.id}.level`] = v => out.gain.setTargetAtTime(v, ac.currentTime, 0.01);
         nodes[m.id] = { out, targets: { pitch: [osc.detune], level: [out.gain] } };
       } else if (m.type === 'string') {
@@ -1350,7 +1565,8 @@ export class LabSynth {
           rate = osc.playbackRate;
         } else {
           osc = src(ac.createOscillator());
-          if (p.wave === 'rise') osc.setPeriodicWave(a.rise); else osc.type = LFO_TYPES[p.wave];
+          if (p.phase > 0) osc.setPeriodicWave(lfoWave(ac, a, p.wave, p.phase));
+          else if (p.wave === 'rise') osc.setPeriodicWave(a.rise); else osc.type = LFO_TYPES[p.wave];
           osc.frequency.value = this.rateOf(p);
           rate = osc.frequency;
         }

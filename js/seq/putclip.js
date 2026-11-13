@@ -57,6 +57,8 @@ export const keepLanes = (old, fresh) => {
 // role (named `name`). `sound` (core/sounding.js) goes onto the track when it fits; a new track
 // with an XL sound plays on `xlOut` (the XL's port name) if given. Returns { ti, track, pattern,
 // bars, gave, added } or { error }.
+const BACKING_CHUNK_BARS = 4;
+
 export function putClip(song, { items, fromBar = 0, ti, newRole = null, name = null, pattern = null, sound = null, xlOut = null }) {
   let t, added = false;
   if (newRole) {
@@ -71,7 +73,7 @@ export function putClip(song, { items, fromBar = 0, ti, newRole = null, name = n
     if (!t) return { error: 'That track isn\'t in the song any more.' };
     if (t.mode === 'pool') return { error: `${t.name} is a note-pool track; choose a Steps track.` };
   }
-  const pname = M.PATTERNS.includes(pattern) ? pattern : t.pattern;
+  const pname = M.hasPattern(t, pattern) ? pattern : pattern === '__new' ? M.addPattern(t) || t.pattern : t.pattern;
   const pat = C.takeToPattern(items, M.RATES[t.rate], { fromBar });
   if (!pat.steps.length) {
     if (added) M.removeTrack(song, ti);
@@ -204,7 +206,7 @@ export function backingToPlay(b, msPerTick, from = 0, to = Infinity) {
 // the clip on a new track. A track's versions (its sound changed while playing) become one track
 // with the sound it had at the start (`soundChanges` lists them). Patterns hold up to MAX_STEPS
 // steps, so long stretches are cut into chunks; chunks that repeat share a pattern, so a backing
-// that loops needs few. A track with more than 4 different chunks continues on extra tracks
+// that loops needs few. A track with more than MAX_PATTERNS different chunks continues on extra tracks
 // ("Bass 2"…) with the same sound; `lost` lists what still didn't fit (the 8-track limit).
 export function songFromBacking(backing, { name, bpm, length, items, newRole, trackName = null, sound = null, xlOut = null }) {
   const src = backing.song;
@@ -240,10 +242,11 @@ export function songFromBacking(backing, { name, bpm, length, items, newRole, tr
   const all = [...played, { track: mine, items, mine: true }];
 
   const TPB = M.TICKS_PER_BAR, total = Math.max(TPB, Math.ceil(length / TPB) * TPB), bars = total / TPB;
-  const chunk = Math.max(1, Math.min(...all.map(p => C.barsPerPattern(M.RATES[p.track.rate]))));
-  const n = Math.min(64, Math.ceil(bars / chunk)), lost = [];
-  // Each part becomes one or more tracks ("lanes"), each with patterns A-D: lane = which group of 4
-  // different chunks. plays[lane track][chunk] = the pattern it plays there (or null).
+  // Chunks of 4 bars (fewer if a pattern can't hold that at a track's rate), so repeats share a pattern.
+  const chunk = Math.max(1, Math.min(BACKING_CHUNK_BARS, ...all.map(p => C.barsPerPattern(M.RATES[p.track.rate]))));
+  const n = Math.min(M.MAX_SECTIONS, Math.ceil(bars / chunk)), lost = [];
+  // Each part becomes a track with a pattern per different chunk (A, B … up to MAX_PATTERNS; past
+  // that it carries on on another track, a "lane"). plays[lane track][chunk] = the pattern it plays there (or null).
   const lanes = [];
   for (const p of all) {
     const rate = M.RATES[p.track.rate], letters = new Map(), mineLanes = [];
@@ -266,7 +269,7 @@ export function songFromBacking(backing, { name, bpm, length, items, newRole, tr
       if (!pat.steps.length) continue;
       const key = JSON.stringify(pat);
       if (!letters.has(key)) letters.set(key, letters.size);
-      const d = letters.get(key), lane = laneTrack(Math.floor(d / M.PATTERNS.length)), L = M.PATTERNS[d % M.PATTERNS.length];
+      const d = letters.get(key), lane = laneTrack(Math.floor(d / M.MAX_PATTERNS)), L = M.PATTERN_NAMES[d % M.MAX_PATTERNS];
       lane.track.patterns[L] = pat;
       lane.play[k] = L;
     }
@@ -279,10 +282,10 @@ export function songFromBacking(backing, { name, bpm, length, items, newRole, tr
   // One section per chunk; neighbours playing the same patterns become one longer section.
   for (let k = 0; k < n; k++) {
     const play = ordered.map(l => l.play[k]), b = Math.min(chunk, bars - k * chunk), last = song.song.at(-1);
-    if (last && b === chunk && last.bars % chunk === 0 && last.bars + b <= 64 && JSON.stringify(last.play) === JSON.stringify(play)) last.bars += b;
+    if (last && b === chunk && last.bars % chunk === 0 && last.bars + b <= M.MAX_SECTION_BARS && JSON.stringify(last.play) === JSON.stringify(play)) last.bars += b;
     else song.song.push({ bars: b, play });
   }
-  if (bars > 64 * chunk) lost.push(`everything after bar ${64 * chunk}`);
+  if (bars > M.MAX_SECTIONS * chunk) lost.push(`everything after bar ${M.MAX_SECTIONS * chunk}`);
   const out = M.normalizeSong(song), ti = out.tracks.findIndex(t => t.name === mine.name);
   return { song: out, track: out.tracks[ti], ti, gave, lost, soundChanges, backingTracks: played.length };
 }

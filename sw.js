@@ -1,7 +1,7 @@
 // Offline support for the travel version (registered by index.html only away from this Mac's
 // server). Network first, so changes arrive whenever you're online; when offline, the copy saved
 // on the last visit. Page addresses carry ?v=<time>, so they're matched without the query.
-const CACHE = 'mkxl-travel-v10';
+const CACHE = 'mkxl-travel-v11';
 
 // Everything the travel version uses, saved when this is installed so the first visit is enough.
 // (tools/selftest.mjs checks this list against the files: add new pages, styles and scripts here.)
@@ -9,10 +9,11 @@ const ASSETS = [
   './', 'index.html', 'sequencer.html', 'lab.html', 'recorder.html',
   'style.css', 'sequencer.css', 'lab.css', 'recorder.css', 'theme.css',
   'samples/Vowel Ah (C4).wav', 'samples/Glass Bell (C5).wav', 'samples/Wind.wav', 'samples/Music Box Phrase (C5).wav',
+  'samples/Piano Chord (C4).wav', 'samples/Bowed Note (C3).wav', 'samples/Vowel Phrase (C3).wav', 'samples/Drum Loop (100 bpm).wav', 'samples/Vinyl Crackle.wav',
   'js/core/catalog.js', 'js/core/devices.js', 'js/core/icons.js', 'js/core/kv.js', 'js/core/audiodelay.js', 'js/core/midiports.js', 'js/core/mode.js', 'js/core/qwerty.js', 'js/core/soundpicker.js', 'js/core/sounding.js', 'js/core/spectral.js', 'js/core/spectroedit.js', 'js/core/storage.js', 'js/core/topbar.js', 'js/core/transfer.js',
   'js/lab/drums.js', 'js/lab/engine.js', 'js/lab/fxworklet.js', 'js/lab/keys.js', 'js/lab/patch.js', 'js/lab/racks.js', 'js/lab/patchview.js', 'js/lab/sounds.js', 'js/lab/ui.js',
   'js/rec/audio.js', 'js/rec/bounce.js', 'js/rec/editor.js', 'js/rec/sampleinst.js', 'js/rec/ui.js',
-  'js/seq/capture.js', 'js/seq/chords.js', 'js/seq/putclip.js', 'js/seq/demo.js', 'js/seq/engine.js', 'js/seq/generate.js', 'js/seq/midifile.js', 'js/seq/mixer.js', 'js/seq/songrender.js', 'js/seq/model.js',
+  'js/seq/capture.js', 'js/seq/chords.js', 'js/seq/putclip.js', 'js/seq/demo.js', 'js/seq/engine.js', 'js/seq/generate.js', 'js/seq/midifile.js', 'js/seq/mixer.js', 'js/seq/songrender.js', 'js/seq/perfpad.js', 'js/seq/model.js',
   'js/seq/breed.js', 'js/seq/stock.js', 'js/seq/styles.js', 'js/seq/testsynth.js', 'js/seq/ui.js',
   'js/xl/aiparams.js', 'js/xl/device.js', 'js/xl/fxdata.js', 'js/xl/korgfile.js', 'js/xl/params.js', 'js/xl/ports.js',
   'js/xl/sound-types.js', 'js/xl/soundlib.js', 'js/xl/soundtype.js', 'js/xl/sysex.js',

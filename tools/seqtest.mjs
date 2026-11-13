@@ -4,10 +4,14 @@ import assert from 'node:assert/strict';
 import { autoValue, normalizeSong, newSong, newTrack, putStep, removeStep, stepAt, coverMap, maxLen, noteSteps, rollNotes, setRollNotes, mapNotes,
   poolOrder, inScale, snapToScale, addTrack, removeTrack, copyPattern, cleanPattern, guessRole, MAX_STEPS, laneValue } from '../js/seq/model.js';
 import { Engine } from '../js/seq/engine.js';
+import { PATTERN_NAMES, MAX_PATTERNS, MAX_SECTIONS, MAX_SECTION_BARS, patternNames, addPattern, removePattern, patternUses, hasPattern } from '../js/seq/model.js';
+import { cleanOff, offOf, setOffsets, quantizeTiming, hasOffsets, earliest } from '../js/seq/model.js';
+import { cross, mutate } from '../js/seq/breed.js';
 import { parseProgression, commonProgressions } from '../js/seq/chords.js';
 import { randomIdea, euclid, seeded } from '../js/seq/generate.js';
 import { STOCK } from '../js/seq/stock.js';
 import { writeMidi, readMidi, renderSong } from '../js/seq/midifile.js';
+import { padValues, PerfPad } from '../js/seq/perfpad.js';
 import { notesOf, splitTakes, estimateTempo, takeTicks, takeToPattern, takeMidiNotes, barsPerPattern } from '../js/seq/capture.js';
 
 const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 0.01, `${msg}: ${a} vs ${b}`);
@@ -44,7 +48,7 @@ assert.equal(snapToScale(61, { root: 2, type: 'major' }), 61); // C# is in D maj
 {
   const n = normalizeSong({
     name: 'x'.repeat(100), bpm: 999, swing: 10, scale: { root: 14, type: 'minor' },
-    tracks: [{ name: 'B', ch: 40, rate: 'weird', mode: 'pool', patterns: { A: { length: 200, steps: [
+    tracks: [{ name: 'B', ch: 40, rate: 'weird', mode: 'pool', patterns: { A: { length: 300, steps: [
       { i: 0, notes: [36, 36, 300, 40], vel: 0, gate: 500, len: 99 }, { i: 0, notes: [1] }, { i: 3, notes: [38] }, { i: -2 }] } } }],
     song: [{ bars: 0, play: ['Z'] }, { play: [null] }],
   });
@@ -414,8 +418,8 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
   assert.deepEqual(pat.steps.map(s => s.i), [0, 2, 4, 7, 8, 12, 14, 16, 18, 20, 23, 24, 28]);
   assert.deepEqual(pat.steps[0], { i: 0, notes: [48], vel: 100, gate: 60, len: 2 }, '0.4 beat = 1.6 steps');
   assert.equal(takeToPattern(items, 48, { fromBar: 1 }).steps[0].i, 0, 'from bar 2');
-  assert.equal(barsPerPattern(24), 4);
-  assert.equal(barsPerPattern(12), 2);
+  assert.equal(barsPerPattern(24), 16);
+  assert.equal(barsPerPattern(12), 8);
 
   // Played along with the sequencer: placed by its ticks, in the bar it was played in.
   const sync = (t, type, n, tick) => ev(t, type, n, 100, { tick, run: 1, bpm: 120 });
@@ -665,12 +669,13 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
   assert.deepEqual(s.soundChanges, ['Keys']);
   const kick = s.song.tracks[1].patterns.A.steps[0];
   assert.deepEqual([kick.vel, kick.nv], [120, { 42: 50 }], 'the quieter hat keeps its velocity');
-  // Six different 4-bar chunks of bass: A-D on Bass, the rest on "Bass 2".
+  // Six different 4-bar chunks of bass: patterns A-F on Bass.
   const long = { base: r.base, order: [1], parts: { 1: [{ pos: 0, track: t('Bass', 'Bass') }] }, notes: [], ccs: [] };
   for (let k = 0; k < 6; k++) long.notes.push({ tid: 1, pos: k * 4 * 384, note: 36 + k, vel: 100, len: 96 });
   const L = songFromBacking(runBacking(long, 0, 24 * 384), { name: 'L', bpm: 120, length: 24 * 384, items: [{ note: 72, vel: 90, pos: 0, len: 96 }], newRole: 'lead' });
-  assert.deepEqual(L.song.tracks.map(x => x.name), ['Bass', 'Bass 2', 'Lead']);
-  assert.deepEqual(L.song.song.map(sec => sec.play.slice(0, 2).join(',')), ['A,', 'B,', 'C,', 'D,', ',A', ',B']);
+  assert.deepEqual(L.song.tracks.map(x => x.name), ['Bass', 'Lead']);
+  assert.deepEqual(L.song.song.map(sec => sec.play[0]), ['A', 'B', 'C', 'D', 'E', 'F']);
+  assert.deepEqual(Object.keys(L.song.tracks[0].patterns), ['A', 'B', 'C', 'D', 'E', 'F']);
   assert.deepEqual(L.lost, []);
 }
 
@@ -799,6 +804,141 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
   const s2 = JSON.parse(JSON.stringify(song));
   removeTrack(s2, 0);
   assert.deepEqual(s2.auto.map(l => [l.ti, l.target]), [[0, 'cc']], 'removing a track removes its lanes and renumbers the rest');
+}
+
+// Timing offsets (microtiming): step `off` and per-note `no`, fractions of a step (±0.5).
+{
+  const raw = { length: 16, steps: [
+    { i: 0, notes: [36], vel: 100, gate: 30, len: 1, off: -0.2 },
+    { i: 4, notes: [38], vel: 100, gate: 30, len: 1, off: 0.3 },
+    { i: 8, notes: [36, 38], vel: 100, gate: 30, len: 1, off: 0, no: { 38: 0.1, 36: 0, 50: 0.2 } },
+    { i: 12, notes: [42], vel: 100, gate: 30, len: 1, off: 0.9 },
+    { i: 14, notes: [42], vel: 100, gate: 30, len: 1, off: 'x' }] };
+  const pat = cleanPattern(raw);
+  assert.deepEqual(pat.steps.map(s => [s.off, s.no]), [[-0.2, undefined], [0.3, undefined], [undefined, { 38: 0.1 }], [0.5, undefined], [undefined, undefined]],
+    'offsets clamped to ±0.5, 0 and bad values left out, per-note offsets only for the step\'s notes and where they differ');
+  assert.equal(cleanOff(0.12345), 0.123);
+  assert.deepEqual([offOf(pat.steps[2], 38), offOf(pat.steps[2], 36), offOf(pat.steps[0], 36)], [0.1, 0, -0.2]);
+  assert.equal(earliest(pat), 0.2);
+  const plain = { length: 16, steps: [{ i: 0, notes: [36], vel: 100, gate: 30, len: 1 }] };
+  assert.deepEqual(cleanPattern(plain), plain, 'old patterns load unchanged');
+  assert.equal(JSON.stringify(cleanPattern(plain)).includes('off'), false);
+  assert.deepEqual(cleanPattern(JSON.parse(JSON.stringify(pat))), pat, 'round trip through JSON');
+  const c = copyPattern(pat); c.steps[2].no[38] = 0.4;
+  assert.equal(pat.steps[2].no[38], 0.1, 'copies own their no');
+  assert.deepEqual(mapNotes({ ...pat.steps[2], notes: [36, 38] }, n => n + 1).no, { 39: 0.1 }, 'transposing keeps per-note offsets');
+  assert.deepEqual(setOffsets({ i: 0, notes: [36, 38, 42], vel: 100 }, { 36: 0.1, 38: 0.2, 42: 0.1 }), { i: 0, notes: [36, 38, 42], vel: 100, off: 0.1, no: { 38: 0.2 } });
+  // The piano roll and breeding keep them.
+  const mel = cleanPattern({ length: 8, steps: [{ i: 0, notes: [60, 64], vel: 100, gate: 100, len: 2, off: 0.25, no: { 64: -0.1 } }] });
+  assert.deepEqual(setRollNotes(copyPattern(mel), rollNotes(mel)).steps[0], { i: 0, notes: [60, 64], vel: 100, gate: 100, len: 2, off: 0.25, no: { 64: -0.1 } });
+  const child = cross(pat, pat, { drums: true, rng: seeded(3) }).pattern;
+  for (const s of child.steps) for (const n of s.notes) assert.equal(offOf(s, n), offOf(stepAt(pat, s.i), n), 'crossing drums keeps each hit\'s timing');
+  assert.ok(hasOffsets(mutate(pat, { drums: true, rng: seeded(4) }).pattern), 'mutating keeps timing');
+  const q = copyPattern(pat);
+  assert.equal(quantizeTiming(q), 4);
+  assert.equal(hasOffsets(q), false);
+
+  // The engine: 120 bpm, 1/16 = 125 ms a step. Step 0's −20% is held to the first beat on the
+  // first pass, then plays 25 ms before each new pass (scheduled ahead, never late).
+  const song = normalizeSong({ bpm: 120, swing: 50, tracks: [{ name: 'Drums', patterns: { A: pat } }], song: [{ bars: 1, play: ['A'] }] });
+  const out = [];
+  let now = 1000, late = 0;
+  const e = new Engine({ song: () => song, now: () => now, sink: { note: (ti, n, v, at) => { if (at < now) late++; out.push([n, Math.round((at - 1040) * 10) / 10]); } } });
+  e.play();
+  for (; now < 1000 + 40 + 2100; now += 25) e.pump();
+  const first = out.filter(([, t]) => t < 1900);
+  assert.deepEqual(first, [[36, 0], [38, 537.5], [36, 1000], [38, 1012.5], [42, 1562.5], [42, 1750]]);
+  assert.deepEqual(out.filter(([, t]) => t >= 1900)[0], [36, 1975], 'step 0 early on the next pass');
+  assert.equal(late, 0, 'nothing scheduled in the past');
+  // Swing and offsets add up: a swung step 1 at 66% is 1/3 step late, plus its own 10%.
+  const sw = normalizeSong({ bpm: 120, swing: 66, tracks: [{ name: 'Hat', patterns: { A: { length: 2, steps: [{ i: 1, notes: [42], vel: 100, gate: 30, len: 1, off: 0.1 }] } } }] });
+  const swOut = [];
+  now = 1000;
+  const e2 = new Engine({ song: () => sw, now: () => now, sink: { note: (ti, n, v, at) => swOut.push(Math.round(at - 1040)) } });
+  e2.play(); for (; now < 1400; now += 25) e2.pump();
+  assert.equal(swOut[0], Math.round(125 + 0.32 * 125 + 12.5));
+
+  // Render and .mid: ticks (24 a step) keep the offsets; the early step 0 of the song starting over isn't kept.
+  const r = renderSong(song);
+  assert.deepEqual(r.tracks[0].notes.map(n => [n.note, n.tick]), [[36, 0], [38, 103], [36, 192], [38, 194], [42, 300], [42, 336]]);
+  const back = readMidi(writeMidi(r));
+  assert.deepEqual(back.tracks[1].notes.map(n => n.tick), [0, 103, 192, 194, 300, 336], '.mid keeps the shifted timing');
+}
+
+// More than four patterns: extra slots E … Z, AA … BL, sequenced by up to 256 sections.
+{
+  assert.equal(PATTERN_NAMES.length, MAX_PATTERNS);
+  assert.deepEqual([PATTERN_NAMES[4], PATTERN_NAMES[25], PATTERN_NAMES[26], PATTERN_NAMES[63]], ['E', 'Z', 'AA', 'BL']);
+  const old = normalizeSong({ tracks: [{ name: 'Drums', patterns: { A: { length: 16, steps: [] } } }], song: [{ bars: 4, play: ['A'] }] });
+  assert.deepEqual(Object.keys(old.tracks[0].patterns), ['A', 'B', 'C', 'D'], 'old songs keep just A-D');
+  const bar = n => ({ length: 16, steps: [{ i: 0, notes: [36], vel: 100, gate: 30, len: 1 }, { i: n, notes: [38], vel: 100, gate: 30, len: 1 }] });
+  const patterns = {};
+  for (let k = 0; k < 40; k++) patterns[PATTERN_NAMES[k]] = bar(1 + (k % 15));
+  patterns.constructor = bar(2); patterns.ZZZ = bar(3);
+  // 120 one-bar sections, each playing one of the 40 patterns.
+  const sections = Array.from({ length: 120 }, (_, k) => ({ bars: 1, play: [PATTERN_NAMES[k % 40]] }));
+  sections.push({ bars: 1, play: ['constructor'] }, { bars: 2, play: ['AP'], fill: ['AN'] });
+  const song = normalizeSong({ bpm: 120, tracks: [{ name: 'Drums', pattern: 'AF', patterns }], song: sections });
+  const t = song.tracks[0];
+  assert.equal(patternNames(t).length, 40, 'extra patterns kept, in order; unknown names dropped');
+  assert.equal(patternNames(t)[39], 'AN');
+  assert.equal(t.pattern, 'AF');
+  assert.equal(hasPattern(t, 'constructor'), false);
+  assert.equal(song.song.length, 122);
+  assert.deepEqual(song.song.slice(118).map(x => x.play[0]), ['AM', 'AN', 'A', 'A'], 'a section naming a pattern the track lacks plays A');
+  assert.deepEqual(song.song.at(-1).fill, ['AN']);
+  assert.deepEqual(normalizeSong(JSON.parse(JSON.stringify(song))), song, 'round trip');
+  // Limits.
+  const many = normalizeSong({ tracks: [{}], song: Array.from({ length: 300 }, () => ({ bars: 100, play: ['A'] })) });
+  assert.deepEqual([many.song.length, many.song[0].bars], [MAX_SECTIONS, MAX_SECTION_BARS]);
+  // The engine and the .mid follow the sections through all the patterns.
+  const r = renderSong(song);
+  const snares = r.tracks[0].notes.filter(n => n.note === 38).map(n => n.tick);
+  assert.equal(snares.length, 120 + 1 + 2, "plus A, then A and its fill");
+  assert.deepEqual(snares.slice(0, 3), [24, 384 + 48, 768 + 72]);
+  assert.equal(snares[39], 39 * 384 + 10 * 24, 'pattern AN in bar 40');
+  assert.equal(snares[40], 40 * 384 + 24, 'A again in bar 41');
+  assert.equal(readMidi(writeMidi(r)).tracks[1].notes.length, r.tracks[0].notes.length);
+  // Adding and removing patterns.
+  const s2 = normalizeSong({ tracks: [{}], song: [{ bars: 1, play: ['A'] }] });
+  assert.equal(addPattern(s2.tracks[0], { length: 32 }), 'E');
+  assert.equal(s2.tracks[0].patterns.E.length, 32);
+  s2.song[0].play[0] = 'E';
+  assert.deepEqual(patternUses(s2, 0, 'E'), { sections: [0], fills: [] });
+  assert.equal(removePattern(s2, 0, 'E'), false, 'not while a section plays it');
+  s2.song[0].play[0] = 'A';
+  assert.equal(removePattern(s2, 0, 'E'), true);
+  assert.equal(removePattern(s2, 0, 'B'), false, 'A-D stay');
+  for (let k = 4; k < MAX_PATTERNS; k++) addPattern(s2.tracks[0]);
+  assert.equal(addPattern(s2.tracks[0]), null, 'full at MAX_PATTERNS');
+}
+
+// Long patterns: up to 256 steps (16 bars of sixteenths).
+{
+  assert.equal(MAX_STEPS, 256);
+  const long = cleanPattern({ length: 256, steps: [{ i: 0, notes: [36], vel: 100, gate: 30, len: 1 }, { i: 255, notes: [38], vel: 100, gate: 30, len: 4, off: -0.1 }, { i: 256, notes: [42] }] });
+  assert.deepEqual([long.length, long.steps.length], [256, 2], 'step 256 is past the end');
+  const song = normalizeSong({ bpm: 120, tracks: [{ name: 'Drums', patterns: { A: long } }], song: [{ bars: 32, play: ['A'] }] });
+  assert.equal(song.tracks[0].patterns.A.length, 256);
+  const r = renderSong(song);
+  assert.deepEqual(r.tracks[0].notes.map(n => [n.note, n.tick]), [[36, 0], [38, 255 * 24 - 2], [36, 16 * 384], [38, 16 * 384 + 255 * 24 - 2]], 'a 16-bar pattern plays twice in 32 bars');
+}
+
+// The performance pad: what each spot does, and which grid line a roll snaps to.
+{
+  assert.equal(padValues('filter', 0.5, 1).text, 'Open', 'the middle of the filter is open, whatever the height');
+  assert.equal(padValues('filter', 0, 0).lp, 120);
+  assert.ok(Math.abs(padValues('filter', 1, 0).hp - 6000) < 1e-6);
+  assert.ok(padValues('filter', 0.3, 0).lp < padValues('filter', 0.4, 0).lp, 'the low-pass opens towards the middle');
+  assert.ok(padValues('filter', 0.2, 1).res > padValues('filter', 0.2, 0).res);
+  assert.deepEqual([0, 0.2, 0.4, 0.55, 0.75, 1].map(x => padValues('roll', x, 1).beats), [2, 1, 0.5, 0.25, 1 / 6, 0.125], '1/2 … 1/32');
+  assert.equal(padValues('echo', 0.4, 0).beats, 0.5);
+  assert.ok(Math.abs(padValues('echo', 0.4, 1).fb - 0.8) < 1e-9, 'feedback at most 80%');
+  const g = (heard, now) => +PerfPad.prototype.gridBack('roll', 0.55, 1, heard, now, 0.01).back.toFixed(4);
+  assert.equal(g(100, 108), 0.12, 'heard a little after the line at 96: back to it');
+  assert.equal(g(118, 126), 0.06, 'heard just before the line at 120: that line (still 6 ticks back on the audio clock)');
+  assert.equal(g(118, 118), -0.02, 'a line still to come: negative (the roll waits for it)');
+  assert.equal(PerfPad.prototype.gridBack('filter', 0.5, 0.5, 10, 10, 0.01), null);
 }
 
 console.log('ok — sequencer model and engine');

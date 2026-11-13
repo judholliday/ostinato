@@ -5,16 +5,16 @@
 // step, adds a ratchet or a chance hit; crossing takes each lane from one parent or the other.
 // Melodic patterns: mutating moves a few notes by a scale step and drops or repeats a few;
 // crossing takes each half bar (or beat) from alternate parents.
-import { SCALES, cleanPattern, drumStep, velOf } from './model.js';
+import { SCALES, cleanPattern, drumStep, velOf, offOf, setOffsets } from './model.js';
 
 const KICK = 36, BACKBEAT = new Set([38, 39, 40]);
 
-// A drum pattern as lanes: note -> Map(step -> { vel, gate, prob?, rat? }).
+// A drum pattern as lanes: note -> Map(step -> { vel, gate, prob?, rat?, off? }) (off: its timing).
 function lanesOf(p) {
   const lanes = new Map();
   for (const s of p.steps) for (const n of s.notes) {
     if (!lanes.has(n)) lanes.set(n, new Map());
-    lanes.get(n).set(s.i, { vel: velOf(s, n), gate: s.gate, ...(s.prob ? { prob: s.prob } : {}), ...(s.rat ? { rat: s.rat } : {}) });
+    lanes.get(n).set(s.i, { vel: velOf(s, n), gate: s.gate, ...(s.prob ? { prob: s.prob } : {}), ...(s.rat ? { rat: s.rat } : {}), ...(offOf(s, n) ? { off: offOf(s, n) } : {}) });
   }
   return lanes;
 }
@@ -29,7 +29,8 @@ function fromLanes(lanes, length) {
     const fields = { gate: hs[0][1].gate };
     if (hs.every(([, h]) => h.prob)) fields.prob = Math.min(...hs.map(([, h]) => h.prob));
     if (hs.every(([, h]) => h.rat)) fields.rat = Math.max(...hs.map(([, h]) => h.rat));
-    return drumStep(i, hs.map(([n, h]) => [n, h.vel]), fields);
+    const step = drumStep(i, hs.map(([n, h]) => [n, h.vel]), fields);
+    return hs.some(([, h]) => h.off) ? setOffsets(step, Object.fromEntries(hs.map(([n, h]) => [n, h.off || 0]))) : step;
   });
   return cleanPattern({ steps }, { length, onlyBelow: length });
 }

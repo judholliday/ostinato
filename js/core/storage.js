@@ -137,7 +137,8 @@ export const placeOf = (kind, file) => (STATIC ? `this browser (${file})` : `dat
 // used by factory sounds. They're named "factory/<file>" wherever a recording's name goes, and
 // can't be deleted or overwritten.
 export const FACTORY_PREFIX = 'factory/';
-export const FACTORY_SAMPLES = ['Vowel Ah (C4).wav', 'Glass Bell (C5).wav', 'Wind.wav', 'Music Box Phrase (C5).wav'].map(f => FACTORY_PREFIX + f);
+export const FACTORY_SAMPLES = ['Vowel Ah (C4).wav', 'Glass Bell (C5).wav', 'Wind.wav', 'Music Box Phrase (C5).wav',
+  'Piano Chord (C4).wav', 'Bowed Note (C3).wav', 'Vowel Phrase (C3).wav', 'Drum Loop (100 bpm).wav', 'Vinyl Crackle.wav'].map(f => FACTORY_PREFIX + f);
 // A recording's audio as a Blob, whether it's yours or a factory sample.
 export async function audioBlob(file) {
   if (String(file).startsWith(FACTORY_PREFIX)) {

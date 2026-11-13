@@ -5,7 +5,7 @@
 //   { format: 'mkxl-seq', version: 1, name, bpm, swing, scale: { root, type } | null,
 //     tracks: [{ name, out, ch, voice, inst, fx, mode, rate, pattern, mute, solo, vol, sound, program,
 //                pool: { notes, order, latch },
-//                patterns: { A: { length, steps: [{ i, notes, vel, gate, len, prob?, rat?, nv? }],
+//                patterns: { A: { length, steps: [{ i, notes, vel, gate, len, prob?, rat?, nv?, nl?, off?, no? }],
 //                                 cc?: [{ cc, glide, steps: [{ i, v }] }], beats?, laneLen? }, B, C, D } }],
 //     meter: '4/4', song: [{ bars, play: ['A', null, ...], meter?, name?, fill? }], masterFx }   // a section's meter overrides the song's   // play[] has one entry per track; null = silent
 //
@@ -18,6 +18,11 @@
 // steps } for notes held for their own length, set in the piano roll; absent = all `len`). A step's
 // `len` never reaches past the next step, but a note's `nl` may: in the piano roll a held note can
 // carry on under the next ones.
+// Timing (microtiming, e.g. a groove taken from a record): `off` (-0.5 … 0.5) moves the step that
+// fraction of one step late (negative = early), on top of swing and the track's feel; `no` ({ note:
+// off }) gives notes their own offset (a laid-back snare under a hat on the grid). Absent = on the
+// grid. A negative offset on step 0 plays just before the pattern starts again (the engine looks
+// that far ahead), except on the very first beat after Play, which it can't come before.
 //
 // `beats` (1-16): the pattern's steps are spread evenly over that many beats instead of each being
 // one `rate` long, so 5 steps in 4 beats plays five against the other tracks' four (a polyrhythm).
@@ -53,11 +58,46 @@ import { normalizePatch, cleanRack, SYNC } from '../lab/patch.js';
 
 export const FORMAT = 'mkxl-seq';
 export const VERSION = 1;
-export const MAX_STEPS = 64;
+export const MAX_STEPS = 256; // 16 bars of sixteenths (64 until Nov 2026)
 export const MAX_TRACKS = 8;
 export const MAX_CC_LANES = 4;
 export const PROBS = [100, 87, 75, 62, 50, 37, 25, 12];
+// Every track has patterns A-D; more can be added (E … Z, then AA, AB … like spreadsheet columns),
+// up to MAX_PATTERNS, so a long part (a whole song's beat) can be built from many short loops that
+// the song's sections put in order. A track's patterns object holds A-D plus the extra ones it has.
 export const PATTERNS = ['A', 'B', 'C', 'D'];
+export const MAX_PATTERNS = 64;
+export const patternName = k => (k < 26 ? String.fromCharCode(65 + k) : patternName(Math.floor(k / 26) - 1) + String.fromCharCode(65 + (k % 26)));
+export const PATTERN_NAMES = Array.from({ length: MAX_PATTERNS }, (_, k) => patternName(k)); // A … Z, AA … BL
+export const isPatternName = p => PATTERN_NAMES.includes(p);
+// Whether a track has a pattern of that name.
+export const hasPattern = (t, p) => isPatternName(p) && !!t?.patterns?.[p];
+// A track's patterns in order (A-D, then any extra ones).
+export const patternNames = t => PATTERN_NAMES.filter(n => t.patterns[n]);
+// Adds the next free pattern to a track: a copy of `copy`, else empty and `length` steps. Returns its
+// name, or null when the track has MAX_PATTERNS.
+export function addPattern(t, { copy = null, length = 16 } = {}) {
+  const name = PATTERN_NAMES.find(n => !t.patterns[n]);
+  if (!name) return null;
+  t.patterns[name] = copy ? copyPattern(copy) : newPattern(length);
+  return name;
+}
+// Where a track's pattern is used: { sections: [indexes playing it], fills: [indexes filling with it] }.
+export function patternUses(song, ti, name) {
+  const sections = [], fills = [];
+  song.song.forEach((sec, i) => { if (sec.play[ti] === name) sections.push(i); if (sec.fill?.[ti] === name) fills.push(i); });
+  return { sections, fills };
+}
+// Removes an extra pattern (never A-D). Refuses (returns false) while a section or fill uses it.
+export function removePattern(song, ti, name) {
+  const t = song.tracks[ti], u = patternUses(song, ti, name);
+  if (PATTERNS.includes(name) || !t?.patterns[name] || u.sections.length || u.fills.length) return false;
+  delete t.patterns[name];
+  if (t.pattern === name) t.pattern = 'A';
+  return true;
+}
+export const MAX_SECTIONS = 256;
+export const MAX_SECTION_BARS = 64;
 export const TICKS_PER_BEAT = 96;
 export const TICKS_PER_BAR = TICKS_PER_BEAT * 4; // a 4/4 bar (Capture's take editor still counts these)
 
@@ -147,15 +187,15 @@ export function normalizeSong(raw) {
   const scale = raw.scale && SCALES[raw.scale.type] ? { root: clamp(raw.scale.root, 0, 11, 0), type: raw.scale.type } : null;
   const tracks = oneSidechain(raw.tracks.slice(0, MAX_TRACKS).map((t, ti) => normalizeTrack(t, ti)));
   if (!tracks.length) tracks.push(newTrack(0));
-  const song = (Array.isArray(raw.song) ? raw.song : []).slice(0, 64).map(sec => ({
-    bars: clamp(sec?.bars, 1, 64, 4),
-    play: tracks.map((_, ti) => {
+  const song = (Array.isArray(raw.song) ? raw.song : []).slice(0, MAX_SECTIONS).map(sec => ({
+    bars: clamp(sec?.bars, 1, MAX_SECTION_BARS, 4),
+    play: tracks.map((t, ti) => {
       const p = Array.isArray(sec?.play) ? sec.play[ti] : 'A';
-      return p === null ? null : PATTERNS.includes(p) ? p : 'A';
+      return p === null ? null : hasPattern(t, p) ? p : 'A';
     }),
     ...(METERS.includes(sec?.meter) ? { meter: sec.meter } : {}),
     ...(typeof sec?.name === 'string' && sec.name.trim() ? { name: sec.name.trim().slice(0, 24) } : {}),
-    ...cleanFill(sec?.fill, tracks.length),
+    ...cleanFill(sec?.fill, tracks.length, tracks),
   }));
   if (!song.length) song.push({ bars: 4, play: tracks.map(() => 'A') });
   return {
@@ -197,8 +237,8 @@ export function autoValue(points, at) {
 // A section's fills: `fill` has one entry per track, the pattern that track plays in the section's
 // last bar instead (a drum fill into the next section; also when the track is silent in the
 // section), or null. Absent when no track has one.
-function cleanFill(raw, n) {
-  const fill = Array.from({ length: n }, (_, ti) => (Array.isArray(raw) && PATTERNS.includes(raw[ti]) ? raw[ti] : null));
+function cleanFill(raw, n, tracks = []) {
+  const fill = Array.from({ length: n }, (_, ti) => (Array.isArray(raw) && hasPattern(tracks[ti], raw[ti]) ? raw[ti] : null));
   return fill.some(Boolean) ? { fill } : {};
 }
 
@@ -230,6 +270,11 @@ export function cleanPattern(p, { length, onlyBelow = MAX_STEPS } = {}) {
     const nl = {}; // all given for now (even ones equal to len): they matter if len is cut below
     if (s.nl && typeof s.nl === 'object') for (const n of step.notes) if (s.nl[n] !== undefined) nl[n] = clamp(s.nl[n], 1, MAX_STEPS, step.len);
     if (Object.keys(nl).length) step.nl = nl;
+    const off = cleanOff(s.off);
+    if (off) step.off = off;
+    const no = {};
+    if (s.no && typeof s.no === 'object') for (const n of step.notes) if (s.no[n] !== undefined) { const x = cleanOff(s.no[n]); if (x !== off) no[n] = x; }
+    if (Object.keys(no).length) step.no = no;
     steps.push(step);
   }
   steps.sort((a, b) => a.i - b.i);
@@ -344,7 +389,8 @@ function normalizeTrack(t, ti) {
   const d = newTrack(ti);
   const notes = midiNotes;
   const patterns = {};
-  for (const name of PATTERNS) patterns[name] = cleanPattern(t?.patterns?.[name]);
+  // A-D always; extra patterns the file has (by name, in order).
+  for (const name of PATTERN_NAMES) if (PATTERNS.includes(name) || (t?.patterns?.[name] && typeof t.patterns[name] === 'object')) patterns[name] = cleanPattern(t?.patterns?.[name]);
   return {
     name: String(t?.name ?? d.name).slice(0, 24) || d.name,
     // What the track is for (its editor, ideas and sound suggestions). Songs saved before tracks
@@ -355,7 +401,7 @@ function normalizeTrack(t, ti) {
     voice: VOICES.includes(t?.voice) ? t.voice : d.voice,
     mode: t?.mode === 'pool' ? 'pool' : 'steps',
     rate: RATES[t?.rate] ? t.rate : '1/16',
-    pattern: PATTERNS.includes(t?.pattern) ? t.pattern : 'A',
+    pattern: hasPattern({ patterns }, t?.pattern) ? t.pattern : 'A',
     mute: !!t?.mute, solo: !!t?.solo,
     vol: clamp(t?.vol, 0, 127, 100),
     pan: clampF(t?.pan, -1, 1, 0), reverb: clampF(t?.reverb, 0, 1, 0), delay: clampF(t?.delay, 0, 1, 0), duck: clampF(t?.duck, 0, 1, 0),
@@ -421,12 +467,55 @@ export function noteSteps(step, patternLength, note) {
 }
 export const lenOf = (s, n) => s.nl?.[n] ?? s.len;
 
+// ---- timing offsets (off / no) ----
+export const MAX_OFF = 0.5;
+// An offset tidied: a number of steps within ±MAX_OFF, to 1/1000 of a step; 0 when missing.
+export function cleanOff(x) {
+  const v = Number(x);
+  if (!Number.isFinite(v)) return 0;
+  return Math.round(Math.max(-MAX_OFF, Math.min(MAX_OFF, v)) * 1000) / 1000 || 0;
+}
+// A note's timing offset in a step (its own, else the step's), in steps.
+export const offOf = (s, n) => (n !== undefined && s.no?.[n] !== undefined ? s.no[n] : s.off || 0);
+// Sets a step's offsets from { note: off }: the step's `off` is the value most of its notes share
+// (the first note's on a tie), the others go in `no`. Notes not listed keep the step's.
+export function setOffsets(s, offs) {
+  const vals = s.notes.map(n => cleanOff(offs[n] ?? offOf(s, n)));
+  const count = new Map();
+  for (const v of vals) count.set(v, (count.get(v) || 0) + 1);
+  let off = vals.length ? vals[0] : cleanOff(s.off);
+  for (const [v, k] of count) if (k > count.get(off)) off = v;
+  delete s.off; delete s.no;
+  if (off) s.off = off;
+  const no = {};
+  s.notes.forEach((n, k) => { if (vals[k] !== off) no[n] = vals[k]; });
+  if (Object.keys(no).length) s.no = no;
+  return s;
+}
+// Whether any step in a pattern is off the grid.
+export const hasOffsets = pat => pat.steps.some(s => s.off || s.no);
+// Puts every step back on the grid. Returns how many steps moved.
+export function quantizeTiming(pat) {
+  let k = 0;
+  for (const s of pat.steps) if (s.off || s.no) { delete s.off; delete s.no; k++; }
+  return k;
+}
+// How far before its grid position a pattern's earliest note plays, in steps (0 if none is early).
+export function earliest(pat) {
+  let e = 0;
+  for (const s of pat.steps) {
+    if (s.off < e) e = s.off;
+    if (s.no) for (const v of Object.values(s.no)) if (v < e) e = v;
+  }
+  return -e;
+}
+
 // ---- the piano roll: a pattern as separate notes ----
 
 // Every note that starts in the pattern: [{ i, note, len, vel }] (len in steps, to the pattern's end
 // at most).
 export function rollNotes(pat) {
-  return pat.steps.filter(s => s.i < pat.length).flatMap(s => s.notes.map(note => ({ i: s.i, note, len: Math.min(lenOf(s, note), pat.length - s.i), vel: velOf(s, note) })));
+  return pat.steps.filter(s => s.i < pat.length).flatMap(s => s.notes.map(note => ({ i: s.i, note, len: Math.min(lenOf(s, note), pat.length - s.i), vel: velOf(s, note), ...(offOf(s, note) ? { off: offOf(s, note) } : {}) })));
 }
 
 // Rebuilds a pattern's notes from a list like rollNotes() returns. Notes starting together share a
@@ -439,7 +528,7 @@ export function setRollNotes(pat, list) {
   for (const x of list) {
     const i = Math.round(x.i), note = Math.round(x.note);
     if (!(i >= 0 && i < pat.length && note >= 0 && note <= 127)) continue;
-    byKey.set(`${i}:${note}`, { i, note, len: Math.max(1, Math.min(Math.round(x.len) || 1, pat.length - i)), vel: Math.max(1, Math.min(127, Math.round(x.vel) || 100)) });
+    byKey.set(`${i}:${note}`, { i, note, len: Math.max(1, Math.min(Math.round(x.len) || 1, pat.length - i)), vel: Math.max(1, Math.min(127, Math.round(x.vel) || 100)), off: cleanOff(x.off) });
   }
   const notes = [...byKey.values()].sort((a, b) => a.note - b.note || a.i - b.i);
   notes.forEach((x, k) => { const nx = notes[k + 1]; if (nx && nx.note === x.note && nx.i < x.i + x.len) x.len = Math.max(1, nx.i - x.i); });
@@ -458,6 +547,7 @@ export function setRollNotes(pat, list) {
     const nl = Object.fromEntries(g.filter(x => x.len !== len).map(x => [x.note, x.len]));
     if (Object.keys(nv).length) s.nv = nv;
     if (Object.keys(nl).length) s.nl = nl;
+    if (g.some(x => x.off)) setOffsets(s, Object.fromEntries(g.map(x => [x.note, x.off])));
     return s;
   });
   return pat;
@@ -470,7 +560,7 @@ export function mapNotes(s, fn) {
     const m = Object.fromEntries(moved.filter(([n]) => s[key][n] !== undefined).map(([n, to]) => [to, s[key][n]]));
     if (Object.keys(m).length) s[key] = m; else delete s[key];
   };
-  own('nv'); own('nl');
+  own('nv'); own('nl'); own('no');
   s.notes = [...new Set(moved.map(([, to]) => to))].sort((a, b) => a - b);
   return s;
 }
@@ -516,7 +606,7 @@ export function drumStep(i, hits, fields = {}) {
 }
 
 export const copyPattern = p => ({ length: p.length, ...(p.beats ? { beats: p.beats } : {}), ...(p.laneLen ? { laneLen: { ...p.laneLen } } : {}),
-  steps: p.steps.map(s => ({ ...s, notes: [...s.notes], ...(s.nv ? { nv: { ...s.nv } } : {}), ...(s.nl ? { nl: { ...s.nl } } : {}) })),
+  steps: p.steps.map(s => ({ ...s, notes: [...s.notes], ...(s.nv ? { nv: { ...s.nv } } : {}), ...(s.nl ? { nl: { ...s.nl } } : {}), ...(s.no ? { no: { ...s.no } } : {}) })),
   ...(p.cc?.length ? { cc: p.cc.map(l => ({ ...l, steps: l.steps.map(s => ({ ...s })) })) } : {}) });
 
 // ---- note pool ----

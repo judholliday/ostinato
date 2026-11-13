@@ -65,7 +65,9 @@ export function renderSong(song, { seed = 1 } = {}) {
     song: () => copy, now: () => now, pool: ti => copy.tracks[ti].pool.notes, rng: seeded(seed),
     sink: {
       start(at) { t0 = at; },
-      note(ti, note, vel, at, dur) { out[ti].push({ tick: (at - t0) / tickMs, dur: dur / tickMs, note, vel }); },
+      // `grid`: where the note's step is on the grid, so a step played early (a negative timing offset)
+      // from the song starting over isn't kept at the end, and one played late at the end is.
+      note(ti, note, vel, at, dur, grid = at) { out[ti].push({ tick: Math.max(0, (at - t0) / tickMs), dur: dur / tickMs, note, vel, grid: (grid - t0) / tickMs }); },
       cc(ti, cc, v, at) { ccs[ti].push({ tick: Math.round((at - t0) / tickMs), cc, v }); },
       // Automation: kept as values (for rendering audio) and as the CC hardware would get (the .mid).
       auto(ti, lane, v, at) {
@@ -90,8 +92,8 @@ export function renderSong(song, { seed = 1 } = {}) {
     name: song.name, bpm: song.bpm, bars, meters, autos: autos.filter(a => a.tick < end),
     tracks: copy.tracks.map((t, ti) => ({
       name: t.name, ch: t.ch, program: t.program,
-      notes: out[ti].filter(n => Math.round(n.tick) < end)
-        .map(n => ({ ...n, tick: Math.round(n.tick), dur: Math.min(Math.round(n.dur), end - Math.round(n.tick)) })),
+      notes: out[ti].filter(n => Math.round(n.grid) < end && Math.round(n.tick) < end)
+        .map(({ grid, ...n }) => ({ ...n, tick: Math.round(n.tick), dur: Math.min(Math.round(n.dur), end - Math.round(n.tick)) })),
       ccs: ccs[ti].filter(c => c.tick < end),
     })),
   };

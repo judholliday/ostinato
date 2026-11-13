@@ -8,7 +8,8 @@
 //                                                                   // zones: a multi-sample Sampler's (cleanZones)
 //     audio: [{ from, to }],                            // module id -> module id, or to 'out'
 //     mod: [{ from, to: '<id>.<target>', amount }],     // from an env/lfo id, or 'vel' / 'wheel'
-//     cc: { <controller number>: '<id>.<param>' } }     // knobs learned from a MIDI controller
+//     cc: { <controller number>: '<id>.<param>' },      // knobs learned from a MIDI controller
+//     play?, glide?, arp?: { mode, rate, octaves, gate } }  // mono/legato, glide time, the arpeggiator (cleanArp)
 //
 // Modules play once per note ('voice') or once for the whole instrument ('global', the effects).
 // Voice modules can feed global ones; not the other way round.
@@ -20,6 +21,27 @@ export const VERSION = 1;
 export const MAX_MODULES = 24;
 export const MAX_VOICES = 16;
 export const PLAY_MODES = ['poly', 'mono', 'legato'];
+// The arpeggiator: held keys are played one at a time, in time with the song. A patch's `arp` is
+// { mode, rate (a note length from SYNC), octaves (1-4: the pattern again an octave up, and so on),
+//   gate (how much of each step the note lasts), latch? (keys keep playing after you let go, until
+//   you play something else or switch it off) }; absent = off.
+export const ARP_MODES = ['up', 'down', 'up-down', 'played', 'random', 'chord'];
+export const ARP_RATES = ['1/4', '1/8', '1/8.', '1/8t', '1/16', '1/16.', '1/16t', '1/32'];
+export function cleanArp(raw) {
+  if (!raw || typeof raw !== 'object' || !ARP_MODES.includes(raw.mode)) return null;
+  const n = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+  return { mode: raw.mode, rate: ARP_RATES.includes(raw.rate) ? raw.rate : '1/16', octaves: Math.round(n(raw.octaves, 1, 4, 1)), gate: Math.round(n(raw.gate, 0.05, 1, 0.6) * 100) / 100, ...(raw.latch === true ? { latch: true } : {}) };
+}
+// The notes an arpeggiator plays, in order, from the keys held ([{ note, vel, seq }], seq = the order
+// they were pressed): one per step, going round (random picks any; chord plays them all each step).
+export function arpOrder(held, arp) {
+  const keys = [...held].sort(arp.mode === 'played' ? (a, b) => a.seq - b.seq : (a, b) => a.note - b.note || a.seq - b.seq);
+  const up = [];
+  for (let o = 0; o < arp.octaves; o++) for (const k of keys) if (k.note + 12 * o <= 127) up.push({ note: k.note + 12 * o, vel: k.vel });
+  if (arp.mode === 'down') return up.reverse();
+  if (arp.mode === 'up-down') return [...up, ...up.slice(1, -1).reverse()];
+  return up;
+}
 // The organ's drawbars, as footages: 16' sounds an octave below the key, 8' at it, 1' three octaves up.
 export const DRAWBAR_FEET = ["16'", "5⅓'", "8'", "4'", "2⅔'", "2'", "1⅗'", "1⅓'", "1'"];
 // Each drawbar's harmonic of the 16' tone.
@@ -108,11 +130,12 @@ export const MODULES = {
   },
   organ: {
     label: 'Drawbar organ', scope: 'voice', audioOut: true,
-    help: 'A tonewheel organ voice: nine drawbars (0–8) at the classic footages, 16\' (an octave below) to 1\' (three octaves above), plus percussion (a struck 2nd or 3rd harmonic on each note) and key click. One oscillator per note, however many bars are out. Put a Rotary after it.',
+    help: 'A tonewheel organ voice: nine drawbars (0–8) at the classic footages, 16\' (an octave below) to 1\' (three octaves above), plus percussion (a struck 2nd or 3rd harmonic, which takes over the 1\' drawbar as on the organ) and key click. One oscillator per note, however many bars are out. Put a Rotary after it.',
     params: [
       ...DRAWBAR_FEET.map((f, k) => num(`bar${k + 1}`, f, 0, 8, [8, 8, 8, 0, 0, 0, 0, 0, 0][k], { step: 1 })),
       choice('perc', 'Percussion', ['off', 'second', 'third'], 'off', { help: 'A struck harmonic at each note\'s start: second (4\') or third (2⅔\')' }),
-      choice('percDecay', 'Perc. decay', ['fast', 'slow'], 'fast'),
+      choice('percDecay', 'Perc. decay', ['fast', 'slow'], 'fast', { help: 'Fast fades away in about a second, slow in about four' }),
+      choice('percTrig', 'Perc. on', ['first notes', 'every note'], 'first notes', { help: 'First notes: like the organ, percussion sounds only on notes played after all keys were up, so a legato line has it only on its first note. Every note: on each one' }),
       num('click', 'Key click', 0, 1, 0.3),
       num('level', 'Level', 0, 1, 0.7),
     ],
@@ -178,8 +201,9 @@ export const MODULES = {
     label: 'LFO', scope: 'voice', modOut: true,
     help: 'A slow wave (-1 to 1) for vibrato, wobble and movement; random = a new random value each cycle (sample & hold); rise = from the bottom up each cycle, then back down at once (for pumping and ducking). Starts with each note.',
     params: [choice('wave', 'Wave', ['sine', 'triangle', 'square', 'saw', 'rise', 'random'], 'sine', { rebuild: true }), sync('each cycle'),
-      num('rate', 'Rate', 0.05, 30, 5, { unit: 'Hz', curve: 'log', showIf: unsynced }),
-      num('delay', 'Fade in', 0, 5, 0, { unit: 's' }), num('depth', 'Depth', 0, 1, 1)],
+      num('rate', 'Rate', 0.01, 30, 5, { unit: 'Hz', curve: 'log', showIf: unsynced }),
+      num('delay', 'Fade in', 0, 5, 0, { unit: 's' }), num('depth', 'Depth', 0, 1, 1),
+      num('phase', 'Start at', 0, 1, 0, { rebuild: true, showIf: p => p.wave !== 'random', help: 'Where in its cycle the wave is when a note starts: 0 = the beginning, 0.5 = halfway through. Several LFOs at the same rate with different starts follow each other round' })],
     targets: { rate: { unit: 'Hz', min: -20, max: 20 }, depth: { min: -1, max: 1 } },
   },
   fmop: {
@@ -345,13 +369,19 @@ export const MODULES = {
       num('mix', 'Mix', 0, 1, 1)],
     targets: { frozen: { min: 0, max: 1 } },
   },
+  scanner: {
+    label: 'Organ vibrato', scope: 'global', audioIn: true, audioOut: true,
+    help: 'The tonewheel organ\'s scanner vibrato and chorus: a short delay line swept up and back about seven times a second. V1–V3 = vibrato, more each step; C1–C3 = the same mixed with the dry sound (the chorus jazz players leave on). Put it straight after the Drawbar organ, before the Rotary.',
+    params: [choice('mode', 'Mode', ['V1', 'V2', 'V3', 'C1', 'C2', 'C3'], 'C3')],
+    targets: {},
+  },
   rotary: {
     label: 'Rotary', scope: 'global', audioIn: true, audioOut: true,
-    help: 'A rotating speaker cabinet (the organ\'s Leslie): a spinning horn for the highs and a drum for the lows, swirling the sound around. Slow (chorale) or fast (tremolo); it speeds up and slows down gradually, the horn quicker than the drum. Mod wheel up switches to fast.',
+    help: 'A rotating speaker cabinet (the organ\'s Leslie): a spinning horn for the highs and a drum for the lows, swirling the sound around. Slow (chorale) or fast (tremolo); it speeds up and slows down gradually (slowing takes longer), the horn quicker than the drum. Mod wheel up switches to fast.',
     params: [choice('speed', 'Speed', ['slow', 'fast'], 'slow'), choice('wheel', 'Mod wheel', ['switches speed', 'off'], 'switches speed'),
-      num('inertia', 'Inertia', 0.2, 4, 1, { unit: 's', curve: 'log', help: 'How long the horn takes to change speed (the drum takes three times as long)' }),
+      num('inertia', 'Inertia', 0.2, 4, 1, { unit: 's', curve: 'log', help: 'How long the horn takes to spin up (it coasts down in 1.5× that; the drum takes 4.5× to spin up and 6.5× to slow down)' }),
       num('depth', 'Depth', 0, 1, 0.7), num('balance', 'Horn / drum', 0, 1, 0.5, { help: '0 = all drum (lows), 1 = all horn (highs)' }),
-      num('drive', 'Drive', 0, 1, 0.15, { help: 'The cabinet\'s amp, pushed' }), num('mix', 'Mix', 0, 1, 1)],
+      num('drive', 'Drive', 0, 1, 0.15, { help: 'The cabinet\'s amp: 0 = clean, a little rounds off loud chords, up to 1 = overdriven' }), num('mix', 'Mix', 0, 1, 1)],
     targets: { speed: { min: -1, max: 1 } },
   },
   glfo: {
@@ -509,6 +539,7 @@ export function normalizePatch(raw, { nested = false } = {}) {
     // mono or legato note takes to slide to the next pitch.
     ...(PLAY_MODES.includes(raw.play) && raw.play !== 'poly' ? { play: raw.play } : {}),
     ...(clampN(raw.glide, 0, 2, 0) > 0 ? { glide: clampN(raw.glide, 0, 2, 0) } : {}),
+    ...(cleanArp(raw.arp) ? { arp: cleanArp(raw.arp) } : {}),
     volume: clampN(raw.volume, 0, 1, 0.8),
     modules, audio, mod, cc,
   };

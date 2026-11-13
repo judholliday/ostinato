@@ -2,6 +2,7 @@
 // checking rhythms and notes; it doesn't try to sound like the XL.
 
 import { FxChain } from '../lab/engine.js';
+import { PerfPad } from './perfpad.js';
 
 const VOICES = {
   Bass:  { wave: 'sawtooth', cut: 380,  env: 1400, q: 7, a: .004, d: .22, s: .55, r: .07 },
@@ -10,7 +11,7 @@ const VOICES = {
   Keys:  { wave: 'triangle', cut: 4000, env: 0,    q: 1, a: .005, d: .40, s: .35, r: .30 },
 };
 
-let ac = null, master = null, out = null, clickOut = null, masterFx = null, masterRack = null;
+let ac = null, master = null, out = null, clickOut = null, masterFx = null, masterRack = null, pad = null;
 const live = new Set(); // { gain, oscs, release }
 
 // Browsers only allow audio to start after a click or key press, so call this from one.
@@ -32,7 +33,11 @@ export function wake() {
     masterFx.tempo = tempo;
     masterFx.set(masterRack);
     master.connect(masterFx.input);
-    masterFx.output.connect(limiter).connect(ac.destination);
+    // The performance pad (perfpad.js) after it, so it bends everything, effects included.
+    pad = new PerfPad(ac);
+    pad.setTempo(tempo);
+    masterFx.output.connect(pad.input);
+    pad.output.connect(limiter).connect(ac.destination);
     out = limiter;
     // The metronome goes straight out, so it isn't in recordings of the mix.
     clickOut = ac.createGain();
@@ -49,7 +54,9 @@ export function output() { wake(); return master; }
 export function setMasterFx(fx) { masterRack = fx; masterFx?.set(fx); }
 // The tempo for tempo-synced effects in the master rack.
 let tempo = 120;
-export function setTempo(bpm) { tempo = bpm; masterFx?.setTempo(bpm); }
+export function setTempo(bpm) { tempo = bpm; masterFx?.setTempo(bpm); pad?.setTempo(bpm); }
+// The performance pad (starts audio).
+export function perfPad() { wake(); return pad; }
 export const awake = () => !!ac;
 export const context = () => ac;
 

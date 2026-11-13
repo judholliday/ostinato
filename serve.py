@@ -125,11 +125,11 @@ def pattern_schema(n, names, pool):
     step = {
         'type': 'object',
         'properties': {
-            'i': {'type': 'integer', 'minimum': 0, 'maximum': 63},
+            'i': {'type': 'integer', 'minimum': 0, 'maximum': 255},  # MAX_STEPS - 1 (js/seq/model.js)
             'notes': {'type': 'array', 'items': {'type': 'integer', 'minimum': 0, 'maximum': 127}, 'maxItems': 8},
             'vel': {'type': 'integer', 'minimum': 1, 'maximum': 127},
             'gate': {'type': 'integer', 'minimum': 1, 'maximum': 100},
-            'len': {'type': 'integer', 'minimum': 1, 'maximum': 64},
+            'len': {'type': 'integer', 'minimum': 1, 'maximum': 256},
             'vels': {'type': 'array', 'items': {'type': 'integer', 'minimum': 1, 'maximum': 127}, 'maxItems': 8},
             'prob': {'type': 'integer', 'minimum': 1, 'maximum': 100},
             'rat': {'type': 'integer', 'minimum': 1, 'maximum': 8},
@@ -144,7 +144,7 @@ def pattern_schema(n, names, pool):
                 'type': 'array', 'minItems': len(names), 'maxItems': len(names),
                 'items': {'type': 'object', 'required': ['name', 'steps'], 'properties': {
                     'name': {'type': 'string', 'enum': names},
-                    'steps': {'type': 'array', 'items': step, 'maxItems': 64}}},
+                    'steps': {'type': 'array', 'items': step, 'maxItems': 256}}},
             },
         },
         'required': ['summary', 'patterns'],

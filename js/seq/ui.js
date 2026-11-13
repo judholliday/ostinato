@@ -15,6 +15,7 @@ import * as CH from './chords.js';
 import { STARTER_TRACKS, addStarterTrack, keepLanes, putClip, guessClipRole, trackSound } from './putclip.js';
 import { Mixer } from './mixer.js';
 import { renderSongAudio, finish as finishRender, soundLength } from './songrender.js';
+import { PAD_MODES, PAD_LABELS, PAD_HELP, padValues } from './perfpad.js';
 import { STOCK } from './stock.js';
 import { portLabel, looksLikeSynthIn, looksLikeSynthOut } from '../core/midiports.js';
 import { soundReporter } from '../core/sounding.js';
@@ -57,6 +58,8 @@ let song;
 let fileName = null; // the file in data/sequences/ this song was loaded from or saved to
 let dirty = false;
 const prefs = { songOpen: true, chordsOpen: false, mixOpen: false, mode: 'loop', follow: true, soundFollows: true, keysIn: null, thru: true, clockOut: [], collapsed: [], click: 'rec', countIn: true, clickVol: 60, ...store.get('prefs', {}) };
+// The performance pad's state (perfStrip below).
+const xy = { mode: PAD_MODES.includes(prefs.perfMode) ? prefs.perfMode : 'filter', hold: false, down: false, on: false, x: 0.5, y: 0.5 };
 const savePrefs = () => store.set('prefs', prefs);
 let views = []; // per track: { pat (pattern shown), page, collapsed, kbdLow, lastNote }
 let sel = { t: 0, i: 0, open: true };
@@ -78,9 +81,30 @@ function syncViews() {
   if (sel.t >= song.tracks.length) sel = { t: 0, i: 0, open: sel.open };
 }
 
-const viewPattern = ti => song.tracks[ti].patterns[views[ti].pat];
+// The pattern shown for a track (back to A if the one shown has gone, e.g. undone).
+const viewPattern = ti => { const t = song.tracks[ti], v = views[ti]; if (!M.hasPattern(t, v.pat)) v.pat = 'A'; return t.patterns[v.pat]; };
 const pageSize = ti => viewPattern(ti).length <= 16 ? 16 : 32;
 const pages = ti => Math.ceil(viewPattern(ti).length / pageSize(ti));
+// The page buttons above a long pattern's grid: labelled in bars when a page is whole bars (else
+// steps), a dot on pages with notes, ◀ ▶ to step through them. The playhead turns pages itself
+// while Follow is on.
+function pagerHTML(ti) {
+  const v = views[ti], pat = viewPattern(ti), PS = pageSize(ti), n = pages(ti);
+  if (n <= 1) return '';
+  const spb = M.stepsPerBar(song.meter, M.RATES[song.tracks[ti].rate]);
+  const byBar = spb && PS % spb === 0, used = new Set(pat.steps.filter(s => s.i < pat.length).map(s => Math.floor(s.i / PS)));
+  const label = k => {
+    const a = k * PS, b = Math.min(a + PS, pat.length);
+    if (!byBar) return `${a + 1}–${b}`;
+    const b0 = a / spb + 1, b1 = Math.ceil(b / spb);
+    return b1 > b0 ? `${b0}–${b1}` : `${b0}`;
+  };
+  return `<div class="pages">${byBar ? 'Bars' : 'Steps'}
+    <button class="ghost" data-act="page" data-pg="${Math.max(0, v.page - 1)}" ${v.page ? '' : 'disabled'} title="Previous page">◀</button>
+    ${Array.from({ length: n }, (_, k) => `<button data-act="page" data-pg="${k}" class="${v.page === k ? 'on' : ''}${used.has(k) ? ' has-notes' : ''}"
+      title="Steps ${k * PS + 1}–${Math.min(k * PS + PS, pat.length)}${used.has(k) ? '' : ' (empty)'}">${label(k)}</button>`).join('')}
+    <button class="ghost" data-act="page" data-pg="${Math.min(n - 1, v.page + 1)}" ${v.page < n - 1 ? '' : 'disabled'} title="Next page">▶</button></div>`;
+}
 
 // ---- undo, autosave ----
 const undoStack = [], redoStack = [];
@@ -545,6 +569,7 @@ function stop() {
   endBacking();
   ticker.postMessage(0);
   stopAudition();
+  padStop();
   if (perf) {
     clearTimeout(perf.timer);
     soundChannel?.postMessage({ type: 'performance', state: 'end', wall: perf.endWall ?? Date.now() });
@@ -965,6 +990,7 @@ function renderMixer() {
   $('#mix-sum').textContent = prefs.mixOpen ? '' : [sc && `${sc.name} ducks ${song.tracks.filter(t => t.duck > 0 && !t.sidechain).length} track(s)`, mf && `Master FX: ${mf.name}${mf.off ? ' (bypassed)' : ''}`].filter(Boolean).join(' · ');
   if (!prefs.mixOpen) return;
   if (el.contains(document.activeElement) && document.activeElement.type === 'range') return; // don't rebuild under a drag
+  if (xy.down) return; // nor under a finger on the pad
   const m = song.mix;
   el.innerHTML = song.tracks.map((t, ti) => {
     const pc = t.out === M.COMPUTER, why = 'Computer sounds only: hardware plays through its own outputs';
@@ -989,7 +1015,7 @@ function renderMixer() {
       ${mixSlider('m', 'dlyFb', 'Echoes', m.delay.feedback, 0, 0.9, 0.01, pct(m.delay.feedback), 'How much each echo feeds the next')}
       ${mixSlider('m', 'dlyTone', 'Tone', m.delay.tone, 500, 16000, 100, `${Math.round(m.delay.tone / 100) / 10} kHz`, 'How bright the echoes are')}
       ${mixSlider('m', 'release', 'Release', m.release, 0.03, 1, 0.01, `${Math.round(m.release * 1000)} ms`, 'How long ducked tracks take to come back')}
-    </div>${masterStrip()}`;
+    </div>${masterStrip()}${perfStrip()}`;
   startMeters();
 }
 // The last strip: Master FX, an effect rack on everything the computer plays (after the tracks, their
@@ -1007,6 +1033,67 @@ function masterStrip() {
     </div>
   </div>`;
 }
+// The Perform strip: the performance pad (perfpad.js) at the end of the computer's mix. It bends
+// everything while you hold it and lets go when you do; Hold keeps it on until you click Hold again.
+// Not saved in the song (what you play on it is heard live and in recordings of what Ostinato plays).
+function perfStrip() {
+  const v = padValues(xy.mode, xy.x, xy.y);
+  return `<div class="strip master perform">
+    <div class="strip-name" title="A pad that bends the whole mix while you hold it: after Master FX, before the limiter. Computer sounds only (hardware plays through its own outputs).">Perform</div>
+    <div class="seg-btn perf-modes">${PAD_MODES.map(m => `<button class="small${m === xy.mode ? ' on' : ''}" data-perf-mode="${m}">${PAD_LABELS[m]}</button>`).join('')}</div>
+    <div class="perf-pad${xy.on ? ' on' : ''}" id="perf-pad" title="${esc(PAD_HELP[xy.mode])}" style="--px:${xy.x};--py:${xy.y}">
+      ${xy.mode === 'filter' ? '<i class="perf-mid"></i>' : ''}<i class="perf-dot"></i>
+    </div>
+    <div class="perf-read hint" id="perf-read">${xy.on ? esc(v.text) : esc(PAD_HELP[xy.mode])}</div>
+    <div class="mx-btns"><button class="small${xy.hold ? ' on' : ''}" data-act="perf-hold" title="Keep the effect on when you let go of the pad (click again to let go)">Hold</button></div>
+  </div>`;
+}
+function perfAt(e) {
+  const pad = $('#perf-pad'), r = pad.getBoundingClientRect();
+  xy.x = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  xy.y = Math.max(0, Math.min(1, 1 - (e.clientY - r.top) / r.height));
+  const pp = synth.perfPad();
+  let grid = null;
+  if (!xy.on && engine.playing) {
+    const ac = synth.context(), now = performance.now(), late = ((ac.baseLatency || 0) + (ac.outputLatency || 0)) * 1000;
+    grid = pp.gridBack(xy.mode, xy.x, xy.y, engine.tickAt(now - late), engine.tickAt(now), engine.tickMs / 1000);
+  }
+  const v = pp.set(xy.mode, xy.x, xy.y, grid);
+  xy.on = true;
+  pad.style.setProperty('--px', xy.x); pad.style.setProperty('--py', xy.y);
+  pad.classList.add('on');
+  $('#perf-read').textContent = v.text;
+}
+function perfOff() {
+  xy.on = false;
+  if (synth.awake()) synth.perfPad().release();
+  $('#perf-pad')?.classList.remove('on');
+  const r = $('#perf-read');
+  if (r) r.textContent = PAD_HELP[xy.mode];
+}
+// Stop lets go of the pad (Hold stays as it is) and fades out its echoes.
+function padStop() {
+  if (!synth.awake()) return;
+  synth.perfPad().stop();
+  if (xy.on) perfOff();
+}
+$('#mixer').addEventListener('pointerdown', e => {
+  if (!e.target.closest('#perf-pad') || e.button !== 0) return;
+  e.preventDefault();
+  xy.down = true;
+  try { e.target.closest('#perf-pad').setPointerCapture(e.pointerId); } catch { /* a pen or test without a live pointer */ }
+  perfAt(e);
+});
+$('#mixer').addEventListener('pointermove', e => { if (xy.down) perfAt(e); });
+const perfUp = () => { if (!xy.down) return; xy.down = false; if (!xy.hold) perfOff(); };
+$('#mixer').addEventListener('pointerup', perfUp);
+$('#mixer').addEventListener('pointercancel', perfUp);
+$('#mixer').addEventListener('click', e => {
+  const m = e.target.closest('[data-perf-mode]')?.dataset.perfMode;
+  if (m) { if (xy.on) perfOff(); xy.mode = prefs.perfMode = m; savePrefs(); renderMixer(); return; }
+  if (e.target.closest('[data-act="perf-hold"]')) { xy.hold = !xy.hold; if (!xy.hold && xy.on) perfOff(); renderMixer(); }
+});
+
 function setMix(el) {
   const k = el.dataset.mix, v = el.type === 'range' ? +el.value : el.value, m = song.mix;
   if (el.dataset.t === 'm') {
@@ -1176,9 +1263,11 @@ function renderSong() {
       <button class="ghost small" data-act="sec-dup" title="Put a copy of this section after it">Duplicate</button>
       <button class="ghost small" data-act="sec-move" data-d="-1" ${songSel ? '' : 'disabled'} title="Move it earlier">◀</button><button class="ghost small" data-act="sec-move" data-d="1" ${songSel < song.song.length - 1 ? '' : 'disabled'} title="Move it later">▶</button>
       <button class="ghost small" data-act="del-sec" ${song.song.length > 1 ? '' : 'disabled'}>Remove</button>
-      <span class="spacer"></span><button class="small" data-act="add-sec" title="Add a section at the end (a copy of the last one)">+ Section</button>
+      <span class="spacer"></span><button class="small" data-act="add-sec" ${song.song.length >= M.MAX_SECTIONS ? 'disabled' : ''} title="Add a section at the end (a copy of the last one)">+ Section</button>
+      <div class="sec-fills"><span class="hl" title="The pattern each track plays in this section (click a track's bar on the timeline to step through them)">Plays</span>
+        ${song.tracks.map((t, ti) => `<label class="field"><span class="dot" style="background:${COLORS[ti]}"></span>${esc(t.name)} <select data-act="sec-play-pat" data-t="${ti}">${options([['', 'silent'], ...M.patternNames(t).map(p => [p, p])], sec.play[ti] || '')}</select></label>`).join('')}</div>
       <div class="sec-fills"><span class="hl" title="A track can play another pattern in this section's last bar, e.g. a drum fill into the next section (also when it's silent in the section)">Fill in the last bar</span>
-        ${song.tracks.map((t, ti) => `<label class="field"><span class="dot" style="background:${COLORS[ti]}"></span>${esc(t.name)} <select data-act="sec-fill" data-t="${ti}">${options([['', '—'], ...M.PATTERNS.map(p => [p, p])], sec.fill?.[ti] || '')}</select></label>`).join('')}</div>
+        ${song.tracks.map((t, ti) => `<label class="field"><span class="dot" style="background:${COLORS[ti]}"></span>${esc(t.name)} <select data-act="sec-fill" data-t="${ti}">${options([['', '—'], ...M.patternNames(t).map(p => [p, p])], sec.fill?.[ti] || '')}</select></label>`).join('')}</div>
     </div>`;
   const secRow = song.song.map((x, i) => `<button class="tl-sec${i === songSel ? ' sel' : ''}${loopSec === i ? ' looping' : ''}" data-act="sec-pick" data-sec="${i}" style="grid-column:${col(starts[i])} / span ${x.bars}"
       title="${esc(x.name || `Section ${i + 1}`)}: ${x.bars} bar${x.bars > 1 ? 's' : ''}${x.meter ? ` of ${x.meter}` : ''}">${loopSec === i ? '⟳ ' : ''}${esc(x.name || `Section ${i + 1}`)}${x.meter ? ` <small>${x.meter}</small>` : ''}</button>`).join('');
@@ -1373,9 +1462,7 @@ function headHTML(ti) {
     <button class="ghost collapse" data-act="col" title="${v.collapsed ? 'Expand' : 'Collapse'}">${v.collapsed ? '▸' : '▾'}</button>
     <span class="track-name"><span class="dot" style="background:${COLORS[ti]}"></span><input data-act="name" value="${esc(t.name)}" maxlength="24" spellcheck="false" aria-label="Track name"></span>
     <select class="role-pick" data-act="role" title="What this track is for: Drums gets the drum-lane editor; the role also sets the ideas (🎲, AI, library) and the sounds it's offered">${options(Object.entries(M.ROLES), M.roleOf(t))}</select>
-    <span class="hgrp"><span class="hl">Pattern</span><span class="pats">${M.PATTERNS.map(p => `<button data-act="pat" data-p="${p}"
-      class="${v.pat === p ? 'on' : ''}${queued === p ? ' queued' : ''}${playingPat === p ? ' live' : ''}"
-      title="${p === playingPat ? 'Playing' : queued === p ? 'Starts at the next bar' : `Show pattern ${p}`}">${p}</button>`).join('')}</span></span>
+    <span class="hgrp"><span class="hl">Pattern</span>${patsHTML(ti, queued, playingPat)}</span>
     <span class="hgrp head-extra-ideas"><span class="hl">Ideas</span>
       <button class="ghost" data-act="dice" title="Generate: an instant idea for pattern ${v.pat} (no AI). Click again for another.">${icon('generate')}</button>
       <button class="ghost" data-act="mutate" title="Mutate: a variation of pattern ${v.pat} as it is now (no AI). Click again for another.">${icon('mutate')}</button>
@@ -1642,6 +1729,7 @@ function lanesOf(ti) {
   return [...rows].sort((a, b) => rank(a) - rank(b));
 }
 
+const LANE_LEN_MAX = 64; // the lane-length menu offers 2 … 64 (polymeter lanes are short)
 function lanesHTML(ti) {
   const v = views[ti], pat = viewPattern(ti);
   const PS = pageSize(ti), n = pages(ti), start = v.page * PS, end = start + PS;
@@ -1652,19 +1740,21 @@ function lanesHTML(ti) {
   const own = note => (pat.laneLen?.[note] < pat.length ? pat.laneLen[note] : 0);
   const rows = lanesOf(ti).map(note => `<div class="lane-name" data-act="lane-name" data-n="${note}" title="Click to hear it"><span>${esc(laneName(ti, note))}</span>
       <select class="lane-len${own(note) ? ' on' : ''}" data-act="lane-len" data-n="${note}" title="Loop this drum on its own length, so it drifts against the rest (e.g. 7 against 16)">
-        <option value="">${pat.length}</option>${Array.from({ length: Math.max(0, pat.length - 2) }, (_, k) => k + 2).reverse().map(n => `<option value="${n}"${own(note) === n ? ' selected' : ''}>${n}</option>`).join('')}</select></div>`
+        <option value="">${pat.length}</option>${Array.from({ length: Math.max(0, Math.min(pat.length, LANE_LEN_MAX + 1) - 2) }, (_, k) => k + 2).concat(own(note) > LANE_LEN_MAX ? [own(note)] : []).reverse().map(n => `<option value="${n}"${own(note) === n ? ' selected' : ''}>${n}</option>`).join('')}</select></div>`
     + cols.map(i => {
       const s = at.get(i), on = !!s && s.notes.includes(note), vel = on ? M.velOf(s, note) : 0;
       const cls = `lane-cell${i % 4 === 0 ? ' beat' : ''}${i >= pat.length || (own(note) && i >= own(note)) ? ' beyond' : ''}${on ? ' on' : ''}${vel >= 110 ? ' accent' : ''}${on && vel < 70 ? ' soft' : ''}${on && s.prob ? ' chance' : ''}`;
-      return `<div class="${cls}" data-act="lane" data-n="${note}" data-s="${i}"${on && (s.prob || s.rat) ? ` title="${[s.prob && `${s.prob}% chance`, s.rat && `ratchet ×${s.rat}`].filter(Boolean).join(', ')}"` : ''}>${on && s.rat ? s.rat : ''}</div>`;
+      const off = on ? M.offOf(s, note) : 0, pc = Math.round(off * 100);
+      const tip = on ? [s.prob && `${s.prob}% chance`, s.rat && `ratchet ×${s.rat}`, pc && `${Math.abs(pc)}% ${pc > 0 ? 'late' : 'early'}`].filter(Boolean).join(', ') : '';
+      return `<div class="${cls}${off ? ' shifted' : ''}" data-act="lane" data-n="${note}" data-s="${i}"${off ? ` style="--off:${off}"` : ''}${tip ? ` title="${tip}"` : ''}>${on && s.rat ? s.rat : ''}${offMark(off)}</div>`;
     }).join('')).join('');
   const shown = lanesOf(ti);
-  const pager = n > 1 ? `<div class="pages">Steps ${Array.from({ length: n }, (_, k) =>
-    `<button data-act="page" data-pg="${k}" class="${v.page === k ? 'on' : ''}">${k * PS + 1}–${Math.min(k * PS + PS, pat.length)}</button>`).join('')}</div>` : '';
-  return `${pager}<div class="lanes" style="grid-template-columns:108px repeat(${PS}, minmax(${PS > 16 ? 12 : 20}px, 1fr))">${numbers}${rows}</div>
+  const pager = pagerHTML(ti);
+  return `${pager}<div class="lanes" style="grid-template-columns:114px repeat(${PS}, minmax(${PS > 16 ? 12 : 20}px, 1fr))">${numbers}${rows}</div>
     <div class="lane-tools">
       <select data-act="lane-add">${options([['', '+ Add a drum…'], ...KIT.filter(([k]) => !shown.includes(k))], '')}</select>
-      <span class="hint">Click or drag across cells to add or remove hits. ⇧-click a hit for an accent. Click a step number to edit that step (velocity, gate).</span>
+      ${M.hasOffsets(pat) ? `<button class="small" data-act="quantize" title="Put every hit of this pattern back on the grid (clears the timing offsets)">Quantize timing</button>` : ''}
+      <span class="hint">Click or drag across cells to add or remove hits. ⇧-click a hit for an accent. Click a step number to edit that step (velocity, gate, timing).</span>
     </div>`;
 }
 
@@ -1710,13 +1800,12 @@ function gridHTML(ti) {
       <span class="num">${c + 1}${s.len > 1 ? ` · ${s.len} steps` : ''}</span>
       ${s.prob || s.rat ? `<span class="badges">${s.prob ? `${s.prob}%` : ''}${s.prob && s.rat ? ' ' : ''}${s.rat ? `×${s.rat}` : ''}</span>` : ''}
       <span class="note"${s.notes.length > 1 && span === 1 && t.mode !== 'pool' ? ' style="font-size:10px;top:15px"' : ''}>${label}</span>
-      <div class="vel" style="height:${Math.round(s.vel / 127 * 24)}px"></div>
+      <div class="vel" style="height:${Math.round(s.vel / 127 * 24)}px"></div>${c === i ? offMark(s.off || 0, span) : ''}
       ${stop === fullEnd ? `<div class="gate" style="left:${(span - 1) / span * 100}%;width:${s.gate / span}%"></div>
         <div class="handle" title="Drag to hold the note longer or shorter"></div>` : ''}
     </div>`;
   }
-  const pager = n > 1 ? `<div class="pages">Steps ${Array.from({ length: n }, (_, k) =>
-    `<button data-act="page" data-pg="${k}" class="${v.page === k ? 'on' : ''}">${k * PS + 1}–${Math.min(k * PS + PS, pat.length)}</button>`).join('')}</div>` : '';
+  const pager = pagerHTML(ti);
   return `${pager}<div class="steps${PS > 16 ? ' dense' : ''}" style="grid-template-columns:repeat(${PS}, minmax(${PS > 16 ? 18 : 30}px, 1fr))">${cells}${blocks}</div>`;
 }
 
@@ -1752,8 +1841,7 @@ function rollHTML(ti) {
   }).join('');
   const vels = notes.filter(x => x.i >= start && x.i < end).sort((a, b) => isSel(a) - isSel(b)).map(x =>
     `<div class="rv${isSel(x) ? ' sel' : ''}" style="left:${pct(x.i - start)};width:${pct(1)};height:${(x.vel / 127) * 100}%"></div>`).join('');
-  const pager = n > 1 ? `<div class="pages">Steps ${Array.from({ length: n }, (_, k) =>
-    `<button data-act="page" data-pg="${k}" class="${v.page === k ? 'on' : ''}">${k * PS + 1}–${Math.min(k * PS + PS, pat.length)}</button>`).join('')}</div>` : '';
+  const pager = pagerHTML(ti);
   return `${pager}<div class="piano-roll" style="--c:${COLORS[ti]}">
     <div class="roll-side"><button class="ghost small" data-act="roll-scroll" data-d="12" title="Show higher notes (or scroll over the roll)">▲${above ? ` ${above}` : ''}</button>
       <div class="roll-keys" style="--rows:${ROLL_ROWS}">${keys}</div>
@@ -1880,6 +1968,25 @@ function rollKeys(e, ti) {
   return true;
 }
 
+// The pattern picker: a button per pattern (A-D and up to 8 in all); with more, A-D, the one shown
+// and the one playing as buttons and the rest in a menu. + adds a pattern, ✕ removes an extra one.
+const PAT_BUTTONS = 8;
+function patsHTML(ti, queued, playingPat) {
+  const t = song.tracks[ti], v = views[ti], names = M.patternNames(t);
+  const btn = p => `<button data-act="pat" data-p="${p}" class="${v.pat === p ? 'on' : ''}${queued === p ? ' queued' : ''}${playingPat === p ? ' live' : ''}"
+      title="${p === playingPat ? 'Playing' : queued === p ? 'Starts at the next bar' : `Show pattern ${p}`}">${p}</button>`;
+  const shown = names.length <= PAT_BUTTONS ? names : names.filter(p => M.PATTERNS.includes(p) || p === v.pat || p === playingPat || p === queued);
+  const rest = names.filter(p => !shown.includes(p));
+  const more = rest.length ? `<select class="pat-more" data-act="pat-more" title="The track's other patterns (${rest.length})"><option value="">${rest.length} more…</option>${rest.map(p => {
+    const u = M.patternUses(song, ti, p).sections.length;
+    return `<option value="${p}">${p}${t.patterns[p].steps.length ? '' : ' (empty)'}${u ? ` · ${u} section${u > 1 ? 's' : ''}` : ''}</option>`;
+  }).join('')}</select>` : '';
+  const extra = !M.PATTERNS.includes(v.pat);
+  return `<span class="pats">${shown.map(btn).join('')}${more}
+    ${names.length < M.MAX_PATTERNS ? `<button class="ghost pat-add" data-act="pat-add" title="Add a pattern (${M.PATTERN_NAMES[names.length]}), empty and as long as ${v.pat}; ⇧-click for a copy of ${v.pat}. Song sections can play any of them in turn.">+</button>` : ''}
+    ${extra ? `<button class="ghost pat-del" data-act="pat-del" title="Remove pattern ${v.pat} (only while no section or fill plays it)">✕</button>` : ''}</span>`;
+}
+
 function keyboardHTML(ti, isOn, act) {
   const v = views[ti], keys = [];
   let white = 0;
@@ -1896,6 +2003,14 @@ function keyboardHTML(ti, isOn, act) {
   </div>`;
 }
 
+// A step's timing offset as text: "12% late", "8% early", "on grid" (+ "per drum" when notes differ).
+function offText(s) {
+  const pc = Math.round((s.off || 0) * 100);
+  return `${pc > 0 ? `${pc}% late` : pc < 0 ? `${-pc}% early` : 'on grid'}${s.no ? ' · own per note' : ''}`;
+}
+// A small mark inside a cell showing where its hit falls off the grid (nothing when on it).
+function offMark(off, span = 1) { return off ? `<i class="off-mark" style="--off:${off};--span:${span}" aria-hidden="true"></i>` : ''; }
+
 function editorHTML(ti) {
   const t = song.tracks[ti], pat = viewPattern(ti), s = M.stepAt(pat, sel.i), pool = t.mode === 'pool';
   return `<div class="editor">
@@ -1906,8 +2021,10 @@ function editorHTML(ti) {
       <label class="field">Velocity <input type="range" data-act="e-vel" min="1" max="127" value="${s.vel}"> <span class="e-vel">${s.vel}</span></label>
       <label class="field" title="How much of its last step the note sounds for">Gate <input type="range" data-act="e-gate" min="1" max="100" value="${s.gate}"> <span class="e-gate">${s.gate}%</span></label>
       <label class="field" title="How often this step plays: below 100%, it's left out at random">Chance <select data-act="e-prob">${options(M.PROBS.map(p => [p, `${p}%`]), s.prob || 100)}</select></label>
-      <label class="field" title="Repeat the note this many times across its length (a roll or stutter)">Ratchet <select data-act="e-rat">${options([[1, 'off'], [2, '×2'], [3, '×3'], [4, '×4'], [5, '×5'], [6, '×6'], [8, '×8']], s.rat || 1)}</select></label>`
+      <label class="field" title="Repeat the note this many times across its length (a roll or stutter)">Ratchet <select data-act="e-rat">${options([[1, 'off'], [2, '×2'], [3, '×3'], [4, '×4'], [5, '×5'], [6, '×6'], [8, '×8']], s.rat || 1)}</select></label>
+      <label class="field" title="Play this step a little early or late (% of a step), on top of swing: a groove's feel. Double-click to put it back on the grid.">Timing <input type="range" class="e-off-range" data-act="e-off" min="-50" max="50" step="1" value="${Math.round((s.off || 0) * 100)}"> <span class="e-off">${offText(s)}</span></label>`
     : `<span class="hint">Empty step. ${pool ? 'Click the step (or tick On) to make it fire.' : isDrums(t) ? 'Click a drum below, or hit a pad.' : armed === ti ? 'Click a key below or play one to add a note.' : 'Click a key below to add a note, or arm the track (✎) to play notes in.'}</span>`}
+    ${M.hasOffsets(pat) ? `<button class="small" data-act="quantize" title="Put every step of this pattern back on the grid (clears the timing offsets)">Quantize timing</button>` : ''}
     <button class="ghost small x" data-act="e-close" title="Hide the editor (Esc)">✕</button>
     ${pool ? keyboardHTML(ti, n => t.pool.notes.includes(n), 'pool-key')
       : isDrums(t) ? kitHTML(ti, n => !!s && s.notes.includes(n))
@@ -2009,7 +2126,8 @@ function putIdea(ti, dest) {
   const t = song.tracks[ti], id = views[ti].ideas, o = id.list[id.applied];
   const src = o && Object.values(o.patterns);
   if (!src || src.length !== 1) return;
-  t.patterns[dest] = M.copyPattern(src[0]);
+  if (dest === '__new') { dest = M.addPattern(t, { copy: src[0] }); if (!dest) return; renderSong(); }
+  else t.patterns[dest] = M.copyPattern(src[0]);
   changed();
   renderTrack(ti);
   toast(`Idea ${id.applied + 1} copied to pattern ${dest}. Pick another idea for this pattern, or Keep.`, 'ok');
@@ -2064,7 +2182,7 @@ function ideasHTML(ti) {
         <label class="field" title="A child of what you're hearing and another idea: ${song.tracks[ti] && isDrumTrack(ti) ? 'each drum from one or the other' : 'half bars from each'}">${icon('cross')} Cross with
         <select data-act="idea-cross"><option value="">…</option>${id.applied >= 0 ? '<option value="-1">Original</option>' : ''}${id.list.map((o, k) => (k === id.applied ? '' : `<option value="${k}">Idea ${k + 1}</option>`)).join('')}</select></label>` : ''}
       ${single ? `<label class="field" title="Copy the idea you're hearing into another pattern of this track">Put in
-        <select data-act="idea-put" ${cur ? '' : 'disabled'}><option value="">…</option>${M.PATTERNS.filter(p => p !== names[0]).map(p => `<option>${p}</option>`).join('')}</select></label>` : ''}
+        <select data-act="idea-put" ${cur ? '' : 'disabled'}><option value="">…</option>${M.patternNames(song.tracks[ti]).filter(p => p !== names[0]).map(p => `<option>${p}</option>`).join('')}${M.patternNames(song.tracks[ti]).length < M.MAX_PATTERNS ? '<option value="__new">+ New pattern</option>' : ''}</select></label>` : ''}
       <button class="accent small" data-act="idea-keep" title="Keep what's in the pattern now and clear this list">✓ Keep</button>
     </div>
     <div class="ai-summary">${cur ? `<b>Idea ${id.applied + 1}:</b> ${esc(cur.summary)}` : 'Hearing the original pattern. Click a number to hear an idea.'}</div>
@@ -2406,7 +2524,7 @@ function postSeqState(force = false) {
       xlTrack: liveSound !== null ? song.tracks[liveSound]?.name || null : null, armed: armed !== null ? song.tracks[armed]?.name || null : null,
       xlTracks: song.tracks.map((x, ti) => ({ ti, name: x.name, ch: x.ch })).filter(x => isXLOut(song.tracks[x.ti].out)),
       // Every track, for the Recorder's sound menu and "put into a track".
-      tracks: song.tracks.map((x, ti) => ({ ti, name: x.name, mode: x.mode, rate: x.rate, pattern: views[ti]?.pat || 'A', ch: x.ch,
+      tracks: song.tracks.map((x, ti) => ({ ti, name: x.name, mode: x.mode, rate: x.rate, pattern: views[ti]?.pat || 'A', patterns: M.patternNames(x), ch: x.ch,
         out: x.out === M.COMPUTER ? 'computer' : isXLOut(x.out) ? 'xl' : 'midi', soundName: soundOfTrack(ti)?.name || '' })) };
     const json = JSON.stringify(state);
     if (force || json !== lastSeqState) { lastSeqState = json; soundChannel?.postMessage(state); }
@@ -2747,6 +2865,22 @@ function select(ti, i, open = true) {
   if (prev !== ti && prefs.soundFollows && t.sound && isXLOut(t.out) && liveSound !== ti) sendSound(ti);
 }
 
+// A pattern button (or the picker's menu): in loop mode it becomes the track's pattern (from the
+// next bar while playing); in song mode it's only shown for editing.
+function pickPattern(ti, p) {
+  const t = song.tracks[ti], v = views[ti];
+  if (!M.hasPattern(t, p)) return;
+  if (prefs.mode === 'loop') {
+    if (t.pattern !== p) { t.pattern = p; changed(); }
+    if (engine.playing) {
+      if (p === live.pattern[ti]) engine.queued.delete(ti); else engine.queue(ti, p);
+      if (!prefs.follow) { v.pat = p; v.page = 0; }
+    } else { v.pat = p; v.page = 0; }
+  } else { v.pat = p; v.page = 0; }
+  if (sel.t === ti) sel.i = Math.min(sel.i, viewPattern(ti).length - 1);
+  renderTrack(ti);
+}
+
 function edit(ti, fn, opts) {
   fn();
   changed(opts);
@@ -2784,17 +2918,23 @@ $('#tracks').addEventListener('click', e => {
       prefs.collapsed = views.map(x => x.collapsed); savePrefs();
       renderTrack(ti);
       break;
-    case 'pat': {
-      const p = el.dataset.p;
-      if (prefs.mode === 'loop') {
-        if (t.pattern !== p) { t.pattern = p; changed(); }
-        if (engine.playing) {
-          if (p === live.pattern[ti]) engine.queued.delete(ti); else engine.queue(ti, p);
-          if (!prefs.follow) { v.pat = p; v.page = 0; }
-        } else { v.pat = p; v.page = 0; }
-      } else { v.pat = p; v.page = 0; }
-      if (sel.t === ti) sel.i = Math.min(sel.i, viewPattern(ti).length - 1);
-      renderTrack(ti);
+    case 'pat': pickPattern(ti, el.dataset.p); break;
+    case 'pat-add': {
+      let name;
+      edit(ti, () => { name = M.addPattern(t, e.shiftKey ? { copy: pat } : { length: pat.length }); if (name) { v.pat = name; v.page = 0; } });
+      if (name) { renderSong(); toast(`Pattern ${name} added${e.shiftKey ? ` (a copy of the one before)` : ''}. Choose it for a section in the Song timeline.`, 'ok'); }
+      break;
+    }
+    case 'pat-del': {
+      const name = v.pat, u = M.patternUses(song, ti, name);
+      if (u.sections.length || u.fills.length) {
+        const where = [...u.sections.map(i => song.song[i].name || `section ${i + 1}`), ...u.fills.map(i => `the fill in ${song.song[i].name || `section ${i + 1}`}`)];
+        toast(`Pattern ${name} is still used by ${where.slice(0, 4).join(', ')}${where.length > 4 ? ` and ${where.length - 4} more` : ''}. Choose another pattern there first.`);
+        break;
+      }
+      edit(ti, () => { M.removePattern(song, ti, name); v.pat = 'A'; v.page = 0; });
+      renderSong();
+      toast(`Pattern ${name} removed. ⌘Z brings it back.`);
       break;
     }
     case 'copy':
@@ -2833,6 +2973,12 @@ $('#tracks').addEventListener('click', e => {
       edit(ti, () => { if (el.checked) addNoteAt(ti, sel.i); else M.removeStep(pat, sel.i); });
       break;
     case 'e-close': sel.open = false; renderTrack(ti); break;
+    case 'quantize': {
+      let k = 0;
+      edit(ti, () => { k = M.quantizeTiming(pat); });
+      toast(`${k} step${k === 1 ? '' : 's'} put back on the grid. ⌘Z brings the feel back.`);
+      break;
+    }
     case 'oct': v.kbdLow = Math.max(0, Math.min(84, v.kbdLow + +el.dataset.d)); renderTrack(ti); break;
     case 'key': {
       const n = +el.dataset.n;
@@ -2951,6 +3097,12 @@ function toggleArm(ti) {
 }
 
 $('#tracks').addEventListener('dblclick', e => {
+  // Double-clicking the Timing slider puts the step back on the grid.
+  if (e.target.dataset?.act === 'e-off') {
+    const ti = +trackEl(e).dataset.t, s = M.stepAt(viewPattern(ti), sel.i);
+    if (s && (s.off || s.no)) edit(ti, () => { delete s.off; delete s.no; });
+    return;
+  }
   // Double-clicking the header (not a control in it) arms or disarms the track.
   const head = e.target.closest('.track-head');
   if (head && !e.target.closest('button, input, select, label, .pats')) { toggleArm(+trackEl(e).dataset.t); return; }
@@ -3002,10 +3154,16 @@ $('#tracks').addEventListener('input', e => {
     tEl.querySelector('.lib-list').innerHTML = libRows(ti);
     return;
   }
-  if (!tEl || !['e-vel', 'e-gate'].includes(el.dataset.act)) return;
+  if (!tEl || !['e-vel', 'e-gate', 'e-off'].includes(el.dataset.act)) return;
   const ti = +tEl.dataset.t, s = M.stepAt(viewPattern(ti), sel.i);
   if (!s) return;
-  if (el.dataset.act === 'e-vel') { s.vel = +el.value; delete s.nv; tEl.querySelector('.e-vel').textContent = s.vel; }
+  if (el.dataset.act === 'e-off') {
+    // Sets the whole step's timing (notes' own offsets give way, like velocity's).
+    const off = M.cleanOff(+el.value / 100);
+    delete s.no;
+    if (off) s.off = off; else delete s.off;
+    tEl.querySelector('.e-off').textContent = offText(s);
+  } else if (el.dataset.act === 'e-vel') { s.vel = +el.value; delete s.nv; tEl.querySelector('.e-vel').textContent = s.vel; }
   else { s.gate = +el.value; tEl.querySelector('.e-gate').textContent = `${s.gate}%`; }
   changed({ coalesce: true });
   refreshGrid(ti);
@@ -3024,6 +3182,7 @@ $('#tracks').addEventListener('change', e => {
       if (sel.t === ti) sel.i = Math.min(sel.i, pat.length - 1);
     }); break;
     case 'role': edit(ti, () => { t.role = el.value; }); break;
+    case 'pat-more': if (el.value) pickPattern(ti, el.value); break;
     case 'feel': if (el.value !== '__custom') edit(ti, () => { const p = M.FEEL_PRESETS[el.value]; t.feel = p ? M.cleanFeel({ ...p, preset: el.value }) : null; }); break;
     case 'fit': edit(ti, () => { if (el.value) pat.beats = +el.value; else delete pat.beats; }); break;
     case 'lane-len': edit(ti, () => {
@@ -3165,8 +3324,9 @@ $('#song').addEventListener('click', e => {
   const i = +el.dataset.sec, n = song.song.length;
   switch (el.dataset.act) {
     case 'cell': {
-      const order = [...M.PATTERNS, null], sec = song.song[i], ti = +el.dataset.t;
-      sec.play[ti] = order[(order.indexOf(sec.play[ti]) + 1) % order.length];
+      // Click = the track's next pattern, then silent; ⇧-click goes back.
+      const sec = song.song[i], ti = +el.dataset.t, order = [...M.patternNames(song.tracks[ti]), null];
+      sec.play[ti] = order[(order.indexOf(sec.play[ti]) + (e.shiftKey ? order.length - 1 : 1)) % order.length];
       songSel = i;
       break;
     }
@@ -3190,6 +3350,7 @@ $('#song').addEventListener('click', e => {
     case 'auto-del': song.auto.splice(+el.dataset.k, 1); resetAuto(); break;
     case 'open-chords': prefs.chordsOpen = true; savePrefs(); renderChords(); $('#chords').scrollIntoView({ block: 'center', behavior: 'smooth' }); return;
     case 'add-sec': {
+      if (n >= M.MAX_SECTIONS) { toast(`A song has at most ${M.MAX_SECTIONS} sections.`); return; }
       const last = song.song.at(-1);
       song.song.push({ ...JSON.parse(JSON.stringify(last)), name: undefined });
       delete song.song.at(-1).name;
@@ -3197,6 +3358,7 @@ $('#song').addEventListener('click', e => {
       break;
     }
     case 'sec-dup': {
+      if (n >= M.MAX_SECTIONS) { toast(`A song has at most ${M.MAX_SECTIONS} sections.`); return; }
       const copy = JSON.parse(JSON.stringify(song.song[songSel]));
       song.song.splice(songSel + 1, 0, copy);
       if (loopSec !== null && loopSec > songSel) loopSec++;
@@ -3228,6 +3390,12 @@ $('#song').addEventListener('change', e => {
     if (a === 'auto-ti') autoPick.ti = +e.target.value;
     else if (a === 'auto-target') autoPick.target = e.target.value;
     else autoPick.cc = Math.max(1, Math.min(119, Math.round(+e.target.value) || 1));
+    renderSong();
+    return;
+  }
+  if (e.target.dataset.act === 'sec-play-pat') {
+    song.song[songSel].play[+e.target.dataset.t] = e.target.value || null;
+    changed();
     renderSong();
     return;
   }

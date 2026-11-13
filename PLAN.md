@@ -15,7 +15,9 @@ built in a cloud session on the public repo (no hardware or user data needed).
 
 - Chord and key detection of Capture takes ("what did I play?"), and turning them into a chord track.
 - Scenes: launch a row of patterns across tracks at once, mapped to MPK mini pads.
-- A performance effects pad (XY: filter sweep, stutter, delay throw) on the master. ☁︎
+- ~~A performance effects pad~~ (built Nov 2026: see CLAUDE.md, Perform pad). Possible next: record
+  pad moves as automation lanes, play it from the MPK mini's joystick or knobs, more pad effects
+  (tape stop, gate, flanger). ☁︎
 - Chop to pads: slice a recording at its hits onto a drum kit's pads. ☁︎
 - A vocoder in the Sound Lab using the microphone.
 

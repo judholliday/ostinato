@@ -60,6 +60,12 @@
     <span class="field" title="Poly: chords. Mono: one note at a time, each starting fresh. Legato: one note; notes played while another is held slide to it without starting again (the classic lead and bass playing)">Play
       <span class="seg-btn" id="play-mode"><button data-play="poly">Poly</button><button data-play="mono">Mono</button><button data-play="legato">Legato</button></span></span>
     <label class="field" id="glide-field" title="How long a mono or legato note takes to slide to the next pitch (portamento)">Glide <input type="range" id="glide" min="0" max="1000" step="1"> <span id="glide-val"></span></label>
+    <span class="field" id="arp-field" title="Arpeggiator: hold a chord and it plays the notes one at a time, in time with the song. Up, Down, Up-down: by pitch. Played: in the order you pressed them. Random: any. Chord: all of them, repeated. It starts when the first key goes down">Arp
+      <select id="arp-mode"></select>
+      <select id="arp-rate" title="How long each step is (a note length at the song's tempo)"></select>
+      <select id="arp-oct" title="Octaves: the pattern again an octave higher, and so on"></select>
+      <span class="seg-btn" id="arp-latch-wrap"><button id="arp-latch" title="Latch: the arpeggio keeps playing after you let go of the keys. Play a new chord to change it; click Latch again (or Silence) to stop">Latch</button></span>
+      <label id="arp-gate-field" title="How much of each step the note lasts: short = staccato, 100% = joined up">Gate <input type="range" id="arp-gate" min="5" max="100" step="5"> <span id="arp-gate-val"></span></label></span>
     <label class="field" title="How many notes can sound at once">Voices <input type="number" id="voices" min="1" max="16"></label>
     <label class="field">Volume <input type="range" id="volume" min="0" max="1" step="0.01"></label>
     <button id="undo" class="ghost small" title="Undo (⌘Z)">↶ Undo</button>

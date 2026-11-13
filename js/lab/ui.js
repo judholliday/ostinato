@@ -1,7 +1,7 @@
 // The Lab page: build and play instruments made of modules (see patch.js), save them to
 // data/instruments/, and share them with the sequencer. No framework.
 import { icon as uiIcon } from '../core/icons.js';
-import { MODULES, MAX_MODULES, SOURCES, RACK_EFFECTS, MAX_RACK, cleanRack, rackOf, visibleParams, zoneFor, normalizePatch, copyPatch, defaultParams, newId, paramOf, formatValue, toSlider, fromSlider, defaultTarget } from './patch.js';
+import { MODULES, MAX_MODULES, SOURCES, RACK_EFFECTS, MAX_RACK, cleanRack, rackOf, visibleParams, zoneFor, normalizePatch, copyPatch, defaultParams, newId, paramOf, formatValue, toSlider, fromSlider, defaultTarget, ARP_MODES, ARP_RATES, cleanArp } from './patch.js';
 import { LabSynth } from './engine.js';
 import { patchSVG, layout, shapePath, WAVE } from './patchview.js';
 import { portLabel } from '../core/midiports.js';
@@ -169,6 +169,21 @@ function renderFileBar() {
   $('#voices').disabled = play !== 'poly';
   if (document.activeElement !== $('#glide')) $('#glide').value = Math.round(Math.sqrt((patch.glide || 0) / 2) * 1000);
   $('#glide-val').textContent = patch.glide ? `${Math.round(patch.glide * 1000)} ms` : 'off';
+  const arp = patch.arp;
+  if (!$('#arp-mode').options.length) {
+    $('#arp-mode').innerHTML = ['off', ...ARP_MODES].map(m => `<option value="${m}">${m[0].toUpperCase()}${m.slice(1)}</option>`).join('');
+    $('#arp-rate').innerHTML = ARP_RATES.map(r => `<option>${r}</option>`).join('');
+    $('#arp-oct').innerHTML = [1, 2, 3, 4].map(o => `<option value="${o}">${o} oct</option>`).join('');
+  }
+  $('#arp-mode').value = arp?.mode || 'off';
+  for (const id of ['#arp-rate', '#arp-oct', '#arp-gate-field', '#arp-latch-wrap']) $(id).hidden = !arp;
+  $('#arp-latch').classList.toggle('on', !!arp?.latch);
+  if (arp) {
+    $('#arp-rate').value = arp.rate;
+    $('#arp-oct').value = arp.octaves;
+    if (document.activeElement !== $('#arp-gate')) $('#arp-gate').value = Math.round(arp.gate * 100);
+    $('#arp-gate-val').textContent = `${Math.round(arp.gate * 100)}%`;
+  }
   $('#about').hidden = !patch.about;
   $('#about').textContent = patch.about || '';
   $('#save').textContent = patch.kind === 'rack' ? (fileName ? 'Save rack' : 'Save as a rack') : fileName ? 'Save' : 'Save to My Sounds';
@@ -1489,7 +1504,7 @@ const PICKER_GROUPS = [
   ['Make sound', ['osc', 'string', 'organ', 'sampler', 'granular', 'noise', 'fmop', 'drums']],
   ['Shape it', ['filter', 'vowel', 'drive', 'ring', 'amp', 'space']],
   ['Move things', ['env', 'lfo', 'glfo']],
-  ['Effects', ['soundboard', 'resonance', 'reverb', 'shimmer', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'rotary']],
+  ['Effects', ['soundboard', 'resonance', 'reverb', 'shimmer', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'scanner', 'rotary']],
 ];
 const ICONS = {
   osc: 'M2 17 L8 7 V17 L14 7 V17 L20 7 V17',
@@ -1521,6 +1536,7 @@ const ICONS = {
   string: 'M2 12 H5 M19 12 H22 M5 12 C8 4 16 20 19 12 M5 12 C8 18 16 6 19 12',
   organ: 'M4 3 V14 M7 3 V9 M10 3 V17 M13 3 V7 M16 3 V12 M19 3 V5 M3 20 H21',
   rotary: 'M12 12 m-8 0 a8 8 0 1 0 16 0 a8 8 0 1 0 -16 0 M12 4 V12 L17 15',
+  scanner: 'M2 12 L6 7 L10 17 L14 7 L18 17 L22 12',
   glfo: 'M2 12 C5 4 8 4 11 12 S17 20 20 12 M2 21 H22',
   crusher: 'M2 18 H6 V13 H10 V8 H14 V13 H18 V6 H22',
   stutter: 'M3 6 V18 M8 6 V18 M13 6 V18 M3 12 H5 M8 12 H10 M13 12 H15 M18 9 L22 12 L18 15',
@@ -1529,7 +1545,7 @@ const ICONS = {
 };
 const icon = type => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[type] || ''}"/></svg>`;
 const BLURBS = {
-  osc: 'A tone at the note\'s pitch', string: 'Plucked or struck strings', organ: 'Drawbars, percussion, click', rotary: 'Spinning speaker (Leslie)', glfo: 'Moves effects, one for all notes', sampler: 'Plays a recording', granular: 'Clouds from a recording', noise: 'Breath, wind, hiss', fmop: 'Bells, e-pianos, FM basses', drums: 'A synthesized kit',
+  osc: 'A tone at the note\'s pitch', string: 'Plucked or struck strings', organ: 'Drawbars, percussion, click', rotary: 'Spinning speaker (Leslie)', scanner: 'Tonewheel organ\'s vibrato and chorus', glfo: 'Moves effects, one for all notes', sampler: 'Plays a recording', granular: 'Clouds from a recording', noise: 'Breath, wind, hiss', fmop: 'Bells, e-pianos, FM basses', drums: 'A synthesized kit',
   filter: 'Darker or brighter', vowel: 'Makes it talk (A E I O U)', drive: 'Warmth to distortion', ring: 'Metallic, robotic', amp: 'Loudness over time', space: 'Around your head',
   env: 'A shape over each note', lfo: 'Swings a setting back and forth',
   chorus: 'Wider, thicker', delay: 'Echoes, ping-pong, tape', soundboard: 'A piano\'s body, for strings', resonance: 'The pedal\'s halo of strings', reverb: 'Room, hall, plate, or a recording',
@@ -1717,6 +1733,19 @@ $('#glide').addEventListener('input', e => {
   synth.setPatch(patch);
   changed({ coalesce: true });
 });
+// The arpeggiator: off removes it; the other settings keep their values while it's on.
+const setArp = (change, opts) => {
+  const arp = cleanArp({ ...(patch.arp || { rate: '1/16', octaves: 1, gate: 0.6 }), ...change });
+  if (arp) patch.arp = arp; else delete patch.arp;
+  synth.setPatch(patch);
+  changed(opts);
+  renderFileBar();
+};
+$('#arp-mode').addEventListener('change', e => setArp({ mode: e.target.value }));
+$('#arp-rate').addEventListener('change', e => setArp({ rate: e.target.value }));
+$('#arp-oct').addEventListener('change', e => setArp({ octaves: +e.target.value }));
+$('#arp-latch').onclick = () => setArp({ latch: !patch.arp?.latch });
+$('#arp-gate').addEventListener('input', e => setArp({ gate: +e.target.value / 100 }, { coalesce: true }));
 $('#volume').addEventListener('input', e => { patch.volume = +e.target.value; synth.setPatch(patch); changed({ coalesce: true }); });
 $('#undo').onclick = undo;
 $('#redo').onclick = redo;

@@ -1,6 +1,6 @@
 // Things that work sample by sample, run in an AudioWorklet (one module per AudioContext, loaded
 // on demand by ensureFx): the Bitcrusher, Stutter and Freeze effects (buildEffect in the engine)
-// and the String voice (buildVoice).
+// and the String voice (buildVoice), plus the Rotary's speed changes.
 const CODE = `
 // Bitcrusher: fewer bits (coarser steps) and a lower sample rate (each sample held for 'hold').
 class Crush extends AudioWorkletProcessor {
@@ -75,6 +75,52 @@ class Stutter extends AudioWorkletProcessor {
   }
 }
 registerProcessor('ost-stutter', Stutter);
+
+// Roll (the Sequencer's performance pad): while 'on' is 1, the slice that starts where it was
+// switched on, 'size' seconds long, repeats until it's switched off. 'back' (seconds, read when it
+// switches on) starts the slice that much earlier, from what just played (the page snaps a press a
+// little after a beat back to the beat). Until the slice has played once you hear the input itself
+// (it's being recorded), so the hit at the slice's start is the one that repeats. Changing 'size'
+// while rolling plays the start of what was recorded at the new length. 'mix' 1 = repeats only,
+// 0 = repeats under the input at equal level. Fades in and out over FADE samples.
+class Roll extends AudioWorkletProcessor {
+  static get parameterDescriptors() { return [{ name: 'on', defaultValue: 0, automationRate: 'k-rate' }, { name: 'size', defaultValue: 0.125, automationRate: 'k-rate' }, { name: 'mix', defaultValue: 1, automationRate: 'k-rate' }, { name: 'back', defaultValue: 0, automationRate: 'k-rate' }]; }
+  constructor() { super(); this.len = 2 * sampleRate; this.rec = [new Float32Array(this.len), new Float32Array(this.len)]; this.ring = new Ring(0.5); this.t = 0; this.g = 0; this.on = false; }
+  process([inp], [out], p) {
+    const n = out[0].length, on = p.on[0] > 0.5, size = Math.max(256, Math.min(this.len, Math.round(p.size[0] * sampleRate))), mix = p.mix[0];
+    if (on && !this.on) {
+      // Start from 'back' ago: what played since then is the start of the slice.
+      const b = Math.max(0, Math.min(this.ring.len - 1, Math.round(p.back[0] * sampleRate)));
+      const past = this.ring.last(b);
+      for (let c = 0; c < 2; c++) this.rec[c].set(past[c]);
+      this.t = b;
+    }
+    this.on = on;
+    for (let i = 0; i < n; i++) {
+      this.g += ((on ? 1 : 0) - this.g) / FADE; // a short fade in and out of the roll
+      let k = 0, rolling = false;
+      if (this.g > 1e-4) {
+        if (on && this.t < this.len) for (let c = 0; c < 2; c++) this.rec[c][this.t] = (inp[c] || inp[0])?.[i] || 0;
+        rolling = this.t >= size;
+        k = this.t % size;
+        this.t++;
+      }
+      // The end of each repeat fades out, so the loop doesn't click; the start only fades in over
+      // eight samples, which keeps the hit's attack (it's usually right there).
+      const w = Math.min(1, k / 8, (size - k) / FADE);
+      for (let c = 0; c < out.length; c++) {
+        const x = (inp[c] || inp[0])?.[i] || 0;
+        if (!rolling) { out[c][i] = x; continue; }
+        // At mix 0 the repeats and the input are both at -3 dB.
+        const r = (this.rec[c] ? this.rec[c][k] * w : 0) * (1 - 0.29 * (1 - mix)), under = x * 0.71 * (1 - mix);
+        out[c][i] = x * (1 - this.g) + this.g * (r + under);
+      }
+    }
+    this.ring.push(inp, n);
+    return true;
+  }
+}
+registerProcessor('ost-roll', Roll);
 
 // Freeze: while 'frozen' is 1, the last 'size' seconds before it was switched on loop forever
 // (their end crossfaded into their start); while 0, the input passes. 20 ms fades between.
@@ -502,10 +548,32 @@ class Resonance extends AudioWorkletProcessor {
   }
 }
 registerProcessor('ost-resonance', Resonance);
+
+// A control signal that follows its input with one time constant going up and another coming
+// down: the Rotary's rotor speeds (a Leslie's rotors spin up faster than they coast down). Starts
+// at its input's first value, so a rotor is already at speed when the effect is built.
+class Slew extends AudioWorkletProcessor {
+  static get parameterDescriptors() { return [{ name: 'up', defaultValue: 1, minValue: 0.001, automationRate: 'k-rate' }, { name: 'down', defaultValue: 1, minValue: 0.001, automationRate: 'k-rate' }]; }
+  constructor() { super(); this.y = NaN; }
+  process([inp], [out], p) {
+    const x = inp[0], o = out[0], ku = 1 - Math.exp(-1 / (p.up[0] * sampleRate)), kd = 1 - Math.exp(-1 / (p.down[0] * sampleRate));
+    let y = this.y;
+    for (let i = 0; i < o.length; i++) {
+      const v = x ? x[i] : (y || 0);
+      if (y !== y) y = v;
+      y += (v - y) * (v > y ? ku : kd);
+      o[i] = y;
+    }
+    this.y = y;
+    return true;
+  }
+}
+registerProcessor('ost-slew', Slew);
 `;
 
 export const WORKLET_FX = ['crusher', 'stutter', 'freeze', 'resonance'];
 export const WORKLET_VOICES = ['string']; // voice modules that need the worklet
+export const WORKLET_HELPED = ['rotary']; // effects that work without it, better with it (rebuilt once it has loaded)
 const loaded = new WeakMap(); // AudioContext -> Promise, then true once ready
 export function ensureFx(ac) {
   if (!loaded.has(ac)) {

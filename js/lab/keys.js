@@ -13,19 +13,21 @@ const into = (froms, to) => froms.map(from => ({ from, to }));
 
 // ---- tonewheel organ ----
 // A registration is nine digits 0-8 for the drawbars 16', 5 1/3', 8', 4', 2 2/3', 2', 1 3/5', 1 1/3', 1'
-// (the Drawbar organ module), through a Rotary (the Leslie), optionally driven.
+// (the Drawbar organ module), through the organ's vibrato/chorus (optional), a Rotary (the Leslie),
+// optionally driven.
 const FEET = ["16'", "5⅓'", "8'", "4'", "2⅔'", "2'", "1⅗'", "1⅓'", "1'"];
-function organ({ name, reg, perc = null, drive = 0, leslie = 'slow', volume = 0.6 }) {
+function organ({ name, reg, perc = null, vibrato = null, drive = 0, leslie = 'slow', volume = 0.6, level = 0.8 }) {
   const bars = Object.fromEntries([...reg].map((d, k) => [`bar${k + 1}`, +d]));
   const fx = [
+    ...(vibrato ? [mod('scanner', 'vib', { mode: vibrato })] : []),
     ...(drive ? [mod('shaper', 'tube', { curve: 'tube', drive, tone: 5500, mix: 1, level: 0.7 })] : []),
     mod('rotary', 'leslie', { speed: leslie, wheel: 'switches speed', inertia: 1, depth: 0.75, balance: 0.55, drive: 0.15, mix: 1 }),
     mod('reverb', 'room', { type: 'room', size: 1.4, damping: 0.6, mix: 0.14 }),
   ];
   return {
     name, type: 'Organ', voices: 12, volume,
-    about: `Drawbars ${[...reg].join(' ')} (${FEET.join(' ')})${perc ? `, percussion on the ${perc.harmonic} harmonic, ${perc.fast ? 'fast' : 'slow'}` : ''}. Leslie ${leslie}${leslie === 'slow' ? ': push the mod wheel up to speed it up' : ''}.`,
-    modules: [mod('organ', 'organ1', { ...bars, perc: perc ? perc.harmonic : 'off', percDecay: perc?.fast === false ? 'slow' : 'fast', click: 0.35, level: 0.8 }), ...fx],
+    about: `Drawbars ${[...reg].join(' ')} (${FEET.join(' ')})${perc ? `, percussion on the ${perc.harmonic} harmonic, ${perc.fast ? 'fast' : 'slow'}` : ''}${vibrato ? `, vibrato/chorus ${vibrato}` : ''}. Leslie ${leslie}${leslie === 'slow' ? ': push the mod wheel up to speed it up' : ''}.`,
+    modules: [mod('organ', 'organ1', { ...bars, perc: perc ? perc.harmonic : 'off', percDecay: perc?.fast === false ? 'slow' : 'fast', click: 0.35, level }), ...fx],
     audio: chain('organ1', ...fx.map(m => m.id), 'out'),
   };
 }
@@ -184,10 +186,10 @@ export const KEYS = [
   },
 
   // ---- organs ----
-  organ({ name: 'B3 Jazz', reg: '888000000', perc: { harmonic: 'third', fast: true }, leslie: 'slow', volume: 0.6 }),
-  organ({ name: 'B3 Gospel', reg: '888808008', leslie: 'fast', drive: 2, volume: 0.5 }),
-  organ({ name: 'B3 Rock Drive', reg: '888800000', perc: { harmonic: 'second', fast: false }, leslie: 'slow', drive: 9, volume: 0.45 }),
-  organ({ name: 'B3 Ballad', reg: '838000000', leslie: 'slow', volume: 0.7 }),
+  organ({ name: 'B3 Jazz', reg: '888000000', perc: { harmonic: 'third', fast: true }, vibrato: 'C3', leslie: 'slow', volume: 1, level: 1 }),
+  organ({ name: 'B3 Gospel', reg: '888808008', vibrato: 'C3', leslie: 'fast', drive: 2, volume: 1 }),
+  organ({ name: 'B3 Rock Drive', reg: '888800000', perc: { harmonic: 'second', fast: false }, leslie: 'slow', drive: 9, volume: 0.9 }),
+  organ({ name: 'B3 Ballad', reg: '838000000', vibrato: 'C3', leslie: 'slow', volume: 1, level: 1 }),
   {
     // A transistor combo organ (the 60s kind): bright, buzzy square and saw voices with vibrato.
     name: 'Combo Organ', about: '60s garage and ska organ, with vibrato.', type: 'Organ', voices: 10, volume: 0.45,
