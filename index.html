@@ -34,6 +34,9 @@
       delete frames.instruments;
       if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
     }
+    // The computer keyboard's chord mode (Tab) starts off: remembered, it stayed on after a stray
+    // Tab and A–G kept playing chords with nothing to say why.
+    try { localStorage.removeItem('mkxl.qwerty.chords'); } catch { /* storage unavailable */ }
     // A fresh address each time, so a browser never restores an out-of-date copy of a page.
     const fresh = `${location.search ? `${location.search}&` : '?'}v=${Date.now()}`;
     const pages = { sequencer: 'sequencer.html', lab: 'lab.html', capture: 'recorder.html', instruments: 'editor.html' };

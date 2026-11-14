@@ -32,17 +32,18 @@
     <div id="link-bar" class="link-bar" hidden></div>
     <div id="unsaved-bar" class="link-bar unsaved-bar" hidden></div>
     <div class="lib-head">
-      <b>Ostinato Synth sounds</b><span id="lib-count" class="hint"></span><span class="spacer"></span>
+      <b title="Ostinato Synth sounds: the factory ones and yours">Sounds</b><span id="lib-count" class="hint"></span><span class="spacer"></span>
       <button class="small" id="new-sound" title="Start a new sound from Init">+ New</button>
       <button class="ghost small" id="lib-hide" title="Hide the library">⟨</button>
     </div>
     <input id="lib-search" type="search" placeholder="Search sounds" autocomplete="off" spellcheck="false" aria-label="Search sounds">
-    <div class="seg-btn lib-bank" id="lib-bank"></div>
-    <div class="lib-colls" id="lib-colls" aria-label="Collections"></div>
+    <div class="lib-filters">
+      <select id="lib-which" aria-label="Which sounds" title="Which sounds to list: all of them, yours, the factory ones, or a collection"></select>
+      <select id="lib-type" aria-label="Type" title="Only one type of sound"></select>
+    </div>
     <div class="lib-coll-bar" id="lib-coll-bar" hidden></div>
-    <div class="lib-types" id="lib-types"></div>
     <div class="lib-list" id="lib-list" tabindex="0" aria-label="Sounds"></div>
-    <label class="lib-audition hint" title="Play a short note each time you pick a sound"><input type="checkbox" id="lib-audition"> Play a note when I pick one (↑ ↓ to step through)</label>
+    <label class="lib-audition hint" title="Play a short note each time you pick a sound"><input type="checkbox" id="lib-audition"> Play a note when I pick one (↑ ↓ step)</label>
   </aside>
   <div class="lab-main">
   <p id="about" class="about hint" hidden></p>

@@ -84,6 +84,8 @@ No MIDI keyboard? **MIDI in** (Sequencer, Capture) offers **Computer keyboard (A
 | **Tab** | Chord mode on/off: **A W S E D F T G** (C to G) each play a chord an octave lower, in the song's **Scale** (major chords if none is set); the keys to their right stay single notes, for a melody over the chords |
  It does everything a MIDI keyboard does: it plays the selected track's sound (with **Thru**), fills steps, records with **● Rec**, and Capture keeps it, including while you type on the Capture tab. To play over a sequence and keep it: **Capture → Record with the sequencer**, then play.
 
+On a drum kit (a kit open in the Sound Lab, or a drum track selected in the Sequencer) the same keys play the kit's 16 pads in order instead of notes: **A** kick, **W** rim, **S** snare, **E** clap, then the toms, hats and cymbals up to **P**. The octave keys don't change that.
+
 ## Travel version (no server, works offline)
 
 The same app runs as a plain website (e.g. on GitHub Pages) in Chrome or Edge, with nothing to install: the **Sequencer**, the **Sound Lab** and **Capture** (takes, clips and audio, e.g. from the laptop's microphone). It's what you get anywhere but this Mac's own server; at home, add `?static` to the address to try it. Without the server:
@@ -206,4 +208,4 @@ It needs git to be able to reach that repository without a password prompt, e.g.
 
 ## License
 
-MIT (see `LICENSE`). Korg's factory sounds and documents, and the original patch charts the converted libraries come from, belong to their owners.
+MIT (see `LICENSE`). Korg's factory sounds and documents, and the original patch charts the converted libraries come from, belong to their owners. The Grand Piano is built from measurements of the University of Iowa Electronic Music Studios' Musical Instrument Samples (a Steinway model B; theremin.music.uiowa.edu/MIS.html), which are free to use without restrictions.

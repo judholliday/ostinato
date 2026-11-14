@@ -34,7 +34,7 @@ function toast(text, kind = '') {
   $('#toasts').append(el);
   setTimeout(() => el.remove(), kind === 'err' ? 7000 : 3500);
 }
-const prefs = { keysIn: null, base: 48, viewOpen: true, libOpen: true, libBank: 'all', libType: '', libColl: '', audition: true, ...store.get('prefs', {}) };
+const prefs = { keysIn: null, base: 48, viewOpen: true, libOpen: true, libBank: 'all', libType: '', libColl: '', libFolded: [], audition: true, ...store.get('prefs', {}) };
 const savePrefs = () => store.set('prefs', prefs);
 
 // ---------------------------------------------------------------------------------------------
@@ -215,29 +215,43 @@ function shownEntries() {
     && (!q || `${e.name} ${e.type}`.toLowerCase().includes(q)));
   return { inBank, shown: inBank.filter(e => !prefs.libType || e.type === prefs.libType) };
 }
+let libScrolledTo = '';
 function renderLibrary() {
   if (!patch) return;
   $('#lab-layout').classList.toggle('lib-hidden', !prefs.libOpen);
   $('#lib-show').hidden = prefs.libOpen;
-  $('#lib-count').textContent = ` ${FACTORY.length} factory · ${mySounds().length} mine`;
+  $('#lib-count').textContent = ` ${FACTORY.length + mySounds().length}`;
   const coll = currentColl();
   if (prefs.libColl && !coll) prefs.libColl = ''; // deleted
-  $('#lib-bank').innerHTML = BANKS.map(([v, l]) => `<button class="${!coll && prefs.libBank === v ? 'on' : ''}" data-bank="${v}">${l}</button>`).join('');
   renderCollections();
   const { inBank, shown } = shownEntries();
   const counts = new Map();
   for (const e of inBank) counts.set(e.type, (counts.get(e.type) || 0) + 1);
   const types = [...counts.keys()].sort((a, b) => typeRank(a) - typeRank(b) || a.localeCompare(b));
-  $('#lib-types').innerHTML = `<button class="chip${prefs.libType ? '' : ' on'}" data-type="">All</button>`
-    + types.map(t => `<button class="chip${prefs.libType === t ? ' on' : ''}" data-type="${esc(t)}">${esc(t)} <span>${counts.get(t)}</span></button>`).join('');
+  if (prefs.libType && !counts.has(prefs.libType)) types.push(prefs.libType); // keep the choice visible even at 0
+  $('#lib-type').innerHTML = `<option value="">All types</option>`
+    + types.map(t => `<option value="${esc(t)}" ${prefs.libType === t ? 'selected' : ''}>${esc(t)} (${counts.get(t) || 0})</option>`).join('');
   const cur = currentKey();
   const sorted = [...shown].sort((a, b) => typeRank(a.type) - typeRank(b.type) || a.type.localeCompare(b.type) || (b.mine - a.mine) || a.name.localeCompare(b.name));
   const groups = new Map();
   for (const e of sorted) { if (!groups.has(e.type)) groups.set(e.type, []); groups.get(e.type).push(e); }
-  $('#lib-list').innerHTML = shown.length ? [...groups].map(([type, list]) => `${prefs.libType ? '' : `<div class="lib-group">${esc(type)}</div>`}${list.map(e =>
-    `<button class="lib-row${keyOf(e) === cur ? ' on' : ''}" data-key="${esc(keyOf(e))}" title="${e.mine ? 'One of your sounds' : 'A factory sound'}: click to open it">
-      <span class="nm">${esc(e.name)}</span>${e.mine ? '<span class="mine">★</span>' : ''}</button>`).join('')}`).join('')
+  // Group headings stay at the top while their sounds scroll; a click folds the group (not while
+  // searching or showing one type, so a match is never hidden). The open sound's group never folds.
+  const q = $('#lib-search').value.trim(), canFold = !q && !prefs.libType;
+  const row = e => `<button class="lib-row${keyOf(e) === cur ? ' on' : ''}" data-key="${esc(keyOf(e))}" title="${e.mine ? 'One of your sounds' : 'A factory sound'}: click to open it">
+      <span class="nm">${esc(e.name)}</span>${e.mine ? '<span class="mine">★</span>' : ''}</button>`;
+  $('#lib-list').innerHTML = shown.length ? [...groups].map(([type, list]) => {
+    if (prefs.libType) return list.map(row).join('');
+    const folded = canFold && prefs.libFolded.includes(type) && !list.some(e => keyOf(e) === cur);
+    return `<button class="lib-group${folded ? ' folded' : ''}" data-fold="${esc(type)}" ${canFold ? `title="${folded ? 'Show' : 'Hide'} these sounds"` : 'disabled'}>
+      <span class="caret">${canFold ? (folded ? '▸' : '▾') : ''}</span>${esc(type)} <span class="n">${list.length}</span></button>${folded ? '' : list.map(row).join('')}`;
+  }).join('')
     : `<div class="hint lib-empty">${coll ? (coll.sounds.length ? 'No sounds match.' : 'This collection is empty: open a sound and use ☆ Collections (beside Save) to add it.') : prefs.libBank === 'mine' ? 'None of yours here yet. Open a sound, change it, and save it to My Sounds.' : 'No sounds match.'}</div>`;
+  // Bring the open sound into view when it changes (not on every redraw, so scrolling isn't undone).
+  if (cur && cur !== libScrolledTo) {
+    libScrolledTo = cur;
+    $('#lib-list .lib-row.on')?.scrollIntoView({ block: 'nearest' });
+  }
   $('#lib-audition').checked = prefs.audition;
 }
 
@@ -255,15 +269,18 @@ function currentMember() {
   if (fileName) { const x = mySounds().find(s => s.file === fileName); return x ? { name: x.name, mine: true } : null; }
   return factoryName ? { name: factoryName, mine: false } : null;
 }
+// The Show menu: all sounds, yours or the factory ones, then the collections (factory, then yours).
 function renderCollections() {
-  const colls = allCollections(), cur = prefs.libColl;
-  $('#lib-colls').innerHTML = `<span class="hint">Collections</span>` + colls.map(c =>
-    `<button class="chip${c.key === cur ? ' on' : ''}" data-coll="${esc(c.key)}" title="${esc(c.about || (c.factory ? '' : 'Your collection'))}">${c.factory ? '' : '★ '}${esc(c.title)} <span>${c.sounds.length}</span></button>`).join('');
+  const colls = allCollections(), coll = currentColl(), opt = (v, label, on) => `<option value="${esc(v)}" ${on ? 'selected' : ''}>${esc(label)}</option>`;
+  const fact = colls.filter(c => c.factory), mine = colls.filter(c => !c.factory);
+  $('#lib-which').innerHTML = BANKS.map(([v, l]) => opt(`bank:${v}`, `${l === 'All' ? 'All sounds' : l}`, !coll && prefs.libBank === v)).join('')
+    + `<optgroup label="Collections">${fact.map(c => opt(`coll:${c.key}`, `${c.title} (${c.sounds.length})`, coll?.key === c.key)).join('')}</optgroup>`
+    + (mine.length ? `<optgroup label="Your collections">${mine.map(c => opt(`coll:${c.key}`, `★ ${c.title} (${c.sounds.length})`, coll?.key === c.key)).join('')}</optgroup>` : '');
   const c = currentColl(), bar = $('#lib-coll-bar');
   bar.hidden = !c;
   if (!c) return;
-  bar.innerHTML = `${c.about ? `<p class="hint">${esc(c.about)}</p>` : ''}<div class="coll-acts">
-    <button class="small" data-coll-act="song" title="Start a new song in the Sequencer with a track for each of these sounds (up to 8), each in the role that suits it">♪ New song from these</button>
+  bar.innerHTML = `${c.about ? `<p class="hint" title="${esc(c.about)}">${esc(c.about)}</p>` : ''}<div class="coll-acts">
+    <button class="small" data-coll-act="song" title="Start a new song in the Sequencer with a track for each of these sounds (up to 8), each in the role that suits it">♪ New song</button>
     ${c.factory ? `<button class="ghost small" data-coll-act="copy" title="Make your own copy to change">Copy as mine</button>`
       : `<button class="ghost small" data-coll-act="rename">Rename</button><button class="ghost small" data-coll-act="delete" title="${STATIC ? 'Delete it' : 'Move it to data/instruments/deleted/'} (the sounds stay)">Delete</button>`}</div>`;
 }
@@ -440,12 +457,20 @@ channel?.addEventListener('message', async e => {
 $('#library').addEventListener('click', e => {
   const b = e.target.closest('button');
   if (!b) return;
-  if (b.dataset.coll !== undefined) { prefs.libColl = prefs.libColl === b.dataset.coll ? '' : b.dataset.coll; prefs.libType = ''; savePrefs(); renderLibrary(); return; }
   if (b.dataset.collAct) { collectionAction(b.dataset.collAct); return; }
-  if (b.dataset.bank) { prefs.libBank = b.dataset.bank; prefs.libColl = ''; prefs.libType = ''; savePrefs(); renderLibrary(); }
-  else if (b.dataset.type !== undefined) { prefs.libType = b.dataset.type; savePrefs(); renderLibrary(); }
-  else if (b.dataset.key) openEntry(b.dataset.key);
+  if (b.dataset.fold !== undefined) {
+    const t = b.dataset.fold, f = prefs.libFolded;
+    prefs.libFolded = f.includes(t) ? f.filter(x => x !== t) : [...f, t];
+    savePrefs(); renderLibrary(); return;
+  }
+  if (b.dataset.key) openEntry(b.dataset.key);
 });
+$('#lib-which').onchange = e => {
+  const [kind, ...rest] = e.target.value.split(':'), v = rest.join(':');
+  if (kind === 'bank') { prefs.libBank = v; prefs.libColl = ''; } else prefs.libColl = v;
+  prefs.libType = ''; savePrefs(); renderLibrary();
+};
+$('#lib-type').onchange = e => { prefs.libType = e.target.value; savePrefs(); renderLibrary(); };
 $('#lib-search').addEventListener('input', renderLibrary);
 $('#lib-audition').onchange = e => { prefs.audition = e.target.checked; savePrefs(); };
 $('#lib-hide').onclick = () => { prefs.libOpen = false; savePrefs(); renderLibrary(); };
@@ -1333,6 +1358,13 @@ function choiceHTML(spec, v, attrs, help) {
 }
 
 function routeChange(el) {
+  // A slider let go that other settings depend on (a step sequence's Steps: how many step sliders
+  // show): redraw, now the drag is over.
+  if (el.dataset.act === 'num') {
+    const m = modOf(el.dataset.id), rows = el.closest('.prms')?.querySelectorAll(':scope > .prm').length;
+    if (m && rows !== undefined && rows !== visibleParams(m).length && !m.zones) { renderModules(); renderView(); }
+    return false;
+  }
   if (el.tagName === 'SELECT' && (el.dataset.act === 'choice' || el.dataset.act === 'rack-choice')) { el.dataset.v = el.value; routeClick(el); return true; }
   if (el.dataset.act === 'rack-add' && el.value) {
     const m = modOf(el.dataset.id);
@@ -1501,10 +1533,10 @@ $('#modules').addEventListener('change', e => routeChange(e.target));
 // ---- adding modules: a picker of module types, grouped, each with a small picture ----
 
 const PICKER_GROUPS = [
-  ['Make sound', ['osc', 'string', 'organ', 'sampler', 'granular', 'noise', 'fmop', 'drums']],
-  ['Shape it', ['filter', 'vowel', 'drive', 'ring', 'amp', 'space']],
-  ['Move things', ['env', 'lfo', 'glfo']],
-  ['Effects', ['soundboard', 'resonance', 'reverb', 'shimmer', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'scanner', 'rotary']],
+  ['Make sound', ['osc', 'string', 'piano', 'organ', 'sampler', 'granular', 'noise', 'fmop', 'drums']],
+  ['Shape it', ['filter', 'vowel', 'resonator', 'drive', 'ring', 'amp', 'space']],
+  ['Move things', ['env', 'lfo', 'seq', 'glfo', 'gseq']],
+  ['Effects', ['soundboard', 'resonance', 'reverb', 'shimmer', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'grains', 'scanner', 'rotary']],
 ];
 const ICONS = {
   osc: 'M2 17 L8 7 V17 L14 7 V17 L20 7 V17',
@@ -1534,6 +1566,7 @@ const ICONS = {
   compressor: 'M3 20 L10 9 L21 6 M3 4 V20 H21',
   shaper: 'M2 12 C5 12 6 5 9 5 H15 C18 5 19 19 22 19',
   string: 'M2 12 H5 M19 12 H22 M5 12 C8 4 16 20 19 12 M5 12 C8 18 16 6 19 12',
+  piano: 'M3 6 H21 V18 H3 Z M7.5 6 V13 M12 6 V13 M16.5 6 V13 M7.5 13 V18 M12 13 V18 M16.5 13 V18',
   organ: 'M4 3 V14 M7 3 V9 M10 3 V17 M13 3 V7 M16 3 V12 M19 3 V5 M3 20 H21',
   rotary: 'M12 12 m-8 0 a8 8 0 1 0 16 0 a8 8 0 1 0 -16 0 M12 4 V12 L17 15',
   scanner: 'M2 12 L6 7 L10 17 L14 7 L18 17 L22 12',
@@ -1541,13 +1574,17 @@ const ICONS = {
   crusher: 'M2 18 H6 V13 H10 V8 H14 V13 H18 V6 H22',
   stutter: 'M3 6 V18 M8 6 V18 M13 6 V18 M3 12 H5 M8 12 H10 M13 12 H15 M18 9 L22 12 L18 15',
   freeze: 'M12 2 V22 M3.5 7 L20.5 17 M3.5 17 L20.5 7 M9 3.5 L12 6 L15 3.5 M9 20.5 L12 18 L15 20.5',
+  resonator: 'M3 8 H21 V12 H3 Z M7 12 V20 M12 12 V17 M17 12 V20 M9 3 L12 8 L15 3',
+  seq: 'M2 16 H6 V8 H10 V12 H14 V5 H18 V14 H22',
+  gseq: 'M2 14 H6 V6 H10 V10 H14 V3 H18 V12 H22 M2 21 H22',
+  grains: 'M3 12 a2 2 0 1 0 .01 0 M9 7 a1.5 1.5 0 1 0 .01 0 M10 16 a2.5 2.5 0 1 0 .01 0 M15 11 a1.5 1.5 0 1 0 .01 0 M19 6 a1 1 0 1 0 .01 0 M20 16 a1.5 1.5 0 1 0 .01 0',
   rack: 'M3 5 H21 V19 H3 Z M3 10 H21 M3 14 H21 M6 7.5 h.01 M6 12 h.01 M6 16.5 h.01',
 };
 const icon = type => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[type] || ''}"/></svg>`;
 const BLURBS = {
-  osc: 'A tone at the note\'s pitch', string: 'Plucked or struck strings', organ: 'Drawbars, percussion, click', rotary: 'Spinning speaker (Leslie)', scanner: 'Tonewheel organ\'s vibrato and chorus', glfo: 'Moves effects, one for all notes', sampler: 'Plays a recording', granular: 'Clouds from a recording', noise: 'Breath, wind, hiss', fmop: 'Bells, e-pianos, FM basses', drums: 'A synthesized kit',
+  osc: 'A tone at the note\'s pitch', string: 'Plucked or struck strings', piano: 'A grand, from recordings', organ: 'Drawbars, percussion, click', rotary: 'Spinning speaker (Leslie)', scanner: 'Tonewheel organ\'s vibrato and chorus', glfo: 'Moves effects, one for all notes', sampler: 'Plays a recording', granular: 'Clouds from a recording', noise: 'Breath, wind, hiss', fmop: 'Bells, e-pianos, FM basses', drums: 'A synthesized kit',
   filter: 'Darker or brighter', vowel: 'Makes it talk (A E I O U)', drive: 'Warmth to distortion', ring: 'Metallic, robotic', amp: 'Loudness over time', space: 'Around your head',
-  env: 'A shape over each note', lfo: 'Swings a setting back and forth',
+  env: 'A shape over each note', lfo: 'Swings a setting back and forth', seq: 'A pattern of steps, per note', gseq: 'A pattern of steps, for effects', resonator: 'Rings like a bar, bell, glass…', grains: 'Turns the sound into a cloud',
   chorus: 'Wider, thicker', delay: 'Echoes, ping-pong, tape', soundboard: 'A piano\'s body, for strings', resonance: 'The pedal\'s halo of strings', reverb: 'Room, hall, plate, or a recording',
   phaser: 'Swirling sweep', shimmer: 'Reverb that blooms upward', flanger: 'Jet-plane sweep', tremolo: 'Pulsing or panning', eq: 'Bass, middle, treble', compressor: 'Evens out the level',
   shaper: 'Saturation, clipping, folding', crusher: 'Fewer bits, lower rate', stutter: 'Repeats slices, glitchy', freeze: 'Holds a moment as a drone',
@@ -1970,7 +2007,8 @@ const qwertyNote = d => {
   else if (type === 0x90 && d[2] > 0) noteOn(d[1], d[2]);
   else noteOff(d[1]);
 };
-attachQwerty({ active: onScreen, onMessage: qwertyNote, channel, from: 'lab', onOctave: renderKbd, onMode: text => toast(text) });
+attachQwerty({ active: onScreen, onMessage: qwertyNote, channel, from: 'lab', onOctave: renderKbd, onMode: text => toast(text),
+  drums: () => patch.modules.some(m => m.type === 'drums' && !m.off) });
 channel?.addEventListener('message', e => { if (e.data?.type === 'qwerty' && e.data.from === 'recorder' && onScreen()) qwertyNote(e.data.data); });
 
 // ---------------------------------------------------------------------------------------------

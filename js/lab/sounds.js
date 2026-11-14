@@ -339,9 +339,10 @@ const MORE = [
     audio: chain('gr1', 'amp1', 'comp1', 'crush1', 'stut1', 'delay1', 'out'),
   },
 
-  // ---- for fast arpeggios: short, clear attacks that don't smear at 16ths ----
+  // ---- for fast arpeggios: short, clear attacks that don't smear at 16ths; the arpeggiator is on
+  // (the user expected sounds called Arp to arpeggiate; Arp → Off beside Play for plain plucks) ----
   {
-    name: 'Glass Arp', type: 'Pluck', voices: 12, volume: 0.55,
+    name: 'Glass Arp', type: 'Pluck', voices: 12, volume: 0.55, arp: { mode: 'up', rate: '1/16', octaves: 2, gate: 0.5 },
     about: 'A bright FM pluck for fast arpeggios: a glassy tick on the attack that fades to a pure tone, with a ping-pong echo.',
     modules: [mod('fmop', 'op1', { ratio: 1, fm: 2.2, attack: 0.001, decay: 0.32, sustain: 0, release: 0.12, velocity: 0.5, level: 0.75, keytrack: 0.5 }),
       mod('fmop', 'op2', { ratio: 3.5, attack: 0.001, decay: 0.09, sustain: 0, release: 0.05, velocity: 0.7, level: 0.8 }),
@@ -350,7 +351,7 @@ const MORE = [
     audio: [{ from: 'op2', to: 'op1' }, ...chain('op1', 'eq1', 'delay1', 'out')],
   },
   {
-    name: 'Saw Arp', type: 'Pluck', voices: 12, volume: 0.8,
+    name: 'Saw Arp', type: 'Pluck', voices: 12, volume: 0.8, arp: { mode: 'up', rate: '1/16', octaves: 1, gate: 0.5 },
     about: 'Two detuned saws through a resonant filter that snaps shut: the classic electronic arpeggio. Velocity opens the filter.',
     modules: [mod('osc', 'osc1', { wave: 'saw', fine: -8, level: 0.5 }), mod('osc', 'osc2', { wave: 'saw', fine: 8, level: 0.5 }),
       mod('filter', 'filter1', { cutoff: 420, resonance: 7, keytrack: 0.7 }), mod('env', 'env1', { attack: 0.001, decay: 0.11, sustain: 0, release: 0.08 }),
@@ -360,7 +361,7 @@ const MORE = [
     mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 5200 }, { from: 'vel', to: 'filter1.cutoff', amount: 1800 }],
   },
   {
-    name: 'Blip Arp', type: 'Pluck', voices: 12, volume: 0.85,
+    name: 'Blip Arp', type: 'Pluck', voices: 12, volume: 0.85, arp: { mode: 'up-down', rate: '1/16', octaves: 2, gate: 0.5 },
     about: 'A tiny hollow blip: a narrow pulse with its width wobbling slowly, so long runs of notes shift in colour.',
     modules: [mod('osc', 'osc1', { wave: 'pulse', pw: 0.18, level: 0.6 }), mod('osc', 'osc2', { wave: 'sine', octave: 1, level: 0.25 }),
       mod('lfo', 'lfo1', { wave: 'triangle', rate: 0.35 }),
@@ -371,7 +372,7 @@ const MORE = [
     mod: [{ from: 'lfo1', to: 'osc1.pw', amount: 0.14 }],
   },
   {
-    name: 'Rubber Arp', type: 'Pluck', voices: 12, volume: 1,
+    name: 'Rubber Arp', type: 'Pluck', voices: 12, volume: 1, arp: { mode: 'up', rate: '1/16', octaves: 1, gate: 0.6 },
     about: 'A round, bouncy pluck: a band-pass filter sweeping down fast over a square wave, like a plucked rubber band. Darker than Saw Arp.',
     modules: [mod('osc', 'osc1', { wave: 'square', level: 0.65 }), mod('osc', 'osc2', { wave: 'triangle', octave: -1, level: 0.35 }),
       mod('filter', 'filter1', { type: 'bandpass', slope: '12', cutoff: 500, resonance: 5, keytrack: 0.8 }),
@@ -969,6 +970,168 @@ const ARPS = [
   arped('Nylon Pluck', 'Thumb and Fingers', 'Pluck', { mode: 'played', rate: '1/8t', octaves: 1, gate: 0.9 }, 'Hold a chord: it plays the notes in the order you pressed them, in triplets, like a picked guitar pattern. Press the bass note first.'),
 ];
 
+// ---- more drum kits (Nov 2026) ----
+// Sounds for pads: small patches the kit plays as a hit (a pad's Sound layer).
+const hitSound = (name, modules, audio, mods = []) => cleanPatch({ name, type: 'Drums', voices: 4, volume: 1, modules, audio, mod: mods });
+// The CR-78's Metallic Beat: its three square oscillators (6170, 5620 and 4080 Hz), played at B6
+// + 56 cents an octave up so the lowest is 4080 Hz.
+const METALLIC = hitSound('Metallic beat', [mod('osc', 'osc1', { wave: 'square', octave: 1, fine: 56, level: 0.4 }), mod('osc', 'osc2', { wave: 'square', octave: 1, semi: 6, fine: 10, level: 0.4 }),
+  mod('osc', 'osc3', { wave: 'square', octave: 1, semi: 7, fine: 72, level: 0.4 }), mod('amp', 'amp1', { attack: 0.001, decay: 0.135, sustain: 0, release: 0.135, velocity: 1, level: 1 })],
+  [{ from: 'osc1', to: 'amp1' }, { from: 'osc2', to: 'amp1' }, { from: 'osc3', to: 'amp1' }, { from: 'amp1', to: 'out' }]);
+// The CR-78's guiro: a buzz (its multivibrator: 125 Hz, or 77 for the low one, set by the pad's
+// note) through a resonance at 6.1 kHz, switched on for a step and off again.
+const GUIRO78 = hitSound('CR-78 guiro', [mod('osc', 'osc1', { wave: 'pulse', pw: 0.15, level: 1 }), mod('filter', 'tank', { type: 'bandpass', slope: '12', cutoff: 6126, resonance: 2.5, keytrack: 0 }),
+  mod('amp', 'amp1', { attack: 0.002, decay: 0.2, sustain: 1, release: 0.01, velocity: 1, level: 1 })], chain('osc1', 'tank', 'amp1', 'out'));
+
+// Roland's CompuRhythm CR-78 (1978). From Roland's service notes as read by the schwung-cw-78 clone
+// project (github.com/charlesvestal/schwung-cw-78, docs/CR78-CIRCUIT-ANALYSIS.md): the factory
+// alignment table's frequencies and levels, and LC values from the schematic. The drums are
+// ringing resonators with no pitch sweep (bass drum 62.5 Hz, snare 340, low conga 208, bongos 400
+// and 600, rim shot 1480, claves 2630, cowbell 555 + 800); cymbal and tambourine are noise through
+// tuned coils (9.1 and ~4.7 kHz); the guiro and Metallic Beat are above. Decays: the table gives a
+// length per voice without saying how far down; the snare's scope note (0.7 V falling to 0.4 V in
+// 20 ms) puts its 60 ms at about -15 dB, so every pad's Decay (the time to -66 dB) is 4.5 x the
+// table's. ASSUMED, no number found: the bands of the snare's noise, hi-hat and maracas, and the
+// cowbell's wave. The machine has no clap, open hat or toms; pads are named for what they play.
+const CR78 = {
+  name: 'CR-78 Kit', type: 'Drums', voices: 16, volume: 0.9,
+  about: 'After Roland\'s CR-78 (1978), from its service notes: soft thudding bass drum, snare, rim shot, hi-hat, cymbal, maracas, claves, cowbell, bongos, low conga, tambourine, guiro (two pads, high and low) and the Metallic Beat. Dry and quiet-mannered, as the machine is. Its hi-hat, maracas and snare-noise tone are my estimates.',
+  modules: [{ ...mod('drums', 'drums1', { tone: 0.5 }), pads: kitPads({
+    36: { name: 'Bass drum', t1Level: 1, t1Wave: 'sine', t1Pitch: 62.5, t1Sweep: 0, t1Decay: 0.45, t2Level: 0, nLevel: 0, click: 0.05 },
+    38: { name: 'Snare', t1Level: 0.6, t1Wave: 'sine', t1Pitch: 340, t1Sweep: 0, t1Decay: 0.27, t2Level: 0, nLevel: 0.5, nFilter: 'highpass', nFreq: 3000, nQ: 0.7, nDecay: 0.27, level: 0.78 },
+    37: { name: 'Rim shot', level: 1.3, t1Level: 1.5, t1Wave: 'sine', t1Pitch: 1480, t1Sweep: 0, t1Decay: 0.023, t2Level: 0, nLevel: 0, click: 0.1 },
+    39: { name: 'Tambourine', level: 1.15, t1Level: 0, nLevel: 1.5, nFilter: 'bandpass', nFreq: 4700, nQ: 5, nDecay: 1, nBursts: 1 },
+    42: { name: 'Hi-hat', level: 1.23, t1Level: 0, nLevel: 0.6, nFilter: 'highpass', nFreq: 7000, nQ: 0.7, nDecay: 0.27, choke: 0 },
+    44: { name: 'Maracas', level: 1.43, t1Level: 0, nLevel: 0.6, nFilter: 'highpass', nFreq: 6000, nQ: 0.7, nDecay: 0.09, choke: 0 },
+    46: { name: 'Metallic beat', t1Level: 0, nLevel: 0, lSound: { name: 'Metallic beat', patch: METALLIC }, lLevel: 1, level: 0.67, lNote: 95, lHold: 0.02, lDecay: 2, choke: 0 },
+    49: { name: 'Cymbal', level: 1.1, t1Level: 0, nLevel: 1.2, nFilter: 'bandpass', nFreq: 9098, nQ: 2, nDecay: 1.6 },
+    51: { name: 'Claves', level: 0.75, t1Level: 0.5, t1Wave: 'sine', t1Pitch: 2630, t1Sweep: 0, t1Decay: 0.08, t2Level: 0, nLevel: 0 },
+    56: { name: 'Cowbell', level: 0.47, t1Level: 0.3, t1Wave: 'square', t1Pitch: 555, t1Sweep: 0, t1Decay: 0.27, t2Level: 0.3, t2Wave: 'square', t2Pitch: 800, t2Sweep: 0, t2Decay: 0.27, hp: 500 },
+    41: { name: 'Low conga', level: 0.91, t1Level: 0.8, t1Wave: 'sine', t1Pitch: 208, t1Sweep: 0, t1Decay: 0.68, nLevel: 0 },
+    43: { name: 'Low bongo', level: 0.76, t1Level: 0.5, t1Wave: 'sine', t1Pitch: 400, t1Sweep: 0, t1Decay: 0.18, nLevel: 0 },
+    45: { name: 'High bongo', level: 0.74, t1Level: 0.5, t1Wave: 'sine', t1Pitch: 600, t1Sweep: 0, t1Decay: 0.18, nLevel: 0 },
+    47: { name: 'Guiro low', t1Level: 0, nLevel: 0, lSound: { name: 'CR-78 guiro', patch: GUIRO78 }, level: 0.8, lLevel: 1.5, lNote: 39, lHold: 0.11, lDecay: 0.5 },
+    48: { name: 'Guiro high', t1Level: 0, nLevel: 0, lSound: { name: 'CR-78 guiro', patch: GUIRO78 }, level: 0.8, lLevel: 1.5, lNote: 47, lHold: 0.11, lDecay: 0.5 },
+    50: { name: 'Tambourine soft', level: 1.15, t1Level: 0, nLevel: 0.75, nFilter: 'bandpass', nFreq: 4700, nQ: 5, nDecay: 0.7 },
+  }) }],
+  audio: [{ from: 'drums1', to: 'out' }],
+};
+// ---- Latin percussion ----
+// Targets, where published numbers exist: congas at players' usual tunings (tumba D3 147 Hz, conga
+// about G#3 208, quinto C#4 277) and bongos (hembra about 320, macho 587), each with the second
+// membrane mode at 1.594 x (Rossing); maracas, cabasa, shaker and tambourine from Perry Cook's
+// shaker models (STK Shakers.cpp: maracas a 3.2 kHz resonance about 570 Hz wide, 23 ms time
+// constant; cabasa 3 kHz, very broad, 8 ms; shaker 5.5 kHz, broad, 23 ms; tambourine jingles
+// 5.6 and 8.1 kHz); guiro resonances 2.5 and 4 kHz (the same models); the cowbell is the struck
+// one above (587 + 845 Hz, Sound On Sound). ESTIMATES, no measurement found: how long the drums
+// ring, the conga slap, timbales, claves (2.5 kHz), triangle and the guiro's ridge rate (70 a second).
+const lcDrum = (name, f, decay, o = {}) => ({ name, t1Level: 1, t1Wave: 'sine', t1Pitch: f, t1Sweep: 1, t1Bend: 0.03, t1Decay: decay,
+  t2Level: 0.25, t2Wave: 'sine', t2Pitch: Math.round(f * 1.594), t2Sweep: 1, t2Bend: 0.03, t2Decay: decay * 0.4,
+  nLevel: 0.1, nFilter: 'lowpass', nFreq: 2500, nQ: 0.7, nDecay: 0.04, nBursts: 1, click: 0.15, choke: 0, hp: 20, ...o });
+// A scrape: each ridge is a pulse (the pad's note sets how many a second: C#2 = 69) ringing the
+// gourd's two resonances, with a little noise for the stick.
+const GUIRO = hitSound('Guiro scrape', [mod('osc', 'osc1', { wave: 'pulse', pw: 0.1, level: 1 }), mod('noise', 'noise1', { level: 0.15 }),
+  mod('filter', 'res1', { type: 'bandpass', slope: '12', cutoff: 2500, resonance: 6, keytrack: 0 }), mod('filter', 'res2', { type: 'bandpass', slope: '12', cutoff: 4000, resonance: 9.5, keytrack: 0 }),
+  mod('amp', 'amp1', { attack: 0.03, decay: 0.3, sustain: 0.8, release: 0.02, velocity: 1, level: 1 })],
+  [{ from: 'osc1', to: 'res1' }, { from: 'osc1', to: 'res2' }, { from: 'noise1', to: 'res1' }, { from: 'noise1', to: 'res2' }, { from: 'res1', to: 'amp1' }, { from: 'res2', to: 'amp1' }, { from: 'amp1', to: 'out' }]);
+const LATIN = {
+  name: 'Latin Percussion', type: 'Drums', voices: 16, volume: 0.8,
+  about: 'Hand drums and shaken things, synthesized: three congas (tumba, conga, quinto) and a slap, two bongos, two timbales, claves, cowbell, guiro, maracas, cabasa, shaker, tambourine and triangle. Drum tunings and the shakers follow published numbers; how long the drums ring, the slap, timbales, claves and triangle are my estimates.',
+  modules: [{ ...mod('drums', 'drums1', { tone: 0.5 }), pads: kitPads({
+    36: lcDrum('Tumba', 147, 0.7),
+    38: lcDrum('Conga', 208, 0.55),
+    41: lcDrum('Quinto', 277, 0.45),
+    39: { name: 'Conga slap', level: 1.5, t1Level: 0.5, t1Wave: 'triangle', t1Pitch: 420, t1Sweep: 2, t1Bend: 0.02, t1Decay: 0.08, t2Level: 0, nLevel: 1, nFilter: 'bandpass', nFreq: 2800, nQ: 0.8, nDecay: 0.06, nBursts: 1, click: 0.5 },
+    43: lcDrum('Bongo low', 320, 0.25, { click: 0.25 }),
+    45: lcDrum('Bongo high', 587, 0.18, { click: 0.25 }),
+    47: lcDrum('Timbale low', 220, 0.5, { t1Sweep: 2, t1Bend: 0.04, t2Wave: 'triangle', t2Pitch: 470, t2Level: 0.2, t2Decay: 0.3, nLevel: 0.2, nFilter: 'highpass', nFreq: 3000, nDecay: 0.05, click: 0.4 }),
+    48: lcDrum('Timbale high', 330, 0.4, { t1Sweep: 2, t1Bend: 0.04, t2Wave: 'triangle', t2Pitch: 705, t2Level: 0.2, t2Decay: 0.25, nLevel: 0.2, nFilter: 'highpass', nFreq: 3000, nDecay: 0.05, click: 0.4 }),
+    37: { name: 'Claves', t1Level: 0.6, t1Wave: 'sine', t1Pitch: 2500, t1Sweep: 0, t1Decay: 0.09, t2Level: 0.12, t2Wave: 'sine', t2Pitch: 6900, t2Sweep: 0, t2Decay: 0.03, nLevel: 0, click: 0.1 },
+    56: { name: 'Cowbell', t1Level: 0, t2Level: 0, nLevel: 0, lSound: { name: 'Struck cowbell', patch: COWBELL }, lLevel: 0.5, lNote: 74, lHold: 0.05, lDecay: 0.6, hp: 300 },
+    50: { name: 'Guiro', t1Level: 0, nLevel: 0, lSound: { name: 'Guiro scrape', patch: GUIRO }, lLevel: 1.5, lNote: 37, lHold: 0.22, lDecay: 1, level: 1.5 },
+    46: { name: 'Maracas', level: 1.5, t1Level: 0, nLevel: 1.5, nFilter: 'bandpass', nFreq: 3200, nQ: 5.6, nDecay: 0.175, nBursts: 1, choke: 0 },
+    44: { name: 'Cabasa', level: 1.3, t1Level: 0, nLevel: 1.4, nFilter: 'bandpass', nFreq: 3000, nQ: 0.5, nDecay: 0.061, nBursts: 1, choke: 0 },
+    42: { name: 'Shaker', level: 1.3, t1Level: 0, nLevel: 1.2, nFilter: 'bandpass', nFreq: 5500, nQ: 0.5, nDecay: 0.175, nBursts: 1, choke: 0 },
+    49: { name: 'Tambourine', level: 1.4, t1Level: 0, nLevel: 1.2, nFilter: 'bandpass', nFreq: 6800, nQ: 1.2, nDecay: 0.2, nBursts: 2, click: 0.2 },
+    51: { name: 'Triangle', t1Level: 0.35, t1Wave: 'sine', t1Pitch: 4350, t1Sweep: 0, t1Decay: 2.5, t2Level: 0.2, t2Wave: 'sine', t2Pitch: 6900, t2Sweep: 0, t2Decay: 1.5, nLevel: 0, click: 0.2 },
+  }) }, mod('reverb', 'reverb1', { type: 'room', size: 0.6, mix: 0.08 })],
+  audio: chain('drums1', 'reverb1', 'out'),
+};
+
+// ---- a quiet acoustic set, played with brushes ----
+// Targets, where published numbers exist: toms at tune-bot's four-tom fundamentals (16" 73.4 Hz,
+// 14" 98, 12" 124, 10" 147), each starting about 8% (1.3 semitones) sharp and settling within
+// 0.2 s (measured on a 33 cm tom) with the second membrane mode at 1.594 x; a 20" bass drum at
+// 66 Hz, falling two semitones, with its next partial about 1.86 x up (Sound On Sound; tune-bot);
+// the snare's two lowest modes at 180 and 330 Hz (Rossing; SOS); cymbals after the published
+// picture of a struck cymbal: energy near 700-1000 Hz in the first 20 ms, a 3-5 kHz shimmer for
+// about a second, the highs dying first to leave a few hundred hertz. ESTIMATES, nothing found:
+// every ring time, the snare wires' band, the brush tap and sweep, the rim click, hi-hats, ride bell.
+const SWISH = hitSound('Brush sweep', [mod('noise', 'noise1', { level: 0.8 }), mod('filter', 'filter1', { type: 'bandpass', slope: '12', cutoff: 4200, resonance: 0.7, keytrack: 0 }),
+  mod('amp', 'amp1', { attack: 0.09, decay: 0.3, sustain: 0, release: 0.12, velocity: 1, level: 1 })], chain('noise1', 'filter1', 'amp1', 'out'));
+// A crash's wash: noise whose highs die first (a low-pass falling from about 9 kHz to 700 Hz over
+// the ring), as a struck cymbal's do. Two decaying layers at fixed tones got brighter as they faded.
+const WASH = hitSound('Cymbal wash', [mod('noise', 'noise1', { level: 0.9 }), mod('filter', 'filter1', { type: 'lowpass', slope: '12', cutoff: 700, resonance: 0.7, keytrack: 0 }),
+  mod('env', 'close', { attack: 0.001, decay: 5, sustain: 0, release: 5 }), mod('amp', 'amp1', { attack: 0.004, decay: 6, sustain: 0, release: 6, velocity: 1, level: 1 })],
+  chain('noise1', 'filter1', 'amp1', 'out'), [{ from: 'close', to: 'filter1.cutoff', amount: 4400 }]);
+const bTom = (name, f, decay) => ({ name, t1Level: 1, t1Wave: 'sine', t1Pitch: f, t1Sweep: 1.3, t1Bend: 0.2, t1Decay: decay,
+  t2Level: 0.3, t2Wave: 'sine', t2Pitch: Math.round(f * 1.594), t2Sweep: 1.3, t2Bend: 0.2, t2Decay: decay * 0.45,
+  nLevel: 0.12, nFilter: 'lowpass', nFreq: 1500, nQ: 0.7, nDecay: 0.04, click: 0.2 });
+const bSnare = (name, o = {}) => ({ name, t1Level: 0.35, t1Wave: 'sine', t1Pitch: 180, t1Sweep: 1, t1Bend: 0.03, t1Decay: 0.12, t2Level: 0.25, t2Wave: 'sine', t2Pitch: 330, t2Sweep: 1, t2Bend: 0.03, t2Decay: 0.08,
+  nLevel: 0.8, nFilter: 'bandpass', nFreq: 4500, nQ: 0.6, nDecay: 0.22, nBursts: 1, click: 0.1, ...o });
+const BRUSH = {
+  name: 'Brush Kit', type: 'Drums', voices: 16, volume: 0.8,
+  about: 'A quiet acoustic set played with brushes, synthesized: soft bass drum, brush taps and a sweep (Clap pad) on the snare, rim click, hi-hats, four toms, ride with its bell, crash. The drums\' pitches and the cymbals\' behaviour follow published numbers; the brush sounds, ring times and hi-hats are my estimates, so judge it by ear.',
+  modules: [{ ...mod('drums', 'drums1', { tone: 0.5 }), pads: kitPads({
+    36: { name: 'Bass drum', t1Level: 1.2, t1Wave: 'sine', t1Pitch: 66, t1Sweep: 2, t1Bend: 0.08, t1Decay: 0.5, t2Level: 0.35, t2Wave: 'sine', t2Pitch: 123, t2Sweep: 2, t2Bend: 0.08, t2Decay: 0.2,
+      nLevel: 0.3, nFilter: 'lowpass', nFreq: 900, nQ: 0.7, nDecay: 0.05, click: 0.15 },
+    38: bSnare('Brush tap'),
+    56: bSnare('Ghost tap', { level: 0.45, nDecay: 0.14, click: 0 }),
+    50: bSnare('Snare, stick', { level: 0.7, t1Level: 0.6, t2Level: 0.4, nLevel: 1.1, nFilter: 'highpass', nFreq: 2500, nQ: 0.7, nDecay: 0.2, click: 0.5 }),
+    39: { name: 'Brush sweep', t1Level: 0, nLevel: 0, lSound: { name: 'Brush sweep', patch: SWISH }, lLevel: 1.2, lNote: 60, lHold: 0.25, lDecay: 1 },
+    37: { name: 'Rim click', t1Level: 0.6, t1Wave: 'sine', t1Pitch: 780, t1Sweep: 0, t1Decay: 0.05, t2Level: 0.15, t2Wave: 'square', t2Pitch: 1850, t2Sweep: 0, t2Decay: 0.02, nLevel: 0, click: 0.5 },
+    42: { name: 'Closed hat', level: 1.4, t1Level: 0.5, t1Wave: 'metal', t1Pitch: 400, t1Sweep: 0, t1Decay: 0.07, nLevel: 0.4, nFilter: 'highpass', nFreq: 6500, nDecay: 0.06, hp: 3000, choke: 1 },
+    44: { name: 'Pedal hat', level: 1.4, t1Level: 0.35, t1Wave: 'metal', t1Pitch: 400, t1Sweep: 0, t1Decay: 0.045, nLevel: 0.3, nFilter: 'highpass', nFreq: 6000, nDecay: 0.04, click: 0.3, hp: 2500, choke: 1 },
+    46: { name: 'Open hat', t1Level: 0.5, t1Wave: 'metal', t1Pitch: 400, t1Sweep: 0, t1Decay: 0.9, nLevel: 0.4, nFilter: 'highpass', nFreq: 6000, nDecay: 0.7, hp: 2500, choke: 1 },
+    41: bTom('Floor tom', 73.4, 0.9), 43: bTom('Low tom', 98, 0.75), 45: bTom('Mid tom', 124, 0.6), 47: bTom('High tom', 147, 0.5),
+    48: { name: 'Ride bell', t1Level: 0.5, t1Wave: 'metal', t1Pitch: 520, t1Sweep: 0, t1Decay: 3, t2Level: 0.12, t2Wave: 'sine', t2Pitch: 2100, t2Sweep: 0, t2Decay: 3, nLevel: 0, click: 0.3, hp: 600 },
+    51: { name: 'Ride', t1Level: 0.35, t1Wave: 'metal', t1Pitch: 380, t1Sweep: 0, t1Decay: 4, t2Level: 0, nLevel: 0.3, nFilter: 'bandpass', nFreq: 4000, nQ: 0.5, nDecay: 2.5, click: 0.35, hp: 800 },
+    49: { name: 'Crash', t1Level: 0.35, t1Wave: 'metal', t1Pitch: 300, t1Sweep: 0, t1Decay: 0.5, t2Level: 0, nLevel: 0, lSound: { name: 'Cymbal wash', patch: WASH }, lLevel: 1, level: 0.8, lNote: 60, lHold: 0.05, lDecay: 8, hp: 300 },
+  }) }, mod('reverb', 'reverb1', { type: 'room', size: 0.7, mix: 0.12 })],
+  audio: chain('drums1', 'reverb1', 'out'),
+};
+
+// ---- things on a kitchen table (not after any measurements: impressions) ----
+const DROP = hitSound('Water drop', [mod('osc', 'osc1', { wave: 'sine', level: 0.8 }), mod('env', 'up', { attack: 0.05, decay: 0.05, sustain: 1, release: 0.05 }),
+  mod('amp', 'amp1', { attack: 0.002, decay: 0.09, sustain: 0, release: 0.05, velocity: 1, level: 1 })], chain('osc1', 'amp1', 'out'), [{ from: 'up', to: 'osc1.pitch', amount: 1500 }]);
+const ZIP = hitSound('Zip', [mod('osc', 'osc1', { wave: 'pulse', pw: 0.12, level: 0.8 }), mod('env', 'up', { attack: 0.16, decay: 0.05, sustain: 1, release: 0.05 }),
+  mod('filter', 'filter1', { type: 'bandpass', slope: '12', cutoff: 3500, resonance: 2, keytrack: 0 }), mod('amp', 'amp1', { attack: 0.005, decay: 0.3, sustain: 0.8, release: 0.01, velocity: 1, level: 1 })],
+  chain('osc1', 'filter1', 'amp1', 'out'), [{ from: 'up', to: 'osc1.pitch', amount: 1900 }]);
+const FOUND = {
+  name: 'Kitchen Table Kit', type: 'Drums', voices: 16, volume: 0.8,
+  about: 'A kit of things within reach: a cardboard box for the kick, a book slapped shut for the snare, a pen click, torn paper, a matchbox, a jar of rice, keys, a pot lid, knocks on the table, a mug, a glass, a bottle blown across the top, a water drop, a tin can, a bowl and a zip. Impressions made from tones and noise, not recordings.',
+  modules: [{ ...mod('drums', 'drums1', { tone: 0.5 }), pads: kitPads({
+    36: { name: 'Box', t1Level: 1.3, t1Wave: 'sine', t1Pitch: 75, t1Sweep: 7, t1Bend: 0.03, t1Decay: 0.22, t2Level: 0, nLevel: 0.6, nFilter: 'lowpass', nFreq: 400, nQ: 0.7, nDecay: 0.08, click: 0.1 },
+    37: { name: 'Pen click', t1Level: 0.3, t1Wave: 'square', t1Pitch: 3200, t1Sweep: 0, t1Decay: 0.012, t2Level: 0, nLevel: 0, click: 1, hp: 1500 },
+    38: { name: 'Book', t1Level: 0.4, t1Wave: 'triangle', t1Pitch: 210, t1Sweep: 2, t1Bend: 0.02, t1Decay: 0.05, t2Level: 0, nLevel: 1.2, nFilter: 'bandpass', nFreq: 1100, nQ: 0.7, nDecay: 0.11, nBursts: 1, click: 0.5 },
+    39: { name: 'Paper rip', t1Level: 0, nLevel: 0.9, nFilter: 'highpass', nFreq: 3500, nQ: 0.7, nDecay: 0.2, nBursts: 4 },
+    42: { name: 'Matchbox', level: 1.4, t1Level: 0, nLevel: 0.9, nFilter: 'bandpass', nFreq: 4800, nQ: 1.5, nDecay: 0.05, nBursts: 2, choke: 0 },
+    44: { name: 'Rice jar', level: 1.4, t1Level: 0, nLevel: 0.7, nFilter: 'bandpass', nFreq: 7000, nQ: 0.8, nDecay: 0.09, nBursts: 1, choke: 0 },
+    46: { name: 'Keys', t1Level: 0.6, t1Wave: 'metal', t1Pitch: 1400, t1Sweep: 0, t1Decay: 0.5, t2Level: 0, nLevel: 0.2, nFilter: 'highpass', nFreq: 8000, nDecay: 0.2, nBursts: 3, hp: 4000, choke: 0 },
+    49: { name: 'Pot lid', level: 0.75, t1Level: 0.6, t1Wave: 'metal', t1Pitch: 310, t1Sweep: 0, t1Decay: 1.8, t2Level: 0.15, t2Wave: 'sine', t2Pitch: 1240, t2Sweep: 0, t2Decay: 1.2, nLevel: 0, click: 0.3, hp: 300 },
+    41: { name: 'Table knock', t1Level: 1, t1Wave: 'sine', t1Pitch: 140, t1Sweep: 3, t1Bend: 0.02, t1Decay: 0.12, t2Level: 0, nLevel: 0.3, nFilter: 'lowpass', nFreq: 900, nQ: 0.7, nDecay: 0.03, click: 0.4 },
+    43: { name: 'Mug', t1Level: 0.5, t1Wave: 'sine', t1Pitch: 1180, t1Sweep: 0, t1Decay: 0.5, t2Level: 0.2, t2Wave: 'sine', t2Pitch: 2950, t2Sweep: 0, t2Decay: 0.25, nLevel: 0, click: 0.2 },
+    45: { name: 'Glass', t1Level: 0.45, t1Wave: 'sine', t1Pitch: 2100, t1Sweep: 0, t1Decay: 1.1, t2Level: 0.15, t2Wave: 'sine', t2Pitch: 5400, t2Sweep: 0, t2Decay: 0.5, nLevel: 0, click: 0.15 },
+    47: { name: 'Bottle', t1Level: 0.6, t1Wave: 'sine', t1Pitch: 330, t1Sweep: 0, t1Decay: 0.5, t2Level: 0, nLevel: 0.9, nFilter: 'bandpass', nFreq: 330, nQ: 8, nDecay: 0.4 },
+    48: { name: 'Water drop', t1Level: 0, nLevel: 0, lSound: { name: 'Water drop', patch: DROP }, lLevel: 1, lNote: 84, lHold: 0.05, lDecay: 0.5 },
+    50: { name: 'Tin can', t1Level: 0.3, t1Wave: 'square', t1Pitch: 720, t1Sweep: 0, t1Decay: 0.1, t2Level: 0.25, t2Wave: 'square', t2Pitch: 1130, t2Sweep: 0, t2Decay: 0.08, nLevel: 0.3, nFilter: 'bandpass', nFreq: 2600, nQ: 3, nDecay: 0.06, hp: 400 },
+    51: { name: 'Bowl', t1Level: 0.5, t1Wave: 'sine', t1Pitch: 640, t1Sweep: 0, t1Decay: 1.4, t2Level: 0.2, t2Wave: 'sine', t2Pitch: 1790, t2Sweep: 0, t2Decay: 0.8, nLevel: 0, click: 0.15 },
+    56: { name: 'Zip', t1Level: 0, t2Level: 0, nLevel: 0, lSound: { name: 'Zip', patch: ZIP }, lLevel: 1.2, lNote: 48, lHold: 0.18, lDecay: 1 },
+  }) }],
+  audio: [{ from: 'drums1', to: 'out' }],
+};
+const KITS = [CR78, LATIN, BRUSH, FOUND].map(cleanPatch);
+
 // ---- strange things ----
 // An endless rise or fall (a Shepard tone): six sines, each sweeping six octaves around the key
 // and then jumping back, a sixth of a cycle after one another (the LFOs' Start at), so they're always
@@ -1069,7 +1232,158 @@ const STRANGE = [
   },
 ].map(cleanPatch);
 
-export const FACTORY = [...STARTERS, ...MORE, ...ARPS, ...STRANGE, ...KEYS.map(cleanPatch)];
+// ---- sounds built on the Resonator, the step sequences and the Grain delay (Nov 2026) ----
+const based = name => JSON.parse(JSON.stringify([...STARTERS, ...MORE, ...KEYS].find(p => p.name === name)));
+// A Resonator struck by its own Strike, then effects.
+const struck = (name, type, about, res, { fx = [], volume = 0.7, voices = 8 } = {}) => ({
+  name, type, about, voices, volume,
+  modules: [mod('resonator', 'res1', res), ...fx],
+  audio: chain('res1', ...fx.map(m => m.id), 'out'), mod: [],
+});
+const steps = (id, sync, values, extra = {}) => mod('seq', id, { sync, length: values.length, ...Object.fromEntries(values.map((v, k) => [`s${k + 1}`, v])), ...extra });
+const NEWER = [
+  struck('Glass Harp', 'Bell', 'Wine glasses tapped with a mallet: each note is a Resonator ringing with a glass\'s uneven partials, struck by its own Strike. Harder notes are brighter. Try its Shape, Damping and Spacing.',
+    { shape: 'glass', strike: 0.7, decay: 5, damping: 0.12, bright: 0.45, position: 0.37, release: 2.5, width: 0.6, level: 1.6 }, { volume: 0.65, fx: [mod('reverb', 'reverb1', { type: 'hall', size: 3.5, mix: 0.3 })] }),
+  struck('Rosewood Bars', 'Keys', 'A wooden-bar instrument somewhere between a marimba and a log drum: a Resonator shaped like a bar, heavily damped so only the low partials last.',
+    { shape: 'bar', strike: 0.6, decay: 1.1, damping: 0.75, bright: 0.7, position: 0.5, release: 0.6, width: 0.4, level: 1.7 }, { volume: 0.42, fx: [mod('reverb', 'reverb1', { type: 'room', size: 1.2, mix: 0.18 })] }),
+  struck('Tower Bell', 'Bell', 'A big bell with a bell\'s own partials (hum, prime, tierce, quint, nominal): low notes toll for half a minute. Play it low and slow; chords clash, as real bells do.',
+    { shape: 'bell', strike: 0.5, octave: -1, decay: 14, damping: 0.18, bright: 0.75, position: 0.23, release: 8, width: 0.7, level: 1.8 }, { voices: 6, fx: [mod('reverb', 'reverb1', { type: 'hall', size: 5, mix: 0.3 })] }),
+  struck('Steel Plate', 'Bell', 'A sheet of metal hit with a stick: a Resonator as a plate, its partials crowded and clangorous, with a little grit. Low notes are gongs, high ones are pans.',
+    { shape: 'plate', strike: 0.5, decay: 4, damping: 0.25, bright: 0.85, position: 0.19, spacing: 1.08, release: 1.5, width: 0.9, level: 1.8 }, { volume: 0.75, fx: [mod('shaper', 'shaper1', { curve: 'tube', drive: 2, tone: 9000, mix: 0.5, level: 0.8 }), mod('reverb', 'reverb1', { type: 'plate', size: 2.2, mix: 0.25 })] }),
+  {
+    name: 'Bowed Plate', type: 'Pad', voices: 6, volume: 0.7,
+    about: 'A metal plate stroked with a bow: noise fed steadily into a Resonator, so its partials swell and flicker instead of being struck. Slow to speak; the mod wheel squeezes the partials together.',
+    modules: [mod('noise', 'noise1', { level: 0.25 }), mod('filter', 'filter1', { type: 'bandpass', slope: '12', cutoff: 900, resonance: 0.5, keytrack: 0.8 }),
+      mod('amp', 'bow', { attack: 1.2, decay: 1, sustain: 1, release: 0.8, velocity: 0.4, level: 0.5 }),
+      mod('resonator', 'res1', { shape: 'plate', strike: 0, decay: 3, damping: 0.3, bright: 0.6, position: 0.27, release: 3, width: 1, level: 1.3 }),
+      mod('reverb', 'reverb1', { type: 'hall', size: 4.5, mix: 0.35 })],
+    audio: chain('noise1', 'filter1', 'bow', 'res1', 'reverb1', 'out'),
+    mod: [{ from: 'wheel', to: 'res1.pitch', amount: -200 }],
+  },
+  (() => {
+    const kit = based('808 Kit');
+    kit.modules.splice(1, 0, mod('resonator', 'res1', { shape: 'bell', strike: 0, tune: 'fixed', note: 48, decay: 3.5, damping: 0.35, bright: 0.6, release: 3.5, width: 0.9, mix: 0.45, level: 1 }));
+    const next = kit.audio.filter(c => c.from === 'drums1').map(c => c.to);
+    return { ...kit, name: 'Bell Tower Kit', volume: 0.5,
+      about: 'The 808 Kit played inside a bell: every drum sets a Resonator ringing on one note (C3; change Fixed note to the key of your song). Kicks toll, hats shimmer. Mix on the Resonator is how much bell.',
+      audio: [...kit.audio.filter(c => c.from !== 'drums1'), { from: 'drums1', to: 'res1' }, ...next.map(to => ({ from: 'res1', to }))] };
+  })(),
+  {
+    name: 'Prepared Piano', type: 'Keys', voices: 12, volume: 0.5,
+    about: 'The grand with bolts and rubber between its strings: each note also rings a short, clanging bar a fifth above it. Mix on the Resonator is how much hardware; its Semitones and Spacing change what\'s been put in the strings.',
+    modules: [mod('piano', 'piano1', { release: 0.8 }), mod('resonator', 'res1', { shape: 'bar', strike: 0, semi: 7, decay: 0.7, damping: 0.2, bright: 0.9, position: 0.13, spacing: 0.8, release: 0.3, width: 0.5, mix: 0.5, level: 2 }),
+      mod('reverb', 'reverb1', { type: 'room', size: 1.4, mix: 0.2 })],
+    audio: chain('piano1', 'res1', 'reverb1', 'out'),
+  },
+  {
+    name: 'Pocket Sequencer', type: 'Lead', voices: 4, volume: 0.5,
+    about: 'Hold one key: a sixteen-step melody plays from it, in time with the song (start it on the beat). The tune is the Step sequence\'s sliders, a semitone a unit; change them while it plays. Glide slides between steps.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.5 }), mod('osc', 'osc2', { wave: 'square', octave: -1, level: 0.3 }),
+      steps('tune', '1/16', [0, 0, 12, 0, 7, 0, 10, 12, 0, 3, 12, 0, 5, 7, -2, -5]), mod('lfo', 'pluck', { wave: 'rise', sync: '1/16' }),
+      mod('filter', 'filter1', { cutoff: 2600, resonance: 4, keytrack: 0.4 }), mod('amp', 'amp1', { attack: 0.003, decay: 0.2, sustain: 1, release: 0.12, velocity: 0.4 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.3, mix: 0.18 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'delay1', 'out')],
+    mod: [{ from: 'tune', to: 'osc1.pitch', amount: 1200 }, { from: 'tune', to: 'osc2.pitch', amount: 1200 }, { from: 'pluck', to: 'filter1.cutoff', amount: -2200 }],
+  },
+  {
+    name: 'Five Against Eight', type: 'Bass', voices: 2, volume: 0.6,
+    about: 'Hold a low key: an eight-step bass line whose filter follows a five-step pattern, so the bright notes fall somewhere new each bar and it only repeats after five. Two Step sequences of different lengths.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.6 }), mod('osc', 'osc2', { wave: 'pulse', pw: 0.3, octave: -1, level: 0.35 }),
+      steps('line', '1/16', [0, 0, 12, 0, 0, 12, 0, 7]), steps('tone', '1/16', [12, -6, 3, -12, 6], { glide: 0.15 }), mod('lfo', 'pluck', { wave: 'rise', sync: '1/16' }),
+      mod('filter', 'filter1', { cutoff: 700, resonance: 6, keytrack: 0.3 }), mod('drive', 'drive1', { amount: 0.3 }), mod('amp', 'amp1', { attack: 0.003, decay: 0.2, sustain: 1, release: 0.1, velocity: 0.4 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'drive1', 'amp1', 'out')],
+    mod: [{ from: 'line', to: 'osc1.pitch', amount: 1200 }, { from: 'line', to: 'osc2.pitch', amount: 1200 }, { from: 'tone', to: 'filter1.cutoff', amount: 2400 }, { from: 'pluck', to: 'filter1.cutoff', amount: -1500 }],
+  },
+  {
+    name: 'Robot Choir', type: 'Lead', voices: 6, volume: 0.45,
+    about: 'Hold a chord and it sings a line of vowels in eighths, in time with the song: a Step sequence moving the Vowel filter (-6 = A, -3 = E, 0 = I, 3 = O, 6 = U). Rewrite the words with its sliders.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 3, spread: 12, level: 0.6 }), mod('osc', 'osc2', { wave: 'pulse', pw: 0.25, octave: -1, level: 0.3 }),
+      steps('words', '1/8', [-6, 3, 0, -3, 6, 3, -6, 0], { glide: 0.35 }), mod('lfo', 'vib', { wave: 'sine', rate: 5.2, delay: 0.5 }),
+      mod('vowel', 'vowel1', { vowel: 2, resonance: 12 }), mod('amp', 'amp1', { attack: 0.03, decay: 0.3, sustain: 1, release: 0.25, velocity: 0.4, level: 0.4 }),
+      mod('chorus', 'chorus1', { mix: 0.3 }), mod('reverb', 'reverb1', { type: 'hall', size: 2.5, mix: 0.22 })],
+    audio: [{ from: 'osc1', to: 'vowel1' }, { from: 'osc2', to: 'vowel1' }, ...chain('vowel1', 'amp1', 'chorus1', 'reverb1', 'out')],
+    mod: [{ from: 'words', to: 'vowel1.vowel', amount: 4 }, { from: 'vib', to: 'osc1.pitch', amount: 12 }],
+  },
+  {
+    name: 'Morse Pad', type: 'Pad', voices: 8, volume: 0.6,
+    about: 'A warm pad chopped into a rhythm: a sixteen-step pattern of on and off (0 = on, -12 = off) on its level, in time with the song. Hold chords on the beat; redraw the rhythm with the steps.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 3, spread: 16, level: 0.5 }), mod('osc', 'osc2', { wave: 'triangle', octave: 1, fine: 6, level: 0.3 }),
+      steps('rhythm', '1/16', [0, -12, 0, 0, -12, 0, -12, -12, 0, 0, -12, 0, -12, 0, 0, -12], { glide: 0.12 }),
+      mod('filter', 'filter1', { cutoff: 2400, resonance: 1.5, keytrack: 0.4 }), mod('amp', 'amp1', { attack: 0.02, decay: 0.5, sustain: 1, release: 0.5, velocity: 0.3, level: 0.8 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.35, mix: 0.2 }), mod('reverb', 'reverb1', { type: 'hall', size: 3, mix: 0.2 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'delay1', 'reverb1', 'out')],
+    mod: [{ from: 'rhythm', to: 'amp1.level', amount: 0.8 }],
+  },
+  {
+    name: 'Dying Console', type: 'FX', voices: 6, volume: 0.7,
+    arp: { mode: 'up', rate: '1/16', octaves: 2, gate: 0.6 },
+    about: 'Hold a chord: a game console running out of battery. The arpeggio keeps going while a Global step sequence takes its bits away and gives them back, every bar.',
+    modules: [mod('osc', 'osc1', { wave: 'square', level: 0.5 }), mod('amp', 'amp1', { attack: 0.002, decay: 0.12, sustain: 0.4, release: 0.08, velocity: 0.3 }),
+      mod('crusher', 'crush1', { bits: 12, hold: 3, mix: 1 }),
+      mod('gseq', 'battery', { sync: '1/8', length: 8, glide: 0.5, s1: 0, s2: -3, s3: -6, s4: -8, s5: -10, s6: -10, s7: -7, s8: -3 }),
+      LIMIT(), mod('delay', 'delay1', { sync: '1/8.', feedback: 0.3, mix: 0.18 })],
+    audio: chain('osc1', 'amp1', 'crush1', 'limit1', 'delay1', 'out'),
+    mod: [{ from: 'battery', to: 'crush1.bits', amount: 12 }, { from: 'battery', to: 'crush1.hold', amount: -12 }],
+  },
+  (() => {
+    const p = based('Grand Piano');
+    return { ...p, name: 'Piano Snowfall', volume: 0.85,
+      about: 'The grand, with every note breaking into flakes that drift upward: a Grain delay replays what you played in small pieces an octave higher, and feeds them round to climb again. Play slowly and leave room.',
+      modules: [mod('piano', 'piano1'), mod('grains', 'grains1', { time: 0.3, scatter: 0.5, size: 0.14, density: 9, pitch: 12, jitter: 6, reverse: 0.3, feedback: 0.5, width: 1, mix: 0.4 }),
+        mod('reverb', 'hall', { type: 'hall', size: 4, damping: 0.4, mix: 0.3 })],
+      audio: chain('piano1', 'grains1', 'hall', 'out') };
+  })(),
+  (() => {
+    const p = based('FM Bell');
+    return { ...p, name: 'Scattered Bells', volume: 1,
+      about: 'Bells whose ringing comes apart: a Grain delay throws pieces of each note back from anywhere in the last two seconds, most of them backwards. One note becomes a small crowd.',
+      modules: [...p.modules.filter(m => m.type === 'fmop'), mod('grains', 'grains1', { time: 0.12, scatter: 1, size: 0.2, density: 14, pitch: 0, jitter: 8, reverse: 0.7, feedback: 0.35, width: 1, mix: 0.55 }),
+        mod('reverb', 'reverb1', { size: 4, mix: 0.3 })],
+      audio: [{ from: 'op2', to: 'op1' }, ...chain('op1', 'grains1', 'reverb1', 'out')] };
+  })(),
+  {
+    name: 'Stair Echo', type: 'Pluck', voices: 8, volume: 1,
+    about: 'A pluck whose echoes walk up a staircase: the echo is a Grain delay, and a Global step sequence moves its pitch up a fifth, then down a fifth (its steps are semitones). Each echo is shifted again, so they climb a fifth, then a ninth, as they fade. Play sparse notes in time.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.5 }), mod('osc', 'osc2', { wave: 'square', fine: 7, level: 0.25 }),
+      mod('env', 'env1', { attack: 0.001, decay: 0.18, sustain: 0, release: 0.15 }), mod('filter', 'filter1', { cutoff: 600, resonance: 2, keytrack: 0.6 }),
+      mod('amp', 'amp1', { attack: 0.002, decay: 0.35, sustain: 0, release: 0.2, velocity: 0.6 }),
+      mod('grains', 'grains1', { sync: '1/8', scatter: 0, size: 0.11, density: 18, pitch: 0, feedback: 0.85, width: 0.7, mix: 0.45 }),
+      mod('gseq', 'stairs', { sync: '1/4', length: 4, s1: 0, s2: 7, s3: 0, s4: -7 }), mod('reverb', 'reverb1', { type: 'room', size: 1.6, mix: 0.15 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'grains1', 'reverb1', 'out')],
+    mod: [{ from: 'env1', to: 'filter1.cutoff', amount: 4200 }, { from: 'stairs', to: 'grains1.pitch', amount: 12 }],
+  },
+  {
+    name: 'Held Cloud', type: 'Pad', voices: 8, volume: 0.9,
+    about: 'A soft pad dissolved into a cloud of grains. Push the mod wheel up and the cloud is held: it goes on with what it has, and you can play new notes over it. Wheel down lets it go.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 3, spread: 14, level: 0.45 }), mod('osc', 'osc2', { wave: 'sine', octave: 1, level: 0.25 }),
+      mod('filter', 'filter1', { cutoff: 1800, resonance: 1, keytrack: 0.5 }), mod('amp', 'amp1', { attack: 0.3, decay: 0.6, sustain: 0.9, release: 1.2, velocity: 0.3 }),
+      mod('grains', 'grains1', { time: 0.2, scatter: 0.7, size: 0.28, density: 22, pitch: 0, jitter: 7, reverse: 0.4, feedback: 0.3, width: 1, mix: 0.7 }),
+      mod('reverb', 'reverb1', { type: 'hall', size: 5, mix: 0.35 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'grains1', 'reverb1', 'out')],
+    mod: [{ from: 'wheel', to: 'grains1.hold', amount: 1 }],
+  },
+  {
+    name: 'Tape Left in the Sun', type: 'Keys', voices: 16, volume: 0.7,
+    about: 'A piano on a cassette that spent a summer on a dashboard: out of tune, dull, and its echo wavers in pitch as the tape drags. Slow chords suit it.',
+    modules: [mod('piano', 'piano1', { hardness: 0.5, strike: 0.6, detune: 9, release: 1.2 }), mod('filter', 'dull', { slope: '12', cutoff: 3200, resonance: 0.4, keytrack: 0.3 }),
+      mod('shaper', 'tape', { curve: 'tube', drive: 1.6, tone: 5000, mix: 0.6, level: 0.8 }),
+      mod('delay', 'echo', { mode: 'tape', time: 0.31, feedback: 0.35, tone: 2200, wobble: 1, mix: 0.3 }),
+      mod('glfo', 'drag', { wave: 'sine', rate: 0.37 }), mod('reverb', 'room', { type: 'room', size: 1.8, damping: 0.8, mix: 0.2 })],
+    audio: chain('piano1', 'dull', 'tape', 'echo', 'room', 'out'),
+    mod: [{ from: 'drag', to: 'echo.time', amount: 0.01 }],
+  },
+  {
+    name: 'Talking String', type: 'Pluck', voices: 8, volume: 0.6,
+    about: 'A plucked string that says a word: each note opens through a Vowel filter from "ah" towards "oo", a jaw harp crossed with a sitar. Harder notes say more; the mod wheel changes the word.',
+    modules: [mod('string', 'string1', { excite: 'pick', position: 0.08, brightness: 0.9, decay: 3.5, highs: 2.5, release: 0.25, velocity: 0.7, level: 1 }),
+      mod('env', 'mouth', { attack: 0.001, decay: 0.35, sustain: 0, release: 0.2, velocity: 0.5 }),
+      mod('vowel', 'vowel1', { vowel: 3.6, resonance: 9, mix: 0.9 }), mod('reverb', 'reverb1', { type: 'room', size: 1.5, mix: 0.18 })],
+    audio: chain('string1', 'vowel1', 'reverb1', 'out'),
+    mod: [{ from: 'mouth', to: 'vowel1.vowel', amount: -3.4 }, { from: 'wheel', to: 'vowel1.vowel', amount: -2 }],
+  },
+].map(cleanPatch);
+
+export const FACTORY = [...STARTERS, ...MORE, ...KITS, ...ARPS, ...STRANGE, ...NEWER, ...KEYS.map(cleanPatch)];
 
 // ---- collections: sounds that belong together (a genre, a set for one kind of track) ----
 // Factory collections are below; yours are saved instruments of kind 'collection':
@@ -1101,9 +1415,11 @@ export const COLLECTIONS = [
   { title: 'Hazy Nostalgia', about: 'Warped, slightly out-of-tune tape pads and leads, worn keys and dusty drums.',
     sounds: ['Warped Tape Pad', 'Nostalgic Lead', 'Lo-Fi Keys', 'Tape Choir', 'Dusty Kit', 'Elastic Bass', 'Environmental Marimba'] },
   { title: 'Self-Playing', about: 'Hold a key or a chord and they play a pattern by themselves, in time with the song: arpeggios, hopping basses, a stepped sequence, random computer bleeps, rippling chords, a chopped pad, a bouncing ball.',
-    sounds: ['Climbing Saws', 'Glass Rain', 'Chord Pulse', 'Rolling Bass', 'Thumb and Fingers', 'Octave Hopper', 'Staircase Sequence', 'Computer Room', 'Polyrhythm Chord', 'Gate Pad', 'Bouncing Ball', 'Pump Pad', 'Berlin Sequence'] },
+    sounds: ['Climbing Saws', 'Glass Rain', 'Chord Pulse', 'Rolling Bass', 'Thumb and Fingers', 'Saw Arp', 'Glass Arp', 'Blip Arp', 'Rubber Arp', 'Pocket Sequencer', 'Five Against Eight', 'Robot Choir', 'Morse Pad', 'Dying Console', 'Octave Hopper', 'Staircase Sequence', 'Computer Room', 'Polyrhythm Chord', 'Gate Pad', 'Bouncing Ball', 'Pump Pad', 'Berlin Sequence'] },
   { title: 'Strange Things', about: 'Illusions and oddities: tones that rise for ever, a chord that gathers out of a cluster, a modem, clicks that sing, swarms round your head, a glass you can freeze, bells that turn into drones, a piano backwards.',
     sounds: ['Endless Riser', 'Endless Faller', 'Big Arrival', 'Dial-Up', 'Geiger Choir', 'Orbiting Bees', 'Singing Glass', 'Risset Bells', 'Backwards Piano', 'Computer Room', 'Bouncing Ball', 'Speech Shards', 'Broken Radio'] },
+  { title: 'Struck, Stepped, Scattered', about: 'Sounds made with the Resonator (things that ring when struck: glasses, bars, bells, plates, a piano with bolts in it, a drum kit inside a bell), the Step sequence (melodies, rhythms and vowels that play themselves) and the Grain delay (notes that break into clouds).',
+    sounds: ['Glass Harp', 'Rosewood Bars', 'Tower Bell', 'Steel Plate', 'Bowed Plate', 'Bell Tower Kit', 'Prepared Piano', 'Pocket Sequencer', 'Five Against Eight', 'Robot Choir', 'Morse Pad', 'Dying Console', 'Piano Snowfall', 'Scattered Bells', 'Stair Echo', 'Held Cloud', 'Tape Left in the Sun', 'Talking String'] },
   { title: 'Grain Clouds', about: 'Recordings played as clouds of tiny grains: frozen pianos and choirs, slow-motion voices, a drum loop at any pitch, record crackle.',
     sounds: ['Frozen Piano', 'Bowed Cloud', 'Slow Motion Voice', 'Speech Shards', 'Beat Dust', 'Time Stretch Keys', 'Vinyl Dust', 'Grain Choir', 'Glass Cloud', 'Slow Music Box', 'Wind Grains', 'Crushed Grains', 'Shimmer Wash', 'Tape Choir'] },
 ].map(c => ({ ...c, factory: true, sounds: c.sounds.filter(n => FACTORY.some(p => p.name === n)).map(name => ({ name, mine: false })) }));

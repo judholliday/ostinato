@@ -1,6 +1,6 @@
 // Things that work sample by sample, run in an AudioWorklet (one module per AudioContext, loaded
 // on demand by ensureFx): the Bitcrusher, Stutter and Freeze effects (buildEffect in the engine)
-// and the String voice (buildVoice), plus the Rotary's speed changes.
+// and Grain delay, the String, Piano and Resonator voices (buildVoice), plus the Rotary's speed changes.
 const CODE = `
 // Bitcrusher: fewer bits (coarser steps) and a lower sample rate (each sample held for 'hold').
 class Crush extends AudioWorkletProcessor {
@@ -569,10 +569,250 @@ class Slew extends AudioWorkletProcessor {
   }
 }
 registerProcessor('ost-slew', Slew);
+
+// A piano note as a sum of decaying sines ("modes") fitted to recordings of a real piano
+// (tools/piano; the data is pianos/*.json). Each mode has its own frequency, decay rate, and level
+// and phase per channel, and is a two-pole resonator left ringing from its starting state:
+// y[n] = 2 r cos(w) y[n-1] - r^2 y[n-2], which is A r^n cos(w n + phase). Two multiplies a sample
+// per channel; a mode is dropped once it has fallen below -110 dBFS.
+// processorOptions: { modes: Float64Array [f, decay (1/s), ampL, phaseL, ampR, phaseR] * n, start (s),
+//   ramp (s the modes take to fade in), damper (s the damper takes to bring the note down 60 dB; 0 = none) }
+// The 'damp' parameter is the damper: above 0.5 it is on the strings (the key is up).
+class PianoVoice extends AudioWorkletProcessor {
+  static get parameterDescriptors() { return [{ name: 'damp', defaultValue: 0, automationRate: 'k-rate' }]; }
+  constructor({ processorOptions: p }) {
+    super();
+    const m = p.modes, n = m.length / 6;
+    this.start = Math.round((p.start || 0) * sampleRate);
+    this.c1 = new Float64Array(n); this.c2 = new Float64Array(n);
+    this.s = new Float64Array(n * 4);            // y[n-1], y[n-2] for left, then right
+    this.until = new Float64Array(n);            // samples after which the mode is inaudible
+    let k = 0;
+    for (let i = 0; i < n; i++) {
+      const f = m[i * 6], d = m[i * 6 + 1];
+      if (f >= 0.45 * sampleRate || !(d > 0)) continue;
+      const w = 2 * Math.PI * f / sampleRate, r = Math.exp(-d / sampleRate);
+      this.c1[k] = 2 * r * Math.cos(w); this.c2[k] = r * r;
+      for (let ch = 0; ch < 2; ch++) {
+        const A = 2 * m[i * 6 + 2 + ch * 2], ph = m[i * 6 + 3 + ch * 2];
+        this.s[k * 4 + ch * 2] = A / r * Math.cos(ph - w);               // y[-1]
+        this.s[k * 4 + ch * 2 + 1] = A / (r * r) * Math.cos(ph - 2 * w); // y[-2]
+      }
+      const a = 2 * Math.max(m[i * 6 + 2], m[i * 6 + 4]);
+      this.until[k] = a > 3e-6 ? Math.log(a / 3e-6) / d * sampleRate : 0;
+      k++;
+    }
+    this.n = k; this.t = 0;
+    this.ramp = Math.round((p.ramp || 0) * sampleRate);
+    this.dampK = p.damper > 0 ? Math.exp(-6.908 / (p.damper * sampleRate)) : 1;
+    this.env = 1;
+  }
+  process(_, outputs, params) {
+    const L = outputs[0][0], R = outputs[0][1] || L, N = L.length;
+    if (currentFrame + N <= this.start) return true;
+    const from = currentFrame < this.start ? this.start - currentFrame : 0;
+    const { c1, c2, s } = this;
+    let live = 0;
+    for (let k = 0; k < this.n; k++) {
+      if (this.t > this.until[k]) continue;
+      live++;
+      const a = c1[k], b = c2[k];
+      let l1 = s[k * 4], l2 = s[k * 4 + 1], r1 = s[k * 4 + 2], r2 = s[k * 4 + 3];
+      for (let i = from; i < N; i++) {
+        const l = a * l1 - b * l2; l2 = l1; l1 = l; L[i] += l;
+        const r = a * r1 - b * r2; r2 = r1; r1 = r; R[i] += r;
+      }
+      s[k * 4] = l1; s[k * 4 + 1] = l2; s[k * 4 + 2] = r1; s[k * 4 + 3] = r2;
+    }
+    if (this.t < this.ramp) for (let i = from, t = this.t; i < N && t < this.ramp; i++, t++) { const g = 0.5 - 0.5 * Math.cos(Math.PI * t / this.ramp); L[i] *= g; R[i] *= g; }
+    if (this.env < 1 || (params.damp[0] > 0.5 && this.dampK < 1)) {
+      const k = params.damp[0] > 0.5 ? this.dampK : 1;   // the damper lifted again (legato, pedal): what's left rings on
+      for (let i = from; i < N; i++) { L[i] *= this.env; R[i] *= this.env; this.env *= k; }
+      if (this.env < 1e-5) return false;
+    }
+    this.t += N - from;
+    return live > 0;
+  }
+}
+registerProcessor('ost-piano', PianoVoice);
+// Resonator: a bank of two-pole resonators (the "modes" of a bar, a bell, a glass…) set ringing
+// by whatever comes in. Mode k rings at freq × ratio[k]^spacing, for decay / (its ratio)^(2 × damping)
+// seconds (60 dB), and is set off at (its ratio)^(-2 × (1 - bright)) × |sin(pi (k+1) position)|
+// (struck at a node, a mode stays silent). Each is y[n] = 2r cos(w) y[n-1] - r^2 y[n-2] + g (x[n] - x[n-2]):
+// the two zeros keep its gain away from the resonance flat whatever its pitch. g = level × (1 - r)^0.25,
+// a middle course: a short hit comes out a little quieter as the decay grows, steady noise a little
+// louder (each about 8 dB between 0.3 s and 10 s), and a steady tone exactly on a mode much louder,
+// which the ceiling at the end catches.
+// 'damp' above 0.5 (the key is up) makes the decay 'release' if that's shorter. Modes alternate
+// left and right by 'width'. It can also strike itself: at 'start' a pulse of 'strike' × the
+// velocity goes in with the input, a raised cosine 0.15 ms wide at full velocity and 1.3 ms at
+// none (a softer mallet stays longer, so sets off fewer high partials), of the same area either
+// way. A fixed pulse, not one that scales with the note, so every key rings equally loud: a click
+// made from an oscillator is shorter the higher the key and lost 31 dB between C2 and C6.
+// processorOptions: { ratios: [..], start (s), vel (0-1), strike (0-1) }.
+const RES_GAIN = +(globalThis.RES_GAIN ?? 0.35); // a 30 ms noise burst at half level then peaks near 0.25 at Decay 2 s
+const RES_CEIL = 0.7;
+const RES_STRIKE = +(globalThis.RES_STRIKE ?? 8); // the strike's area in samples at Strike 1, full velocity
+class Resonator extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [['freq', 261.6], ['detune', 0], ['decay', 2], ['damping', 0.3], ['bright', 0.6], ['position', 0.31], ['spacing', 1], ['release', 1], ['width', 0.5], ['damp', 0]]
+      .map(([name, defaultValue]) => ({ name, defaultValue, automationRate: 'k-rate' }));
+  }
+  constructor({ processorOptions: o }) {
+    super();
+    this.ratios = (o && o.ratios) || [1];
+    const n = this.n = this.ratios.length;
+    this.c1 = new Float64Array(n); this.c2 = new Float64Array(n); this.g = new Float64Array(n);
+    this.gl = new Float64Array(n); this.gr = new Float64Array(n);
+    this.y1 = new Float64Array(n); this.y2 = new Float64Array(n);
+    this.d = new Float64Array(128); this.x1 = 0; this.x2 = 0;
+    this.key = ''; this.quiet = 0;
+    this.pulse = null; this.at = 0; this.start = Math.round(((o && o.start) || 0) * sampleRate);
+    const strike = (o && o.strike) || 0, vel = Math.min(1, Math.max(0, (o && o.vel) ?? 1));
+    if (strike > 0) {
+      const w = Math.max(3, Math.round((0.00015 + 0.00115 * (1 - vel)) * sampleRate)), a = RES_STRIKE * strike * (0.15 + 0.85 * vel ** 1.5);
+      this.pulse = Float64Array.from({ length: w }, (_, i) => a / w * (1 - Math.cos(2 * Math.PI * (i + 0.5) / w)));
+    }
+  }
+  setup(p) {
+    const f0 = p.freq[0] * 2 ** (p.detune[0] / 1200), T = p.damp[0] > 0.5 ? Math.min(p.decay[0], p.release[0]) : p.decay[0];
+    const tilt = 2 * (1 - p.bright[0]), width = p.width[0];
+    for (let k = 0; k < this.n; k++) {
+      const rel = this.ratios[k] ** p.spacing[0], f = f0 * rel;
+      if (!(f > 15 && f < 0.45 * sampleRate)) { this.c1[k] = this.c2[k] = this.g[k] = 0; continue; }
+      const tk = Math.max(0.005, Math.min(2 * T, T / rel ** (2 * p.damping[0])));
+      const r = Math.exp(-6.908 / (tk * sampleRate)), w = 2 * Math.PI * f / sampleRate;
+      this.c1[k] = 2 * r * Math.cos(w); this.c2[k] = r * r;
+      this.g[k] = RES_GAIN * (1 - r) ** 0.25 * Math.max(rel, 0.5) ** -tilt * Math.abs(Math.sin(Math.PI * (k + 1) * p.position[0]));
+      const a = ((k % 2 ? 1 : -1) * width * 0.8 + 1) * Math.PI / 4;
+      this.gl[k] = Math.cos(a) * Math.SQRT2; this.gr[k] = Math.sin(a) * Math.SQRT2;
+    }
+  }
+  process([inp], [out], p) {
+    const L = out[0], R = out[1] || out[0], N = L.length, a = inp[0], b = inp[1] || inp[0];
+    const key = [p.freq[0], p.detune[0], p.decay[0], p.damping[0], p.bright[0], p.position[0], p.spacing[0], p.release[0], p.width[0], p.damp[0] > 0.5].join();
+    if (key !== this.key) { this.key = key; this.setup(p); }
+    let d = this.d, x1 = this.x1, x2 = this.x2, loud = 0;
+    if (d.length < N) d = this.d = new Float64Array(N);
+    for (let i = 0; i < N; i++) {
+      let x = a ? (a[i] + b[i]) * 0.5 : 0;
+      if (this.pulse && currentFrame + i >= this.start) { x += this.pulse[this.at++]; if (this.at >= this.pulse.length) this.pulse = null; }
+      d[i] = x - x2; x2 = x1; x1 = x;
+      if (x > 1e-7 || x < -1e-7) loud = 1;
+    }
+    this.x1 = x1; this.x2 = x2;
+    L.fill(0); if (R !== L) R.fill(0);
+    if (!loud && this.quiet > 8 && !this.pulse) return false; // nothing coming in, nothing ringing, already struck
+    let e = 0;
+    for (let k = 0; k < this.n; k++) {
+      const g = this.g[k];
+      if (!g) continue;
+      const c1 = this.c1[k], c2 = this.c2[k], gl = this.gl[k], gr = this.gr[k];
+      let y1 = this.y1[k], y2 = this.y2[k];
+      for (let i = 0; i < N; i++) {
+        const y = c1 * y1 - c2 * y2 + g * d[i];
+        y2 = y1; y1 = y;
+        L[i] += y * gl; if (R !== L) R[i] += y * gr;
+      }
+      if (y1 < 1e-18 && y1 > -1e-18) { y1 = 0; y2 = 0; }
+      this.y1[k] = y1; this.y2[k] = y2;
+      e += y1 * y1 + y2 * y2;
+    }
+    // A ceiling: a steady tone sitting on a mode (or a long, loud drum) would otherwise drive it
+    // to many times full level, and it would stay there long after the key was up. When a block
+    // peaks above RES_CEIL the ringing itself is turned down to it (every mode's state, with this
+    // block's output eased down the same way), so what's heard afterwards decays from the ceiling.
+    let peak = 0;
+    for (const ch of R !== L ? [L, R] : [L]) for (let i = 0; i < N; i++) { const v = ch[i] < 0 ? -ch[i] : ch[i]; if (v > peak) peak = v; }
+    if (peak > RES_CEIL) {
+      const s = RES_CEIL / peak;
+      for (let k = 0; k < this.n; k++) { this.y1[k] *= s; this.y2[k] *= s; }
+      for (const ch of R !== L ? [L, R] : [L]) for (let i = 0; i < N; i++) {
+        const v = ch[i] * (1 + (s - 1) * (i + 1) / N);
+        ch[i] = v > 1 ? 1 + Math.tanh(v - 1) : v < -1 ? -1 - Math.tanh(-v - 1) : v;
+      }
+    }
+    this.quiet = e < 1e-12 && !loud ? this.quiet + 1 : 0;
+    return true;
+  }
+}
+registerProcessor('ost-resonator', Resonator);
+
+// Grain delay: the last 8 seconds of the input are kept, and 'density' times a second a grain
+// starts: 'size' seconds of it from 'time' ago (plus up to 2 s × 'scatter' more, at random), under
+// a Hann window, at 'pitch' semitones (± 'jitter' cents at random), backwards with probability
+// 'reverse', somewhere across the stereo field ('width'). The sum, levelled for how many grains
+// overlap (see 'even' below), goes out; their average, × 'feedback', goes back into what's kept. 'hold' above 0.5
+// stops taking sound in: the grains go on from what's there. A grain pitched up reads faster than
+// the sound arrives, so it starts far enough back never to reach the newest sample.
+class Grains extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [['time', 0.25], ['scatter', 0.3], ['size', 0.09], ['density', 20], ['pitch', 0], ['jitter', 0], ['reverse', 0], ['feedback', 0.3], ['width', 0.8], ['hold', 0]]
+      .map(([name, defaultValue]) => ({ name, defaultValue, automationRate: 'k-rate' }));
+  }
+  constructor() {
+    super();
+    this.len = Math.ceil(8 * sampleRate);
+    this.b = [new Float32Array(this.len), new Float32Array(this.len)];
+    this.w = 0; this.next = 0; this.grains = []; this.idle = this.len;
+  }
+  spawn(p, hold) {
+    const len = Math.max(64, Math.round(p.size[0] * sampleRate));
+    const rate = 2 ** ((p.pitch[0] + (Math.random() * 2 - 1) * p.jitter[0] / 100) / 12), rev = Math.random() < p.reverse[0];
+    let d = (Math.max(0.005, p.time[0]) + Math.random() * p.scatter[0] * 2) * sampleRate;
+    const span = len * rate + 4; // how much of what's kept the grain reads
+    if (rev) d = Math.min(d, this.len - span - 4);
+    else d = Math.min(this.len - 8, Math.max(d, hold ? span : span - len));
+    const pan = (Math.random() * 2 - 1) * p.width[0], a = (pan + 1) * Math.PI / 4;
+    this.grains.push({ pos: this.w - d, rate: rev ? -rate : rate, t: 0, len, gl: Math.cos(a) * Math.SQRT2, gr: Math.sin(a) * Math.SQRT2 });
+  }
+  process([inp], [out], p) {
+    const L = out[0], R = out[1] || out[0], N = L.length, a = inp[0], b = inp[1] || inp[0];
+    const hold = p.hold[0] > 0.5, fb = Math.min(0.95, Math.max(0, p.feedback[0])), every = sampleRate / Math.max(0.5, p.density[0]);
+    // Levelling for the grains that overlap (their windows' sum, w): grains from scattered places
+    // add up like noise (÷ √w); with no Scatter or Pitch spread they are copies of one moment and
+    // add up fully (÷ w; measured +9 dB without this, at 80 a second, half a second long).
+    const even = 1 - 0.5 * Math.min(1, p.scatter[0] * 20 + p.jitter[0] / 25), len = this.len, b0 = this.b[0], b1 = this.b[1];
+    let loud = false;
+    if (a) for (let i = 0; i < N; i += 16) if (a[i] > 1e-7 || a[i] < -1e-7) { loud = true; break; }
+    if (loud) this.idle = 0;
+    if (!hold && this.idle > len + sampleRate) { L.fill(0); if (R !== L) R.fill(0); this.grains.length = 0; return true; } // nothing kept but silence
+    const w2 = 2 * Math.PI;
+    for (let i = 0; i < N; i++) {
+      if (--this.next <= 0) { this.spawn(p, hold); this.next += every * (0.5 + Math.random()); }
+      let l = 0, r = 0, wl = 0, wr = 0;
+      for (let k = this.grains.length - 1; k >= 0; k--) {
+        const g = this.grains[k];
+        let x = g.pos % len; if (x < 0) x += len;
+        const j = x | 0, f = x - j, j2 = j + 1 === len ? 0 : j + 1;
+        const win = 0.5 - 0.5 * Math.cos(w2 * g.t / g.len);
+        l += (b0[j] + (b0[j2] - b0[j]) * f) * win * g.gl;
+        r += (b1[j] + (b1[j2] - b1[j]) * f) * win * g.gr;
+        wl += win * g.gl; wr += win * g.gr;
+        g.pos += g.rate;
+        if (++g.t >= g.len) this.grains.splice(k, 1);
+      }
+      const norm = (0.375 * (wl + wr)) ** -even;
+      L[i] = norm < 1 ? l * norm : l; if (R !== L) R[i] = norm < 1 ? r * norm : r;
+      if (!hold) {
+        // What goes back in is the grains' weighted average, never their sum: grains of a steady
+        // tone can line up and add to several times its level, and at high Feedback the cloud then
+        // fed itself for ever (measured: +7 dB and still there 6 s after the note). An average
+        // can't exceed what was kept, so every pass is quieter by at least Feedback.
+        b0[this.w] = (a ? a[i] : 0) + fb * Math.tanh(l / Math.max(1, wl));
+        b1[this.w] = (b ? b[i] : 0) + fb * Math.tanh(r / Math.max(1, wr));
+        this.w = this.w + 1 === len ? 0 : this.w + 1;
+      }
+    }
+    if (!hold) this.idle += N;
+    return true;
+  }
+}
+registerProcessor('ost-grains', Grains);
 `;
 
-export const WORKLET_FX = ['crusher', 'stutter', 'freeze', 'resonance'];
-export const WORKLET_VOICES = ['string']; // voice modules that need the worklet
+export const WORKLET_FX = ['crusher', 'stutter', 'freeze', 'resonance', 'grains'];
+export const WORKLET_VOICES = ['string', 'piano', 'resonator']; // voice modules that need the worklet
 export const WORKLET_HELPED = ['rotary']; // effects that work without it, better with it (rebuilt once it has loaded)
 const loaded = new WeakMap(); // AudioContext -> Promise, then true once ready
 export function ensureFx(ac) {

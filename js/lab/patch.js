@@ -69,6 +69,52 @@ const unsynced = p => !p.sync || p.sync === 'off';
 export const VOWELS = [[800, 1150, 2900], [400, 1600, 2700], [350, 2300, 3000], [450, 800, 2830], [325, 700, 2530]];
 export const FORMANT_GAINS = [1, 0.63, 0.32];
 
+// The Resonator's shapes: each rings at these multiples of its pitch (its partials). String and
+// tube are harmonic (a tube closed at one end has only the odd ones); the others are the modes
+// of the thing named: a bar free at both ends (1 : 2.757 : 5.404 : 8.933…, Euler-Bernoulli), a church bell
+// (hum, prime, tierce, quint, nominal…, the prime at the pitch), a wine glass (measured sets run
+// about 1 : 2.3 : 4.3 : 6.6 : 9.4; higher ones continued the same way, an estimate), a square
+// plate held at its edges ((m² + n²)/2) and a drum skin (zeros of the Bessel functions).
+export const RES_SHAPES = ['string', 'tube', 'bar', 'bell', 'glass', 'plate', 'drum'];
+const RES_TABLES = {
+  bell: [0.5, 1, 1.183, 1.506, 2, 2.514, 2.662, 3.011, 4.166, 5.433, 6.796, 8.215],
+  glass: [1, 2.32, 4.25, 6.63, 9.38, 12.5, 15.9, 19.6, 23.6, 27.9, 32.5],
+  drum: [1, 1.593, 2.136, 2.296, 2.653, 2.917, 3.155, 3.5, 3.598, 3.647, 4.059, 4.131, 4.23, 4.601, 4.61, 4.832, 4.903, 5.083, 5.131],
+};
+export function resonatorRatios(shape, n = 24) {
+  if (RES_TABLES[shape]) return RES_TABLES[shape].slice(0, n);
+  if (shape === 'plate') {
+    const set = new Set();
+    for (let a = 1; a <= 9; a++) for (let b = a; b <= 9; b++) set.add((a * a + b * b) / 2);
+    return [...set].sort((x, y) => x - y).slice(0, n);
+  }
+  const beam = i => [4.73004, 7.85320, 10.99561][i] ?? (2 * i + 3) * Math.PI / 2; // roots of cos(b)cosh(b) = 1
+  return Array.from({ length: n }, (_, i) => (shape === 'tube' ? 2 * i + 1 : shape === 'bar' ? (beam(i) / beam(0)) ** 2 : i + 1));
+}
+
+// Step sequences (the `seq` and `gseq` modules): up to 16 steps, each -12 to 12 (a twelfth of the
+// modulation's amount each, so an amount of 1200 cents on a pitch makes them semitones).
+export const SEQ_STEPS = 16;
+// One cycle of a step sequence as a curve of `per` points a step, -1 to 1: each step holds its
+// value, and over the last `glide` of it slides to the next one's (the last to the first's).
+export function stepCurve(p, per = 64) {
+  const L = Math.max(1, Math.min(SEQ_STEPS, Math.round(p.length) || 1)), g = Math.min(1, Math.max(0, +p.glide || 0));
+  const v = k => (+p[`s${(k % L) + 1}`] || 0) / 12, c = new Float32Array(L * per);
+  for (let k = 0; k < L; k++) for (let j = 0; j < per; j++) {
+    const f = j / per, t = g > 0 && f > 1 - g ? (f - (1 - g)) / g : 0;
+    c[k * per + j] = v(k) + (v(k + 1) - v(k)) * t;
+  }
+  return c;
+}
+const seqParams = () => [
+  choice('sync', 'Step length', SYNC, '1/16', { help: 'How long each step lasts, as a note length at the song\'s tempo; off = the Rate below' }),
+  num('rate', 'Rate', 0.1, 40, 8, { unit: 'steps/s', curve: 'log', showIf: unsynced }),
+  num('length', 'Steps', 1, SEQ_STEPS, 8, { step: 1, help: 'How many steps before it starts again' }),
+  num('glide', 'Glide', 0, 1, 0, { help: 'How much of each step is spent sliding to the next: 0 = jumps, 1 = always sliding' }),
+  num('depth', 'Depth', 0, 1, 1),
+  ...Array.from({ length: SEQ_STEPS }, (_, k) => num(`s${k + 1}`, `Step ${k + 1}`, -12, 12, [0, 12, 7, 12, 0, 12, 3, 7][k] ?? 0, { step: 1, showIf: p => p.length > k })),
+];
+
 // Every module type: what it's called, whether it runs per note, its connections, its settings,
 // and which settings can be modulated (with the units and range of a modulation amount).
 export const MODULES = {
@@ -141,6 +187,19 @@ export const MODULES = {
     ],
     targets: { pitch: { unit: 'cents', min: -4800, max: 4800 }, level: { min: -1, max: 1 } },
   },
+  piano: {
+    label: 'Piano', scope: 'voice', audioOut: true,
+    help: 'A grand piano rebuilt from recordings of a real one (a Steinway model B, from the University of Iowa\'s Musical Instrument Samples): each note is the sum of its partials, every one ringing at the pitch, level and rate measured on the recording, plus the recorded strike of the hammer. Thirty notes were measured; the keys between them use their neighbour\'s. Stereo. Put a Pedal resonance and a reverb after it.',
+    params: [
+      num('octave', 'Octave', -2, 2, 0, { step: 1 }),
+      num('strike', 'Strike', 0, 1.5, 1, { help: 'How much of the hammer\'s recorded strike is added to the ringing partials (1 = as recorded; 0 = the partials alone, softer at the start)' }),
+      num('velocity', 'Velocity', 0, 1, 1, { help: 'How much playing harder makes it louder and brighter: 1 = the piano\'s own range (about 25 dB from soft to loud), 0 = always loud' }),
+      num('hardness', 'Hammer', 0, 1, 1, { help: 'How hard the hammers\' felt is: 1 = as recorded; lower gives the darker tone of soft playing at the same loudness (a felted or worn-in piano)' }),
+      num('detune', 'Out of tune', 0, 30, 0, { unit: 'cents', help: 'Each note as three strings tuned this far apart, more on some keys than others: a few cents shimmers, 10 and up is a honky-tonk' }),
+      num('release', 'Damper', 0.3, 4, 1, { curve: 'log', help: 'How quickly the damper stops a note when you let go (1 = a grand\'s: slower in the bass, and none above E6)' }),
+      num('level', 'Level', 0, 1, 0.8)],
+    targets: { level: { min: -1, max: 1 } },
+  },
   string: {
     label: 'String', scope: 'voice', audioOut: true,
     help: 'A physical model of a string: plucked by a finger, a pick, or struck by a felt piano hammer, ringing at the note\'s pitch. Damping darkens it as it rings, Stiffness sharpens its upper partials as on a piano, several strings per note beat against each other. For pianos, guitars, harps, harpsichords and clavs. A piano also needs a Soundboard after it.',
@@ -206,6 +265,12 @@ export const MODULES = {
       num('phase', 'Start at', 0, 1, 0, { rebuild: true, showIf: p => p.wave !== 'random', help: 'Where in its cycle the wave is when a note starts: 0 = the beginning, 0.5 = halfway through. Several LFOs at the same rate with different starts follow each other round' })],
     targets: { rate: { unit: 'Hz', min: -20, max: 20 }, depth: { min: -1, max: 1 } },
   },
+  seq: {
+    label: 'Step sequence', scope: 'voice', modOut: true,
+    help: 'A row of up to 16 steps that plays round and round in time with the song, starting with each note: a melody (on an oscillator\'s pitch with an amount of 1200 cents, each unit of a step is a semitone), a rhythm (on a level) or a pattern for a filter. Each step is -12 to 12, a twelfth of the modulation\'s amount each.',
+    params: seqParams(),
+    targets: { depth: { min: -1, max: 1 } },
+  },
   fmop: {
     label: 'FM operator', scope: 'voice', audioIn: true, audioOut: true,
     help: 'A sine at a ratio of the note\'s pitch, with its own envelope. Audio sent INTO it bends its frequency (FM): connect one operator into another for bells, electric pianos and basses.',
@@ -232,6 +297,28 @@ export const MODULES = {
     help: 'Multiplies the sound by a sine at a ratio of the note\'s pitch: metallic, bell-like, robotic.',
     params: [num('ratio', 'Ratio', 0.25, 16, 2.5, { curve: 'log' }), num('fine', 'Fine', -100, 100, 0, { unit: 'cents', step: 1 }), num('mix', 'Mix', 0, 1, 0.7)],
     targets: { mix: { min: -1, max: 1 } },
+  },
+  resonator: {
+    label: 'Resonator', scope: 'voice', audioIn: true, audioOut: true,
+    help: 'A tuned object that rings when struck: a bar, a bell, a glass, a plate, a drum skin, a string or a tube. Strike hits it at the start of each note; whatever you send into it sets it ringing too (short, noisy sounds work best: a noise burst, a drum kit, a piano note), and it answers at its own pitch. Follows the keys, or stays on one note so drums and samples ring a fixed pitch.',
+    params: [
+      choice('shape', 'Shape', RES_SHAPES, 'bar', { rebuild: true, help: 'What rings: string and tube are harmonic (a tube has only the odd partials, hollow); bar, bell, glass, plate and drum have the uneven partials of those things' }),
+      choice('tune', 'Pitch', ['keys', 'fixed'], 'keys', { help: 'Keys: it rings at the note you play. Fixed: always at the note below, whatever you play (for drum kits and samples)' }),
+      num('note', 'Fixed note', 24, 108, 60, { step: 1, unit: 'note', showIf: p => p.tune === 'fixed' }),
+      num('octave', 'Octave', -3, 3, 0, { step: 1 }),
+      num('semi', 'Semitones', -12, 12, 0, { step: 1 }),
+      num('strike', 'Strike', 0, 1, 0.5, { help: 'Strikes it at the start of every note, harder and brighter the harder you play, so it sounds with nothing connected: a mallet instrument by itself. 0 = only what you send in sets it ringing' }),
+      num('decay', 'Decay', 0.05, 20, 2, { unit: 's', curve: 'log', help: 'How long its lowest partial rings' }),
+      num('damping', 'Damping', 0, 1, 0.3, { help: 'How much sooner the higher partials die: 0 = all ring as long (glass, metal), 1 = the highs are gone at once (wood, skin)' }),
+      num('bright', 'Brightness', 0, 1, 0.6, { help: 'How strongly the higher partials are set off' }),
+      num('position', 'Position', 0.02, 0.5, 0.31, { help: 'Where it\'s struck: near the middle (0.5) every second partial is missing; near the end they all sound' }),
+      num('spacing', 'Spacing', 0.5, 2, 1, { curve: 'log', help: 'Squeezes the partials together (below 1) or pulls them apart (above): 1 = the shape\'s own' }),
+      num('release', 'Release', 0.02, 20, 1, { unit: 's', curve: 'log', help: 'How long it rings on after you let go (never longer than Decay)' }),
+      num('width', 'Stereo width', 0, 1, 0.5, { help: 'Partials alternate left and right by this much' }),
+      num('mix', 'Mix', 0, 1, 1, { help: '1 = only the ringing; lower lets the sound that struck it through too' }),
+      num('level', 'Level', 0, 2, 0.8),
+    ],
+    targets: { pitch: { unit: 'cents', min: -4800, max: 4800 }, mix: { min: -1, max: 1 }, level: { min: -2, max: 2 } },
   },
   drums: {
     label: 'Drum kit', scope: 'voice', audioOut: true,
@@ -277,7 +364,7 @@ export const MODULES = {
   },
   resonance: {
     label: 'Pedal resonance', scope: 'global', audioIn: true, audioOut: true,
-    help: 'The rest of a piano\'s strings, which ring along when the sustain pedal lifts their dampers: the shimmering halo of a pedalled piano. Only heard while the sustain pedal (or Caps Lock) is down. Put it after the strings, before the Soundboard.',
+    help: 'The rest of a piano\'s strings, which ring along when the sustain pedal lifts their dampers: the shimmering halo of a pedalled piano. Only heard while the sustain pedal (or Caps Lock) is down. Put it after the strings, before the Soundboard, or straight after a Piano module.',
     params: [num('amount', 'Amount', 0, 1, 0.5, { help: 'How much the other strings pick up' }),
       num('ring', 'Ring', 0.25, 3, 1, { curve: 'log', help: 'How long they ring (1 = a grand\'s strings)' })],
     targets: {},
@@ -369,6 +456,23 @@ export const MODULES = {
       num('mix', 'Mix', 0, 1, 1)],
     targets: { frozen: { min: 0, max: 1 } },
   },
+  grains: {
+    label: 'Grain delay', scope: 'global', audioIn: true, audioOut: true,
+    help: 'Turns whatever is playing into a cloud: it keeps the last few seconds and replays them as short overlapping grains, each from a little further back, at its own pitch, forwards or backwards. Feedback sends the grains round again (with Pitch, each pass climbs or falls). Hold stops listening and keeps the cloud going on what it has.',
+    params: [
+      sync('the delay'), num('time', 'Delay', 0.02, 2, 0.25, { unit: 's', curve: 'log', showIf: unsynced, help: 'How far back the grains are taken from' }),
+      num('scatter', 'Scatter', 0, 1, 0.3, { help: 'How much further back, at random, each grain may come from (1 = anywhere in the last 2 s more): 0 keeps the rhythm, 1 smears it' }),
+      num('size', 'Grain size', 0.01, 0.5, 0.09, { unit: 's', curve: 'log' }),
+      num('density', 'Density', 1, 80, 20, { unit: '/s', curve: 'log', help: 'Grains per second' }),
+      num('pitch', 'Pitch', -24, 24, 0, { unit: 'st', step: 1, help: 'Every grain shifted by this much' }),
+      num('jitter', 'Pitch spread', 0, 1200, 0, { unit: 'cents', step: 1, help: 'Each grain\'s pitch varies at random by up to this much' }),
+      num('reverse', 'Reverse', 0, 1, 0, { help: 'How many of the grains play backwards' }),
+      num('feedback', 'Feedback', 0, 0.9, 0.3, { help: 'How much of the cloud goes back in to be grained again' }),
+      num('width', 'Stereo width', 0, 1, 0.8),
+      choice('hold', 'Hold', ['off', 'on'], 'off', { help: 'On: stops taking in new sound and keeps making grains from what it has' }),
+      num('mix', 'Mix', 0, 1, 0.5)],
+    targets: { time: { unit: 's', min: -2, max: 2 }, pitch: { unit: 'st', min: -24, max: 24 }, density: { unit: '/s', min: -80, max: 80 }, feedback: { min: -0.9, max: 0.9 }, hold: { min: 0, max: 1 }, mix: { min: -1, max: 1 } },
+  },
   scanner: {
     label: 'Organ vibrato', scope: 'global', audioIn: true, audioOut: true,
     help: 'The tonewheel organ\'s scanner vibrato and chorus: a short delay line swept up and back about seven times a second. V1–V3 = vibrato, more each step; C1–C3 = the same mixed with the dry sound (the chorus jazz players leave on). Put it straight after the Drawbar organ, before the Rotary.',
@@ -389,6 +493,12 @@ export const MODULES = {
     help: 'One LFO for the whole sound (not one per note), for moving effects: sweep a delay\'s mix, a phaser\'s rate, a bitcrusher\'s bits… Drag from its dot to an effect\'s setting.',
     params: [choice('wave', 'Wave', ['sine', 'triangle', 'square', 'saw'], 'sine'), sync('each cycle'), num('rate', 'Rate', 0.02, 20, 0.5, { unit: 'Hz', curve: 'log', showIf: unsynced }), num('depth', 'Depth', 0, 1, 1)],
     targets: { rate: { unit: 'Hz', min: -10, max: 10 }, depth: { min: -1, max: 1 } },
+  },
+  gseq: {
+    label: 'Global step sequence', scope: 'global', modOut: true,
+    help: 'A step sequence for the whole sound (not one per note), for moving effects in a pattern: a bitcrusher\'s bits, a delay\'s mix, a grain delay\'s pitch… It keeps running, so it isn\'t restarted by notes. Each step is -12 to 12, a twelfth of the modulation\'s amount each.',
+    params: seqParams(),
+    targets: { depth: { min: -1, max: 1 } },
   },
   rack: {
     label: 'Effect rack', scope: 'global', audioIn: true, audioOut: true,
@@ -426,11 +536,11 @@ export const SOURCES = { vel: { label: 'Velocity', scope: 'voice' }, wheel: { la
 export const paramOf = (type, key) => MODULES[type]?.params.find(p => p.key === key) || null;
 
 // The setting a modulation dropped on a module most likely means (marked in the patch diagram).
-const DEFAULT_TARGET = { sampler: 'pitch', osc: 'pitch', noise: 'level', filter: 'cutoff', amp: 'level', lfo: 'depth', fmop: 'fm', ring: 'mix', space: 'x' };
+const DEFAULT_TARGET = { sampler: 'pitch', osc: 'pitch', noise: 'level', filter: 'cutoff', amp: 'level', lfo: 'depth', fmop: 'fm', ring: 'mix', space: 'x', resonator: 'pitch', grains: 'mix' };
 export const defaultTarget = type => (MODULES[type]?.targets[DEFAULT_TARGET[type]] ? DEFAULT_TARGET[type] : Object.keys(MODULES[type]?.targets || {})[0] || null);
 // What a bypassed module does: effects and shapers pass the sound through; sources and
 // modulators go quiet.
-export const isSource = type => ['osc', 'noise', 'fmop', 'drums', 'sampler', 'granular', 'string', 'organ'].includes(type);
+export const isSource = type => ['osc', 'noise', 'fmop', 'drums', 'sampler', 'granular', 'string', 'piano', 'organ'].includes(type);
 
 function cleanValue(spec, v) {
   if (spec.kind === 'choice') return spec.choices.includes(String(v)) ? String(v) : spec.def;

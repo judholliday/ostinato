@@ -5,7 +5,7 @@
 //   const synth = new LabSynth(audioContext, destinationNode);
 //   synth.setPatch(patch);
 //   synth.play(60, 100, synth.atTime(performance.now()), 0.5);   // or noteOn / noteOff
-import { MODULES, isSource, zoneFor, DRAWBAR_HARMONIC, syncBeats, VOWELS, FORMANT_GAINS, arpOrder } from './patch.js';
+import { MODULES, isSource, zoneFor, DRAWBAR_HARMONIC, syncBeats, VOWELS, FORMANT_GAINS, arpOrder, resonatorRatios, stepCurve } from './patch.js';
 import { ALIASES, padSoundKey } from './drums.js';
 import { ensureFx, fxReady, WORKLET_FX, WORKLET_VOICES, WORKLET_HELPED } from './fxworklet.js';
 import { fft } from '../core/spectral.js';
@@ -52,9 +52,33 @@ function assets(ac) {
   const H = 64, ri = new Float32Array(H + 1);
   for (let k = 1; k <= H; k++) ri[k] = -2 / (Math.PI * k);
   const rise = ac.createPeriodicWave(new Float32Array(H + 1), ri);
-  a = { noise, comparator, steps, cosine, rise, drives: new Map() };
+  // Step sequences: one cycle as a straight ramp from -1 to 1, which a wave shaper holding the steps
+  // turns into the pattern (stepSeq). Long, so the jump back at the end is over within a sample.
+  const ramp = ac.createBuffer(1, RAMP, ac.sampleRate), rd = ramp.getChannelData(0);
+  for (let i = 0; i < RAMP; i++) rd[i] = -1 + 2 * i / RAMP;
+  a = { noise, comparator, steps, cosine, rise, ramp, drives: new Map() };
   shared.set(ac, a);
   return a;
+}
+const RAMP = 65536;
+// A step sequence (the `seq` and `gseq` modules): the ramp buffer, looped once per cycle, through
+// a wave shaper whose curve is the steps (patch.js stepCurve), then Depth. The curve can be
+// swapped while it runs, so steps can be changed under sounding notes. `stepsPerSec()` gives the
+// rate now (from the tempo when synced); `now()` the module's settings now.
+function stepSeq(ac, a, now, stepsPerSec) {
+  const osc = ac.createBufferSource(), shaper = ac.createWaveShaper(), depth = ac.createGain();
+  osc.buffer = a.ramp;
+  osc.loop = true;
+  const rate = () => stepsPerSec() / Math.max(1, Math.round(now().length)) * RAMP / ac.sampleRate;
+  osc.playbackRate.value = rate();
+  shaper.curve = stepCurve(now());
+  depth.gain.value = now().depth;
+  osc.connect(shaper).connect(depth);
+  const rerate = () => osc.playbackRate.setTargetAtTime(rate(), ac.currentTime, 0.02);
+  const recurve = () => { shaper.curve = stepCurve(now()); };
+  const set = { rate: rerate, sync: rerate, _tempo: rerate, length: () => { recurve(); rerate(); }, glide: recurve, depth: v => depth.gain.setTargetAtTime(v, ac.currentTime, 0.02) };
+  for (const k of Object.keys(now())) if (/^s\d+$/.test(k)) set[k] = recurve;
+  return { osc, shaper, depth, set };
 }
 // The vowel filter: formant k's frequency (Hz) along the vowel position, as a wave shaper's curve
 // (input -1…1 = vowel 0…4, A E I O U), moved by `shift` semitones. Cached.
@@ -257,6 +281,79 @@ export function fileBuffer(ac, file) {
   }
   return m.get(file);
 }
+// The Piano module's data (pianos/<name>.json and .strikes, made by tools/piano from recordings of a
+// real piano): loaded once, then the strikes as AudioBuffers per context. A key plays the nearest
+// fitted note, moved by at most a semitone and a half, at the piano's own tuning there.
+const pianoFiles = new Map(), pianoBuffers = new WeakMap();
+const PIANO_GAIN = 3;   // the recordings' own level is low: a loud middle C then peaks about where the String pianos' does
+const PIANO_HALO = 80;  // see the Pedal resonance effect
+export function loadPiano(ac, name = 'steinway-b') {
+  if (!pianoFiles.has(name)) {
+    pianoFiles.set(name, Promise.all([fetch(`pianos/${name}.json`).then(r => r.json()), fetch(`pianos/${name}.strikes`).then(r => r.arrayBuffer())])
+      .then(([data, raw]) => {
+        const pcm = new Int16Array(raw);
+        for (const d of data.notes) {
+          d.cents = 1200 * Math.log2(d.f0 / hz(d.note));
+          d.count = d.modes.length / 7;
+        }
+        return { ...data, pcm };
+      }).catch(() => { pianoFiles.delete(name); return null; }));
+  }
+  let m = pianoBuffers.get(ac);
+  if (!m) pianoBuffers.set(ac, m = new Map());
+  if (!m.has(name)) {
+    m.set(name, null);
+    return pianoFiles.get(name).then(data => {
+      if (!data) { m.delete(name); return null; }
+      const strikes = new Map(), buf = s => {
+        if (!s) return null;
+        const b = ac.createBuffer(2, s[1], data.rate), l = b.getChannelData(0), r = b.getChannelData(1), k = s[2] / 32767;
+        for (let i = 0, j = s[0] * 2; i < s[1]; i++) { l[i] = data.pcm[j++] * k; r[i] = data.pcm[j++] * k; }
+        return b;
+      };
+      for (const d of data.notes) strikes.set(d.note, { ff: buf(d.ff), pp: buf(d.pp) });
+      const piano = { notes: data.notes, strikes };
+      m.set(name, piano);
+      return piano;
+    });
+  }
+  return Promise.resolve(m.get(name));
+}
+const pianoReady = (ac, name = 'steinway-b') => pianoBuffers.get(ac)?.get(name) || null;
+// What one key press needs: the modes at this velocity, the fade-in, the damper's time, the strikes.
+// Velocity 120 is the loud recording, 30 the soft one; in between each partial's starting level
+// moves in dB along log(velocity) (a piano is linear after the hammer: playing softer only changes
+// how loud each partial starts). `tone` > 0 is una corda: softer felt, as if played a little softer.
+export function pianoNote(piano, note, vel, { velocity = 1, tone = 0, hardness = 1, detune = 0 } = {}) {
+  const ns = piano.notes;
+  let d = ns[0];
+  for (const q of ns) if (Math.abs(q.note - note) < Math.abs(d.note - note)) d = q;
+  const lo = [...ns].reverse().find(q => q.note <= note) || ns[0], hi = ns.find(q => q.note >= note) || ns[ns.length - 1];
+  const cents = hi === lo ? lo.cents : lo.cents + (hi.cents - lo.cents) * (note - lo.note) / (hi.note - lo.note);
+  const ratio = hz(note) * 2 ** (cents / 1200) / d.f0;
+  // Hammer (hardness) below 1 gives the softer playing's tone at the same loudness: the partials
+  // take their soft levels, and the level that costs overall is given back.
+  const felt = 1 - Math.max(0, Math.min(1, hardness));
+  const u = Math.max(-0.1, Math.min(1.7, velocity * Math.log(120 / Math.max(1, vel)) / Math.log(4) + tone + felt));
+  const back = 10 ** (-felt * d.soft / 20);
+  // Out of tune (detune, cents): the note three times over, as three strings tuned apart; how far
+  // apart differs from key to key, as on a neglected piano.
+  const k = Math.sin(note * 12.9898) * 43758.5453, wob = 0.6 + 0.8 * (k - Math.floor(k));
+  const copies = detune > 0 ? [-1, 0.25, 1].map(c => 2 ** (c * detune * wob / 1200)) : [1], share = detune > 0 ? 0.45 : 1;
+  const n = d.count, modes = new Float64Array(n * 6 * copies.length), m = d.modes;
+  copies.forEach((c, j) => {
+    for (let i = 0; i < n; i++) {
+      const g = 10 ** (u * m[i * 7 + 6] / 20) * back * share, o = (j * n + i) * 6;
+      modes[o] = m[i * 7] * ratio * c; modes[o + 1] = m[i * 7 + 1];
+      modes[o + 2] = m[i * 7 + 2] * g; modes[o + 3] = m[i * 7 + 3]; modes[o + 4] = m[i * 7 + 4] * g; modes[o + 5] = m[i * 7 + 5];
+    }
+  });
+  const u1 = Math.max(0, Math.min(1, u)), st = piano.strikes.get(d.note), lev = v => 10 ** (v * d.soft / 20) * back;
+  // the strike: the loud and the soft recordings' own, crossfaded; quieter still below the soft one
+  const strikes = [[st.ff, st.pp ? (1 - u1) * lev(Math.min(0, u)) : lev(u)], [st.pp, u1 * lev(Math.max(0, u - 1))]].filter(([b, g]) => b && g > 0);
+  return { modes, ratio, ramp: (d.ramp + (d.rampSoft - d.ramp) * u1) / 1000, strikes,
+    damper: note > 88 ? 0 : 0.12 + 0.5 * Math.max(0, (72 - note) / 36) };   // a grand has no dampers above about E6
+}
 // The Distortion module's curves, at a drive (1 = barely, 40 = a lot).
 function shaperCurve(type, drive) {
   const n = 2048, c = new Float32Array(n), d = Math.max(1, drive);
@@ -435,6 +532,26 @@ export async function renderSound(patch, note, hold, sampleRate = 44100, tail = 
   return out;
 }
 
+// The arpeggiators' clock: one 25 ms tick for every synth on the page that has keys held, from a
+// worker (browsers slow page timers to once a second in background tabs, not workers'), made once
+// and kept, with a page timer beside it in case the worker never starts. (Each synth made and
+// ended its own worker at first, one per run of notes.)
+const arpSynths = new Set();
+let arpWorker = null, arpTimer = null;
+const arpTick = () => { for (const s of arpSynths) { try { s.arpPump(); } catch (e) { console.error('arpeggiator', e); } } };
+function arpListen(synth, on) {
+  if (!on) { arpSynths.delete(synth); return; }
+  arpSynths.add(synth);
+  if (!arpWorker) {
+    try {
+      arpWorker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 25)'], { type: 'text/javascript' })));
+      arpWorker.onmessage = arpTick;
+      arpWorker.onerror = () => { arpWorker = null; };
+    } catch { arpWorker = null; }
+  }
+  arpTimer ??= setInterval(arpTick, 50);
+}
+
 export class LabSynth {
   constructor(ac, destination = ac.destination) {
     this.ac = ac;
@@ -487,6 +604,7 @@ export class LabSynth {
     }
     for (const k of this.samples.keys()) if (k.startsWith('sound:') && !sounds.has(k)) this.samples.delete(k);
     if ([...sounds.keys()].some(k => !this.samples.has(k))) loads.push(this.renderPadSounds());
+    if ((this.patch?.modules || []).some(m => m.type === 'piano') && !pianoReady(this.ac)) loads.push(loadPiano(this.ac));
     // Effects that need the worklet: load it, then rebuild the effects that waited for it.
     const fx = t => WORKLET_FX.includes(t) || WORKLET_HELPED.includes(t);
     const usesFx = (this.patch?.modules || []).some(m => fx(m.type) || WORKLET_VOICES.includes(m.type) || m.rack?.modules.some(e => fx(e.type)));
@@ -616,7 +734,7 @@ export class LabSynth {
     for (const m of this.patch.modules) {
       if (MODULES[m.type].scope !== 'global') continue;
       const now = () => this.patch.modules.find(x => x.id === m.id)?.params || m.params; // its settings as they are now
-      this.globals.set(m.id, m.type === 'glfo' ? this.buildGlobalLfo(m) : m.type === 'rack' ? this.buildRack(m) : this.buildEffect(m, now));
+      this.globals.set(m.id, m.type === 'glfo' ? this.buildGlobalLfo(m) : m.type === 'gseq' ? this.buildGlobalSeq(m) : m.type === 'rack' ? this.buildRack(m) : this.buildEffect(m, now));
     }
     // Modulation of effects: from the mod wheel or a Global LFO (global sources only; patch.js).
     this.globalMods = new Map();
@@ -651,6 +769,14 @@ export class LabSynth {
     const rerate = () => osc.frequency.setTargetAtTime(this.rateOf(now()), ac.currentTime, 0.05);
     return { out: depth, nodes: [osc, depth], set: { rate: rerate, sync: rerate, _tempo: rerate, depth: v => depth.gain.setTargetAtTime(v, ac.currentTime, 0.05) },
       targets: { rate: [osc.frequency], depth: [depth.gain] } };
+  }
+
+  // A Global step sequence: one for the whole sound, running from when the effects were built.
+  buildGlobalSeq(m) {
+    const now = () => this.patch.modules.find(x => x.id === m.id)?.params || m.params;
+    const s = stepSeq(this.ac, assets(this.ac), now, () => this.rateOf(now()));
+    if (!m.off) s.osc.start();
+    return { out: s.depth, nodes: [s.osc, s.shaper, s.depth], set: s.set, targets: { depth: [s.depth.gain] } };
   }
 
   // One effect: input → dry and wet → output, with `set` functions for its settings. `now()` gives
@@ -887,10 +1013,30 @@ export class LabSynth {
       g.pedal = node.parameters.get('pedal');
       g.held = [0, 1, 2, 3].map(i => node.parameters.get('held' + i));
       this.tellResonance(ac.currentTime);
-      input.connect(node).connect(wet);
-      g.nodes.push(node);
+      // Fed by a Piano module (finished sound, far smaller numbers than a String's bridge signal) it
+      // needs more input: set so the halo of a pedalled phrase sits about 12 dB under the notes at Amount 0.5.
+      const feeds = (id, seen = new Set()) => this.patch.audio.some(c => c.to === id && !seen.has(c.from) && (seen.add(c.from), this.patch.modules.find(x => x.id === c.from)?.type === 'piano' || feeds(c.from, seen)));
+      const fromPiano = feeds(m.id);   // straight from it, or through a filter or EQ
+      const drive = ac.createGain();
+      drive.gain.value = fromPiano ? PIANO_HALO : 1;
+      input.connect(drive).connect(node).connect(wet);
+      g.nodes.push(node, drive);
       g.set = { amount: v => to('amount', v), ring: v => to('ring', v) };
       mix(1, 1); // added to the strings, not instead of them
+    } else if (m.type === 'grains') {
+      // Grain delay (fxworklet.js 'ost-grains'); passes the sound through until the worklet has loaded.
+      if (!fxReady(ac)) { this.fxPending = true; mix(0, 1); return g; }
+      const node = new AudioWorkletNode(ac, 'ost-grains', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit' });
+      const to = (key, v) => node.parameters.get(key)?.setValueAtTime(v, ac.currentTime);
+      const keys = ['scatter', 'size', 'density', 'pitch', 'jitter', 'reverse', 'feedback', 'width'];
+      for (const k of keys) { to(k, p[k]); g.set[k] = v => to(k, v); }
+      const retime = () => to('time', this.timeOf(now()));
+      retime(); to('hold', p.hold === 'on' ? 1 : 0);
+      Object.assign(g.set, { time: retime, sync: retime, _tempo: retime, hold: v => to('hold', v === 'on' ? 1 : 0), mix: v => mix(v) });
+      input.connect(node).connect(wet);
+      g.nodes.push(node);
+      g.targets = { ...Object.fromEntries(['time', 'pitch', 'density', 'feedback', 'hold'].map(k => [k, [node.parameters.get(k)]])), mix: [wet.gain] };
+      mix(p.mix);
     } else if (WORKLET_FX.includes(m.type)) {
       // Bitcrusher, Stutter, Freeze (fxworklet.js). Until the worklet has loaded they pass the
       // sound through; loadSamples() rebuilds the effects once it has.
@@ -1133,15 +1279,26 @@ export class LabSynth {
     // Latched keys with no finger left on any key: a new key (a live one) starts a new set.
     if (to === Infinity && !a.holds.some(h => h.to === Infinity && !h.latched)) for (const h of a.holds) if (h.latched && h.to === Infinity) h.to = from;
     for (const h of a.holds) if (h.note === note && h.to === Infinity) h.to = from;
+    // The clock starts with this key if it isn't running, or if nothing is held between now and its
+    // next step: waiting for the old clock made a key played just after letting go start late, and
+    // a short tap (let go before that step) never sound at all.
+    if (a.next == null || (a.next > from && !a.holds.some(h => h.to > from && h.from < a.next))) { a.next = from; a.index = 0; }
     a.holds.push({ note, vel, from, to, seq: a.seq++ });
-    if (a.next == null) { a.next = from; a.index = 0; }
-    if (!this.offline()) { this.arpTicker(true); this.arpPump(); }
+    if (this.offline()) return;
+    this.arpTicker(true);
+    // Step once the caller is done, not now: a sequencer hands over a chord one note at a time, and
+    // stepping on the first would start the pattern with only that note held.
+    if (!a.soon) { a.soon = true; queueMicrotask(() => { a.soon = false; this.arpPump(); }); }
   }
   offline() { return typeof OfflineAudioContext !== 'undefined' && this.ac instanceof OfflineAudioContext; }
   arpPump(horizon = this.ac.currentTime + 0.12) {
     const a = this.arp, arp = this.patch?.arp;
     if (!arp) { a.holds = []; a.next = null; this.arpTicker(false); return; }
+    const step = syncBeats(arp.rate) * 60 / (this.tempo || 120), len = Math.max(0.02, step * arp.gate), now = this.ac.currentTime;
+    if (!(step > 0.005)) { a.next = null; return; } // no rate: nothing to step by (and the loop below would never end)
     while (a.next != null && a.next < horizon) {
+      // Fallen behind (the page was busy, or asleep): the missed steps are skipped, not all played at once.
+      if (a.next < now - 0.15) { const missed = Math.ceil((now - a.next) / step); a.next += missed * step; a.index += missed; continue; }
       const t = a.next, held = a.holds.filter(h => h.from <= t + 1e-4 && h.to > t + 1e-4);
       if (!held.length) {
         // Nobody's holding a key: wait for the next one, and start the pattern again there.
@@ -1150,30 +1307,23 @@ export class LabSynth {
         a.index = 0;
         continue;
       }
-      const step = syncBeats(arp.rate) * 60 / (this.tempo || 120), len = Math.max(0.02, step * arp.gate);
+      // All new keys since the last step (a sequencer's next chord, which starts as the last one ends): from the top.
+      if (a.heldSeqs && !held.some(h => a.heldSeqs.has(h.seq))) a.index = 0;
+      a.heldSeqs = new Set(held.map(h => h.seq));
       const order = arpOrder(held, arp);
-      if (arp.mode === 'chord') for (const h of held) this.playNote(h.note, h.vel, t, len);
-      else {
-        let k = a.index % order.length;
-        if (arp.mode === 'random') { k = Math.floor(Math.random() * order.length); if (k === a.last && order.length > 1) k = (k + 1) % order.length; a.last = k; }
-        this.playNote(order[k].note, order[k].vel, t, len);
-      }
+      let k = a.index % order.length;
+      if (arp.mode === 'random') { k = Math.floor(Math.random() * order.length); if (k === a.last && order.length > 1) k = (k + 1) % order.length; a.last = k; }
       a.index++;
-      a.next = t + step;
+      a.next = t + step; // before playing: a note that fails must not be tried again every tick
+      try {
+        if (arp.mode === 'chord') for (const h of held) this.playNote(h.note, h.vel, t, len);
+        else this.playNote(order[k].note, order[k].vel, t, len);
+      } catch (e) { console.error('arpeggiator', e); }
     }
-    const now = this.ac.currentTime;
     a.holds = a.holds.filter(h => h.to > now - 0.5);
     if (!a.holds.length && a.next == null) this.arpTicker(false);
   }
-  arpTicker(on) {
-    const a = this.arp;
-    if (!on) { a.ticker?.terminate(); clearInterval(a.timer); a.ticker = a.timer = null; return; }
-    if (a.ticker || a.timer) return;
-    try {
-      a.ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 25)'], { type: 'text/javascript' })));
-      a.ticker.onmessage = () => this.arpPump();
-    } catch { a.timer = setInterval(() => this.arpPump(), 25); }
-  }
+  arpTicker(on) { this.arp.ticking = on; arpListen(this, on); }
   arpOff() { this.arp.holds = []; this.arp.next = null; this.arpTicker(false); }
   arpUnlatch(t = this.ac.currentTime) { for (const h of this.arp.holds) if (h.latched && h.to === Infinity) h.to = t; this.arpPump(); }
 
@@ -1308,6 +1458,7 @@ export class LabSynth {
     gl.offset.value = 0;
     const pitchIn = param => { this.bendCents.connect(param); gl.connect(param); };
     const relParams = []; // the envelope params a release moves (legato can take it back)
+    const resonators = []; // [module id, the gain at its input]: closed at release when nothing before it ends the note
     const stops = []; // called with the voice's end time (granular voices stop making grains) // gated: something shapes the note's end (an Amp, an FM operator...)
     for (const m of patch.modules) {
       const p = m.params;
@@ -1509,6 +1660,31 @@ export class LabSynth {
           nodes[m.id] = { out, targets: { pitch: [node.parameters.get('detune')], level: [out.gain] } };
         } else nodes[m.id] = { out, targets: { pitch: [], level: [out.gain] } };
         set[`${m.id}.level`] = v => out.gain.setTargetAtTime(v, ac.currentTime, 0.01);
+      } else if (m.type === 'piano') {
+        // A piano note from modes fitted to recordings (fxworklet.js 'ost-piano'), plus the recorded
+        // strike. Silent until the worklet and the piano's data have loaded (loadSamples starts both).
+        gated = true;
+        const out = keep(ac.createGain()), piano = pianoReady(ac);
+        out.gain.value = p.level * PIANO_GAIN;
+        if (fxReady(ac) && piano) {
+          const key = Math.max(21, Math.min(108, note + 12 * p.octave));
+          const v = pianoNote(piano, key, vel, { velocity: p.velocity, tone: this.pedals?.soft ? 0.25 : 0, hardness: p.hardness, detune: p.detune });
+          const node = keep(new AudioWorkletNode(ac, 'ost-piano', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+            processorOptions: { modes: v.modes, start: t0, ramp: v.ramp, damper: v.damper * p.release } }));
+          node.connect(out);
+          for (const [buffer, g] of v.strikes) {
+            if (!(g * p.strike > 0)) continue;
+            const s = src(ac.createBufferSource()), sg = keep(ac.createGain());
+            s.buffer = buffer; s.playbackRate.value = v.ratio; sg.gain.value = g * p.strike;
+            s.connect(sg).connect(out);
+          }
+          const damp = node.parameters.get('damp');
+          offs.push(t => damp.setValueAtTime(1, t));
+          relParams.push(damp); // legato can take the damper back
+          tail = Math.max(tail, v.damper ? v.damper * p.release * 1.2 : 6);
+        }
+        set[`${m.id}.level`] = v => out.gain.setTargetAtTime(v * PIANO_GAIN, ac.currentTime, 0.01);
+        nodes[m.id] = { out, targets: { pitch: [], level: [out.gain] } };
       } else if (m.type === 'filter') {
         const f1 = keep(ac.createBiquadFilter()), f2 = p.slope === '24' ? keep(ac.createBiquadFilter()) : null;
         const fs = f2 ? [f1, f2] : [f1];
@@ -1578,6 +1754,43 @@ export class LabSynth {
         Object.assign(set, { [`${m.id}.rate`]: rerate, [`${m.id}.sync`]: rerate, [`${m.id}._tempo`]: rerate,
           [`${m.id}.depth`]: v => depth.gain.setTargetAtTime(v, ac.currentTime, 0.02) });
         nodes[m.id] = { out: fade, targets: { rate: [rate], depth: [depth.gain] }, scales: { rate: perHz } };
+      } else if (m.type === 'seq') {
+        // A step sequence, from its first step at the note's start.
+        const s = stepSeq(ac, a, () => m.params, () => this.rateOf(m.params));
+        src(s.osc); keep(s.shaper); keep(s.depth);
+        for (const [k, f] of Object.entries(s.set)) set[`${m.id}.${k}`] = f;
+        nodes[m.id] = { out: s.depth, targets: { depth: [s.depth.gain] } };
+      } else if (m.type === 'resonator') {
+        // A bank of tuned resonators (fxworklet.js 'ost-resonator') rung by the sound sent in, at
+        // the note's pitch or a fixed one. It rings on after the key is up (Release), so it counts
+        // as shaping the note's end. Passes only the dry part until the worklet has loaded.
+        gated = true;
+        const input = keep(ac.createGain()), gate = keep(ac.createGain()), dry = keep(ac.createGain()), wet = keep(ac.createGain()), out = keep(ac.createGain());
+        const f = () => hz(m.params.tune === 'fixed' ? m.params.note : note, m.params.octave, m.params.semi);
+        input.connect(dry).connect(out);
+        wet.connect(out);
+        dry.gain.value = 1 - p.mix; wet.gain.value = p.mix; out.gain.value = p.level;
+        const targets = { pitch: [], mix: [wet.gain], level: [out.gain] };
+        if (fxReady(ac)) {
+          const node = keep(new AudioWorkletNode(ac, 'ost-resonator', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit',
+            processorOptions: { ratios: resonatorRatios(p.shape), start: t0, vel: vel / 127, strike: p.strike } }));
+          const to = (key, v) => node.parameters.get(key).setValueAtTime(v, ac.currentTime);
+          const keys = ['decay', 'damping', 'bright', 'position', 'spacing', 'release', 'width'];
+          for (const k of keys) { to(k, p[k]); set[`${m.id}.${k}`] = v => to(k, v); }
+          to('freq', f());
+          for (const k of ['tune', 'note', 'octave', 'semi']) set[`${m.id}.${k}`] = () => to('freq', f());
+          if (p.tune !== 'fixed') pitchIn(node.parameters.get('detune'));
+          input.connect(gate).connect(node).connect(wet);
+          const damp = node.parameters.get('damp');
+          offs.push(t => damp.setValueAtTime(1, t));
+          relParams.push(damp);
+          tail = Math.max(tail, Math.min(p.decay, p.release) * 1.2);
+          targets.pitch = [node.parameters.get('detune')];
+          resonators.push([m.id, gate]);
+        }
+        Object.assign(set, { [`${m.id}.mix`]: v => { dry.gain.setTargetAtTime(1 - v, ac.currentTime, 0.02); wet.gain.setTargetAtTime(v, ac.currentTime, 0.02); },
+          [`${m.id}.level`]: v => out.gain.setTargetAtTime(v, ac.currentTime, 0.01) });
+        nodes[m.id] = { in: input, out, targets };
       } else if (m.type === 'fmop') {
         // A sine at ratio × the note's pitch with its own envelope. Audio arriving at its input
         // moves its frequency: deviation = input × fm depth × its frequency (so depth ≈ FM index).
@@ -1716,6 +1929,17 @@ export class LabSynth {
       from.out.connect(g);
       params.forEach(pm => g.connect(pm));
       set[`mod:${c.from}>${c.to}`] = v => g.gain.setTargetAtTime(v * k, ac.currentTime, 0.01);
+    }
+    // A Resonator fed by something that never ends by itself (a bare oscillator or noise) stops
+    // listening at release, so only its ringing is left; fed by an Amp, a drum, a string… it keeps
+    // listening, since those end the note themselves (a drum hit outlasts its key).
+    const ENDS = ['amp', 'fmop', 'string', 'piano', 'drums', 'organ', 'resonator'];
+    for (const [id, gate] of resonators) {
+      const shaped = (to, seen = new Set()) => patch.audio.some(c => c.to === to && !seen.has(c.from) && (seen.add(c.from),
+        ENDS.includes(patch.modules.find(x => x.id === c.from)?.type) || shaped(c.from, seen)));
+      if (shaped(id)) continue;
+      offs.push(t => gate.gain.setTargetAtTime(0, t, 0.01));
+      relParams.push(gate.gain);
     }
     // Without an Amp module, a note simply stops when released (with a tiny fade).
     if (!gated) { offs.push(t => exits.forEach(e => { e.gain.cancelScheduledValues(t); e.gain.setTargetAtTime(0, t, 0.008); })); relParams.push(...exits.map(e => e.gain)); }

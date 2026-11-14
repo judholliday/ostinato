@@ -1110,7 +1110,7 @@ $('#recordings').addEventListener('click', async e => {
 });
 
 // Typing notes while the panel has the focus: captured here, and played by the page underneath.
-attachQwerty({ active: () => prefs.midiIn === QWERTY, from: 'recorder', channel, onMode: text => toast(text),
+attachQwerty({ active: () => prefs.midiIn === QWERTY, from: 'recorder', channel, onMode: text => toast(text), drums: () => !!seq?.track?.drums,
   onMessage: (d, ts) => { captureEvent(d, ts); if ((d[0] & 0xf0) === 0x90 && d[2] > 0) { $('#led').className = 'keys-led ok'; clearTimeout(ledTimer); ledTimer = setTimeout(() => { $('#led').className = 'keys-led'; }, 300); } } });
 
 // Keeps "2 min ago" current.

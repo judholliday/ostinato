@@ -262,3 +262,12 @@ button .ic + *, button .ic { margin-right: 1px; }
 .top-transport .tkey small { display: none; }
 .top-transport .lcd-pos { display: inline-flex; align-items: center; font-size: 18px; min-width: 11ch; padding: 0 10px; justify-content: center; }
 .click-key #click-sum { display: none; }
+
+/* The computer keyboard's chord mode (js/core/qwerty.js): on screen while it's on. */
+.qwerty-chords {
+  position: fixed; left: 16px; bottom: 16px; z-index: 40;
+  font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  background: var(--lcd, #2a1e05); color: var(--lcd-text, #ffb000);
+  border: 1px solid var(--line, #555); box-shadow: 0 4px 16px rgba(0, 0, 0, .3);
+}
+.qwerty-chords[hidden] { display: none; }

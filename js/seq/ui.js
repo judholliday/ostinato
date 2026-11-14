@@ -834,7 +834,7 @@ function thruOnly(data, at) {
 // The computer keyboard as MIDI in (core/qwerty.js): typed here, or on the Capture tab.
 const qwertyIn = { name: QWERTY };
 const onQwerty = (d, ts) => { if ((d[0] & 0xf0) === 0x90) noteSeen(qwertyIn, d[1]); onKeys(d, ts); };
-attachQwerty({ active: () => prefs.keysIn === QWERTY && onScreen(), onMessage: onQwerty, channel: soundChannel, from: 'sequencer',
+attachQwerty({ active: () => prefs.keysIn === QWERTY && onScreen(), onMessage: onQwerty, channel: soundChannel, from: 'sequencer', drums: () => !!song.tracks[sel.t] && isDrums(song.tracks[sel.t]),
   onOctave: () => { renderPorts(); toast(`Computer keyboard: ${qwertyRange()}`); }, onMode: text => toast(text) });
 
 // The light next to MIDI in: green for notes on the chosen port; amber when notes arrive on a
@@ -2520,7 +2520,7 @@ function postSeqState(force = false) {
     if (!t || !v) return;
     const state = { type: 'seq-state', bpm: song.bpm, mode: prefs.mode, songBars: song.song.reduce((n, x) => n + x.bars, 0), songName: song.name,
       file: fileName, dirty, xlOut: xlOutName(),
-      track: { name: t.name, pattern: v.pat, rate: t.rate, mode: t.mode, ch: t.ch },
+      track: { name: t.name, pattern: v.pat, rate: t.rate, mode: t.mode, ch: t.ch, drums: isDrums(t) },
       xlTrack: liveSound !== null ? song.tracks[liveSound]?.name || null : null, armed: armed !== null ? song.tracks[armed]?.name || null : null,
       xlTracks: song.tracks.map((x, ti) => ({ ti, name: x.name, ch: x.ch })).filter(x => isXLOut(song.tracks[x.ti].out)),
       // Every track, for the Recorder's sound menu and "put into a track".

@@ -1,13 +1,14 @@
 // Offline support for the travel version (registered by index.html only away from this Mac's
 // server). Network first, so changes arrive whenever you're online; when offline, the copy saved
 // on the last visit. Page addresses carry ?v=<time>, so they're matched without the query.
-const CACHE = 'mkxl-travel-v11';
+const CACHE = 'mkxl-travel-v12';
 
 // Everything the travel version uses, saved when this is installed so the first visit is enough.
 // (tools/selftest.mjs checks this list against the files: add new pages, styles and scripts here.)
 const ASSETS = [
   './', 'index.html', 'sequencer.html', 'lab.html', 'recorder.html',
   'style.css', 'sequencer.css', 'lab.css', 'recorder.css', 'theme.css',
+  'pianos/steinway-b.json', 'pianos/steinway-b.strikes',
   'samples/Vowel Ah (C4).wav', 'samples/Glass Bell (C5).wav', 'samples/Wind.wav', 'samples/Music Box Phrase (C5).wav',
   'samples/Piano Chord (C4).wav', 'samples/Bowed Note (C3).wav', 'samples/Vowel Phrase (C3).wav', 'samples/Drum Loop (100 bpm).wav', 'samples/Vinyl Crackle.wav',
   'js/core/catalog.js', 'js/core/devices.js', 'js/core/icons.js', 'js/core/kv.js', 'js/core/audiodelay.js', 'js/core/midiports.js', 'js/core/mode.js', 'js/core/qwerty.js', 'js/core/soundpicker.js', 'js/core/sounding.js', 'js/core/spectral.js', 'js/core/spectroedit.js', 'js/core/storage.js', 'js/core/topbar.js', 'js/core/transfer.js',

@@ -97,7 +97,7 @@ Effort: M. One module ("Pipe rank": footage, tone family, speech time, chiff), o
 
 ---
 
-## 3. Combo Organ ("very buzzy")
+## 3. Combo Organ ("very buzzy") — done Nov 2026
 
 **What it is.** Square (8') 0.4 + sawtooth (4') 0.25 + square (16') 0.2, a 12 dB low-pass at 3.8 kHz with key tracking 0.5, vibrato 6.5 Hz ±14 c, an Amp, a room.
 
@@ -235,6 +235,8 @@ These are noticeable on the Church Organ's 7 s hall and on sparse percussive sou
   - Percussion is single-trigger: one envelope, started only when no key was held. A chord gets it on every note; a legato line's later notes are 14, 30 and 45 dB down. It decays 60 dB in ~1 s / ~4 s, sits 3 dB stronger against the drawbars, and takes over the 1' drawbar.
   - Loudness within 0.4 dB of before.
   - Not done: tempered tonewheel tuning, contact-bounce click, leakage, the scanner's low-pass, percussion bypassing the scanner.
+
+- **Nov 2026, Combo Organ (3).** Rebuilt from squares only (no sawtooth): a flute voice of 16', 8', 4', 2⅔' and 2' squares through a 24 dB low-pass at 1.3 kHz (key tracking 0.6), plus a little bare reed square (8' and 4'), then a fixed 12 dB roll-off at 4.5 kHz for the amp and speaker. Energy above 4 kHz, dry: C3 −34 dB, C4 −32, C5 −29 (were −31, −22, −15); above 2 kHz at C5 −15 (was −10). Single notes within 0.3 dB of before, the riff within 0.6 dB. Not done: the divider's octave phase-locking between keys, a shared (not per-note) vibrato. A/B renders (C3–C6 notes, a chord riff): `recordings/combo/`.
 
 ## Recommended order of work
 

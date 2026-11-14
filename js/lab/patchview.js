@@ -7,7 +7,7 @@
 //                      modulation dropped on the box goes
 // and a ⏻ that bypasses it. Laid out automatically (nothing about positions is saved). Returns
 // SVG text; the page (ui.js) handles clicks and drags through the data- attributes.
-import { MODULES, SOURCES, defaultTarget, formatAmount, paramOf } from './patch.js';
+import { MODULES, SOURCES, defaultTarget, formatAmount, paramOf, stepCurve } from './patch.js';
 
 export const BOX_W = 140, BOX_H = 84;
 // The trace area inside a box: the live waveform of a module's output (drawn by the page), or the
@@ -78,6 +78,10 @@ export function shapePath(m) {
       const ph = i / 60, fade = p.delay > 0 ? Math.min(1, ph / Math.min(2, p.delay * 2)) : 1;
       pts.push([x + (i / 120) * w, y + h / 2 - wave(ph) * fade * p.depth * (h / 2)]);
     }
+  } else if (m.type === 'seq' || m.type === 'gseq') {
+    // One cycle of the steps.
+    const c = stepCurve(p, 16);
+    for (let i = 0; i < c.length; i++) pts.push([x + (i / (c.length - 1)) * w, y + h / 2 - c[i] * p.depth * (h / 2)]);
   } else return '';
   return pts.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`).join('');
 }

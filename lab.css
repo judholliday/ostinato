@@ -9,7 +9,7 @@
 .card .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .card button.x { padding: 0 6px; font-size: 11px; line-height: 18px; }
 .mod-osc header b, .mod-noise header b { color: var(--accent); }
-.mod-env header b, .mod-lfo header b { color: #6aa9ff; }
+.mod-env header b, .mod-lfo header b, .mod-seq header b, .mod-gseq header b { color: #6aa9ff; }
 
 .prms { display: flex; flex-direction: column; gap: 3px; }
 .prm { display: grid; grid-template-columns: 82px 1fr 62px auto; align-items: center; gap: 6px; font-size: 12px; border-radius: 5px; padding: 1px 2px; }
@@ -124,7 +124,7 @@
 .pick b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pick span { white-space: normal; min-width: 0; font-size: 11px; color: var(--muted); line-height: 1.25; }
 .pick:hover, .pick:focus-visible { border-color: var(--accent); background: var(--accent-soft); outline: none; }
-.pick.mod-env svg, .pick.mod-lfo svg { stroke: #6aa9ff; }
+.pick.mod-env svg, .pick.mod-lfo svg, .pick.mod-seq svg, .pick.mod-gseq svg { stroke: #6aa9ff; }
 .pick.mod-chorus svg, .pick.mod-delay svg, .pick.mod-reverb svg { stroke: var(--muted); }
 .add-picker .hint { margin: 10px 0 0; }
 
@@ -159,15 +159,17 @@
 .lib-head #lib-count { font-size: 11px; }
 
 #lib-search { width: 100%; }
-.lib-bank { align-self: flex-start; }
-.lib-types { display: flex; flex-wrap: wrap; gap: 4px; }
-.lib-types .chip { padding: 2px 8px; font-size: 11px; border-radius: 10px; background: var(--panel-2); }
-.lib-types .chip span { color: var(--muted); }
-.lib-types .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.lib-types .chip.on span { color: inherit; opacity: .8; }
+.lib-filters { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 6px; }
+.lib-filters select { width: 100%; min-width: 0; }
 .library .lib-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; outline: none; margin: 0 -4px; padding: 0 4px; }
-.lib-group { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0 2px; }
+.lib-group { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 4px; width: 100%; text-align: left; border: 0; border-radius: 0;
+  background: var(--panel); padding: 6px 4px 3px; margin-top: 4px; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); cursor: pointer; }
 .lib-group:first-child { margin-top: 0; }
+.lib-group:hover:not(:disabled) { color: var(--text); }
+.lib-group:disabled { cursor: default; opacity: 1; }
+.lib-group .caret { width: 10px; font-size: 9px; }
+.lib-group .n { margin-left: auto; font-variant-numeric: tabular-nums; }
+.lib-group.folded { margin-bottom: 0; }
 .lib-row { display: flex; align-items: center; gap: 6px; text-align: left; border: 0; background: transparent; padding: 4px 8px; border-radius: 6px; font-size: 13px; }
 .lib-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-row .mine { color: var(--warn); font-size: 11px; }
@@ -236,12 +238,8 @@
 .about { margin: 4px 0 0; font-size: 12px; }
 
 /* Collections (library) and the ☆ Collections menu (file bar) */
-.lib-colls { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.lib-colls > .hint { font-size: 11px; margin-right: 2px; }
-.lib-colls .chip { padding: 2px 8px; font-size: 11px; border-radius: 10px; background: var(--panel-2); }
-.lib-colls .chip span { color: var(--muted); }
 .lib-coll-bar { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--panel); }
-.lib-coll-bar p { margin: 0 0 6px; font-size: 12px; }
+.lib-coll-bar p { margin: 0 0 6px; font-size: 12px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .lib-coll-bar .coll-acts { display: flex; flex-wrap: wrap; gap: 6px; }
 .coll-wrap { position: relative; }
 .coll-pop { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; min-width: 240px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;

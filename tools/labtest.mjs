@@ -162,6 +162,27 @@ for (const [type, spec] of Object.entries(MODULES)) {
   assert.ok(RACK_EFFECTS.includes('rotary') && !RACK_EFFECTS.includes('glfo'), 'the rotary can go in racks; the Global LFO can\'t');
 }
 {
+  // Resonator shapes, step sequences and the Grain delay.
+  const { resonatorRatios, RES_SHAPES, stepCurve, RACK_EFFECTS } = await import('../js/lab/patch.js');
+  for (const s of RES_SHAPES) {
+    const r = resonatorRatios(s);
+    assert.ok(r.length >= 10 && r.every((v, i) => v > 0 && (!i || v > r[i - 1])), `${s}: partials rise`);
+  }
+  assert.deepEqual(resonatorRatios('tube', 3), [1, 3, 5]);
+  assert.ok(Math.abs(resonatorRatios('bar', 2)[1] - 2.757) < 0.002, 'a free bar\'s second partial');
+  assert.deepEqual([...stepCurve({ length: 2, glide: 0.5, s1: 12, s2: -12, s3: 5 }, 4)], [1, 1, 1, 0, -1, -1, -1, 0], 'steps hold, then slide to the next (the last to the first)');
+  assert.equal(stepCurve({ length: 99, glide: 0 }, 2).length, 32, 'at most 16 steps');
+  const raw = { modules: [{ id: 'n', type: 'noise' }, { id: 'r', type: 'resonator', params: { shape: 'gong', note: 500 } }, { id: 's', type: 'seq', params: { s1: 40, length: 3.4 } },
+    { id: 'gs', type: 'gseq' }, { id: 'g', type: 'grains', params: { hold: 'maybe' } }],
+    audio: [{ from: 'n', to: 'r' }, { from: 'r', to: 'g' }, { from: 'g', to: 'out' }],
+    mod: [{ from: 's', to: 'r.pitch', amount: 1200 }, { from: 'gs', to: 'g.pitch', amount: 12 }, { from: 's', to: 'g.pitch', amount: 12 }, { from: 'gs', to: 'r.pitch', amount: 100 }] };
+  const { patch, notes } = normalizePatch(raw);
+  assert.deepEqual([patch.modules[1].params.shape, patch.modules[1].params.note, patch.modules[2].params.s1, patch.modules[2].params.length, patch.modules[4].params.hold], ['bar', 108, 12, 3, 'off']);
+  assert.deepEqual(patch.mod.map(m => `${m.from}>${m.to}`), ['s>r.pitch', 'gs>g.pitch', 'gs>r.pitch'], 'a per-note step sequence can\'t move an effect; a global one can move anything');
+  assert.equal(notes.length, 1);
+  assert.ok(RACK_EFFECTS.includes('grains') && !RACK_EFFECTS.includes('gseq') && !RACK_EFFECTS.includes('resonator'));
+}
+{
   // The soundboard: finite, wide above 300 Hz, and its sides cancel in mono (left = mid + side,
   // right = mid − side).
   const { soundboardImpulse } = await import('../js/lab/engine.js');
@@ -244,5 +265,47 @@ assert.ok(VOWELS.length === 5 && VOWELS.every(f => f.length === 3 && f[0] < f[1]
 {
   const p = cleanPatch({ name: 'Old', modules: [{ id: 'o', type: 'osc', params: { wave: 'saw' } }, { id: 'l', type: 'lfo', params: { rate: 3 } }], audio: [{ from: 'o', to: 'out' }], mod: [] });
   assert.deepEqual([p.modules[0].params.unison, p.modules[1].params.sync, p.modules[1].params.rate], [1, 'off', 3]);
+}
+{
+  // The Piano module: its data (pianos/, made by tools/piano) is whole, a key press takes the nearest
+  // fitted note at most a semitone and a half away, softer playing is quieter and duller, and the
+  // worklet's resonators ring at the frequency, level and decay they're given.
+  const { readFileSync, statSync } = await import('node:fs');
+  const data = JSON.parse(readFileSync(new URL('../pianos/steinway-b.json', import.meta.url), 'utf8'));
+  const frames = statSync(new URL('../pianos/steinway-b.strikes', import.meta.url)).size / 4;
+  assert.equal(data.notes.length, 30);
+  for (const d of data.notes) {
+    assert.ok(d.modes.length % 7 === 0 && d.modes.length > 0 && d.modes.every(Number.isFinite), `piano note ${d.note}: modes`);
+    assert.ok(Math.abs(1200 * Math.log2(d.f0 / (440 * 2 ** ((d.note - 69) / 12)))) < 60, `piano note ${d.note}: in tune`);
+    for (const s of [d.ff, d.pp]) if (s) assert.ok(s[0] >= 0 && s[0] + s[1] <= frames && s[2] > 0, `piano note ${d.note}: strike inside the file`);
+    assert.ok(d.ff && d.soft < -10 && d.soft > -40, `piano note ${d.note}: a loud strike, and soft is 10-40 dB quieter`);
+  }
+  const { pianoNote } = await import('../js/lab/engine.js');
+  const piano = { notes: data.notes.map(d => ({ ...d, cents: 1200 * Math.log2(d.f0 / (440 * 2 ** ((d.note - 69) / 12))), count: d.modes.length / 7 })), strikes: new Map(data.notes.map(d => [d.note, { ff: {}, pp: d.pp ? {} : null }])) };
+  const energy = v => { let e = 0, hi = 0; for (let i = 0; i < v.modes.length; i += 6) { const a = v.modes[i + 2] ** 2 + v.modes[i + 4] ** 2; e += a; if (v.modes[i] > 2000) hi += a; } return [e, hi / e]; };
+  for (let note = 21; note <= 108; note++) {
+    const v = pianoNote(piano, note, 100);
+    assert.ok(Math.abs(Math.log2(v.ratio)) < 1.6 / 12, `key ${note}: moved ${(12 * Math.log2(v.ratio)).toFixed(2)} semitones`);
+  }
+  const loud = energy(pianoNote(piano, 60, 120)), soft = energy(pianoNote(piano, 60, 30));
+  assert.ok(10 * Math.log10(loud[0] / soft[0]) > 15 && soft[1] < loud[1], 'played softly, middle C is over 15 dB quieter and has less above 2 kHz');
+  assert.ok(pianoNote(piano, 60, 64).damper > 0 && pianoNote(piano, 96, 64).damper === 0, 'dampers up to E6, none in the top octaves');
+  const felt = energy(pianoNote(piano, 60, 120, { hardness: 0.2 }));
+  assert.ok(Math.abs(10 * Math.log10(felt[0] / loud[0])) < 6 && felt[1] < loud[1] / 2, 'a soft hammer: about as loud, under half as much above 2 kHz');
+  const honky = pianoNote(piano, 60, 100, { detune: 14 }), plain = pianoNote(piano, 60, 100);
+  assert.equal(honky.modes.length, plain.modes.length * 3, 'out of tune: three strings');
+  assert.ok(Math.abs(1200 * Math.log2(honky.modes[0] / plain.modes[0])) > 5 && Math.abs(1200 * Math.log2(honky.modes[0] / plain.modes[0])) < 25, 'tuned 5-25 cents off');
+  const src = readFileSync(new URL('../js/lab/fxworklet.js', import.meta.url), 'utf8');
+  const g = {};
+  globalThis.currentFrame = 0;
+  new Function('sampleRate', 'AudioWorkletProcessor', 'registerProcessor', src.slice(src.indexOf('`') + 1, src.indexOf('`;')))(44100, class { constructor() { this.port = {}; } }, (n, c) => { g[n] = c; });
+  const v = new g['ost-piano']({ processorOptions: { modes: new Float64Array([441, 3, 0.25, 0, 0.125, 0]), start: 0, ramp: 0, damper: 0.2 } });
+  const L = new Float32Array(44100), R = new Float32Array(44100);
+  const run = (from, to, damp) => { for (let f = from; f < to; f += 128) { globalThis.currentFrame = f; const l = new Float32Array(128), r = new Float32Array(128); v.process([], [[l, r]], { damp: [damp] }); L.set(l.subarray(0, Math.min(128, 44100 - f)), f); R.set(r.subarray(0, Math.min(128, 44100 - f)), f); } };
+  run(0, 22016, 0); run(22016, 44100, 1);
+  assert.ok(Math.abs(L[0] - 0.5) < 1e-6 && Math.abs(R[0] - 0.25) < 1e-6, 'a mode starts at twice its amplitude (cosine), per channel');
+  assert.ok(Math.abs(L[4410] - 0.5 * Math.exp(-0.3) * Math.cos(2 * Math.PI * 441 * 0.1)) < 1e-4, 'and rings at its frequency and decay rate');
+  let late = 0; for (let i = 39000; i < 44100; i++) late = Math.max(late, Math.abs(L[i]));
+  assert.ok(late < 1e-4, 'the damper stops it (60 dB in its time)');
 }
 console.log(`ok — Lab patches (${FACTORY.length} factory sounds)`);

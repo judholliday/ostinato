@@ -2,9 +2,9 @@
 // organ with drawbars, other classic keys and mallets, and guitars. Plain patches (sounds.js cleans them and
 // adds them to the factory bank). No DOM here.
 //
-// These are synthesized, so they suggest the instruments rather than copy them. The pianos,
-// harpsichord, clav and guitars use the String module (a physical model of a vibrating string);
-// for the real thing, a Sampler with multi-sample zones of recordings is still the way.
+// These are synthesized, so they suggest the instruments rather than copy them, except the Grand
+// Piano, which is rebuilt from recordings of a real one (the Piano module). The other pianos,
+// harpsichord, clav and guitars use the String module (a physical model of a vibrating string).
 import { defaultParams } from './patch.js';
 
 const mod = (type, id, params = {}) => ({ id, type, params: { ...defaultParams(type), ...params } });
@@ -29,6 +29,29 @@ function organ({ name, reg, perc = null, vibrato = null, drive = 0, leslie = 'sl
     about: `Drawbars ${[...reg].join(' ')} (${FEET.join(' ')})${perc ? `, percussion on the ${perc.harmonic} harmonic, ${perc.fast ? 'fast' : 'slow'}` : ''}${vibrato ? `, vibrato/chorus ${vibrato}` : ''}. Leslie ${leslie}${leslie === 'slow' ? ': push the mod wheel up to speed it up' : ''}.`,
     modules: [mod('organ', 'organ1', { ...bars, perc: perc ? perc.harmonic : 'off', percDecay: perc?.fast === false ? 'slow' : 'fast', click: 0.35, level }), ...fx],
     audio: chain('organ1', ...fx.map(m => m.id), 'out'),
+  };
+}
+
+// ---- transistor combo organ (Vox Continental, Farfisa) ----
+// Divider organs: every footage is a square wave (no sawtooth). The flute voice is those squares
+// through a fixed low-pass, so low notes keep some edge and high ones turn nearly pure, as the
+// organs' passive voice filters do; the reed voice is the bare square, kept low. A treble roll-off
+// that doesn't follow the keyboard stands for the amp and speaker. The old patch (square + saw
+// through a filter that opened upward) was buzzy, most of all at the top.
+function combo() {
+  const flute = [['f16', -1, 0, 0.22], ['f8', 0, 0, 0.4], ['f4', 1, 0, 0.26], ['f223', 1, 7, 0.12], ['f2', 2, 0, 0.12]];
+  const reed = [['r8', 0, 0, 0.15], ['r4', 1, 0, 0.105]];
+  const oscs = [...flute, ...reed];
+  return {
+    name: 'Combo Organ', about: "60s garage and ska organ: squares at 16', 8', 4', 2⅔' and 2' through a flute filter, a little bare reed, vibrato.", type: 'Organ', voices: 10, volume: 0.29,
+    modules: [...oscs.map(([id, octave, semi, level]) => mod('osc', id, { wave: 'square', octave, semi, level })),
+      mod('lfo', 'vib', { rate: 6.5, depth: 1 }),
+      mod('filter', 'flute', { slope: '24', cutoff: 1300, resonance: 0, keytrack: 0.6 }),
+      mod('amp', 'amp1', { attack: 0.003, decay: 0.1, sustain: 1, release: 0.03, velocity: 0 }),
+      mod('filter', 'cab', { slope: '12', cutoff: 4500, resonance: 0, keytrack: 0 }),
+      mod('reverb', 'room', { type: 'room', size: 1.2, mix: 0.18 })],
+    audio: [...into(flute.map(o => o[0]), 'flute'), { from: 'flute', to: 'amp1' }, ...into(reed.map(o => o[0]), 'amp1'), ...chain('amp1', 'cab', 'room', 'out')],
+    mod: oscs.map(([id]) => ({ from: 'vib', to: `${id}.pitch`, amount: 14 })),
   };
 }
 
@@ -71,29 +94,27 @@ export const KEYS = [
 
   // ---- acoustic-style pianos ----
   {
-    // A soft upright with felt on the hammers: two strings per note struck softly, dark and close.
-    name: 'Felt Piano', about: 'A soft, close upright with felt on the hammers (physical strings): play gently, use the sustain pedal.', type: 'Keys', voices: 14, volume: 0.35,
-    modules: [mod('string', 'str', { excite: 'hammer', position: 0.2, brightness: 0.25, decay: 10, highs: 1.2, keydecay: 1, stiffness: 0.6, strings: 2, detune: 1.5, coupling: 1, phantom: 0.5, knock: 0.7, release: 0.35, velocity: 0.8, level: 0.9 }),
+    // A soft, close piano with felt on the hammers: the Piano module with soft hammers (each
+    // partial at its soft-playing level), less of the strike, a gentle low-pass and a small room.
+    name: 'Felt Piano', about: 'The grand with felt on its hammers: dark, soft and close. Play gently, use the sustain pedal.', type: 'Keys', voices: 24, volume: 0.6,
+    modules: [mod('piano', 'piano1', { hardness: 0.2, strike: 0.5, release: 1.4 }),
       mod('filter', 'felt', { slope: '12', cutoff: 2600, resonance: 0.3, keytrack: 0.6 }),
-      mod('resonance', 'pedal', { amount: 0.4 }), mod('soundboard', 'board', { type: 'upright', tone: 1800 }), mod('reverb', 'room', { type: 'room', size: 1.6, damping: 0.7, mix: 0.25 })],
-    audio: chain('str', 'felt', 'pedal', 'board', 'room', 'out'),
+      mod('resonance', 'pedal', { amount: 0.4 }), mod('reverb', 'room', { type: 'room', size: 1.6, damping: 0.7, mix: 0.25 })],
+    audio: chain('piano1', 'felt', 'pedal', 'room', 'out'),
   },
   {
-    // A grand piano from physical strings: three per note, tuned a hair apart and coupled at the
-    // bridge (a fast prompt sound, then a long aftersound), struck by a felt hammer (simulated:
-    // harder blows are shorter and much brighter), stiff strings whose upper partials run sharp as
-    // on a real grand, decay times measured across a grand's keyboard, the hammer's knock, and a
-    // soundboard that gives them the body, bloom and width of the instrument.
-    name: 'Grand Piano', about: 'Physical strings struck by felt hammers, through a soundboard: play harder for a brighter, louder tone. The sustain pedal brings in the other strings\' halo; the soft pedal (CC 67) plays una corda.', type: 'Keys', voices: 16, volume: 0.48,
-    modules: [mod('string', 'str', { excite: 'hammer', position: 0.125, brightness: 0.6, decay: 14, highs: 7.8, keydecay: 1, stiffness: 0.5, strings: 3, detune: 1, coupling: 1, phantom: 1, knock: 0.5, release: 0.22, velocity: 0.85, level: 0.9 }),
-      mod('resonance', 'pedal'), mod('soundboard', 'board', { type: 'grand' }), mod('reverb', 'hall', { type: 'hall', size: 2.2, damping: 0.45, mix: 0.18 })],
-    audio: chain('str', 'pedal', 'board', 'hall', 'out'),
+    // A grand piano rebuilt from recordings of a real one (the Piano module): every partial of
+    // every note rings at the pitch, level and rate measured on a Steinway model B (University of
+    // Iowa Musical Instrument Samples), plus the recorded strike of the hammer.
+    name: 'Grand Piano', about: 'A Steinway grand rebuilt from recordings: each note is its measured partials plus the hammer\'s recorded strike. Play harder for a louder, brighter tone; the sustain pedal brings in the other strings\' halo; the soft pedal (CC 67) softens the hammer.', type: 'Keys', voices: 24, volume: 0.58,
+    modules: [mod('piano', 'piano1'), mod('resonance', 'pedal'), mod('reverb', 'hall', { type: 'hall', size: 2.2, damping: 0.45, mix: 0.18 })],
+    audio: chain('piano1', 'pedal', 'hall', 'out'),
   },
   {
     // An FM acoustic piano (the 80s digital kind): two detuned carrier pairs whose modulation
     // falls away after the strike (bright then mellow), a third ratio for the hammer's edge, a
     // short noise thump, and key tracking so high notes fade sooner.
-    name: 'FM Piano', about: 'An FM piano, the 80s digital kind: bright strike, mellow sustain. Compare with Grand Piano (physical strings).', type: 'Keys', voices: 16, volume: 0.3,
+    name: 'FM Piano', about: 'An FM piano, the 80s digital kind: bright strike, mellow sustain. Compare with Grand Piano (rebuilt from recordings of a real one).', type: 'Keys', voices: 16, volume: 0.3,
     modules: [mod('fmop', 'car1', { ratio: 1, fm: 1.5, attack: 0.001, decay: 4.5, sustain: 0, release: 0.35, velocity: 0.75, level: 0.6, keytrack: 0.6, veltime: 0.2 }),
       mod('fmop', 'mod1', { ratio: 1, attack: 0.001, decay: 1.1, sustain: 0.12, release: 0.3, velocity: 1, level: 0.7, keytrack: 0.6 }),
       mod('fmop', 'car2', { ratio: 1, fine: 6, fm: 1.1, attack: 0.001, decay: 3.5, sustain: 0, release: 0.35, velocity: 0.75, level: 0.4, keytrack: 0.6 }),
@@ -107,11 +128,12 @@ export const KEYS = [
     mod: [{ from: 'thumpEnv', to: 'thump.level', amount: 0.3 }, { from: 'vel', to: 'car1.fm', amount: 1.2 }],
   },
   {
-    // A honky-tonk upright: three strings per note badly out of tune with each other.
-    name: 'Honky-Tonk', about: 'Three strings per note out of tune with each other: saloon and ragtime.', type: 'Keys', voices: 12, volume: 0.35,
-    modules: [mod('string', 'str', { excite: 'hammer', position: 0.1, brightness: 0.75, decay: 9, highs: 2.5, keydecay: 1, stiffness: 0.6, strings: 3, detune: 16, coupling: 0.5, phantom: 1, knock: 0.6, release: 0.2, velocity: 0.8, level: 0.9 }),
-      mod('soundboard', 'board', { type: 'upright' }), mod('reverb', 'room', { type: 'room', size: 1, damping: 0.4, mix: 0.18 })],
-    audio: chain('str', 'board', 'room', 'out'),
+    // A honky-tonk piano: the Piano module with each note's three strings out of tune with each
+    // other (differently on every key), a little thinner, in a small bright room.
+    name: 'Honky-Tonk', about: 'The piano with its strings out of tune with each other: saloon and ragtime.', type: 'Keys', voices: 20, volume: 0.72,
+    modules: [mod('piano', 'piano1', { detune: 14 }), mod('eq', 'thin', { low: -3, mid: 2, midfreq: 1800, high: 2 }),
+      mod('reverb', 'room', { type: 'room', size: 1, damping: 0.4, mix: 0.18 })],
+    audio: chain('piano1', 'thin', 'room', 'out'),
   },
 
   // ---- other keys ----
@@ -190,15 +212,7 @@ export const KEYS = [
   organ({ name: 'B3 Gospel', reg: '888808008', vibrato: 'C3', leslie: 'fast', drive: 2, volume: 1 }),
   organ({ name: 'B3 Rock Drive', reg: '888800000', perc: { harmonic: 'second', fast: false }, leslie: 'slow', drive: 9, volume: 0.9 }),
   organ({ name: 'B3 Ballad', reg: '838000000', vibrato: 'C3', leslie: 'slow', volume: 1, level: 1 }),
-  {
-    // A transistor combo organ (the 60s kind): bright, buzzy square and saw voices with vibrato.
-    name: 'Combo Organ', about: '60s garage and ska organ, with vibrato.', type: 'Organ', voices: 10, volume: 0.45,
-    modules: [mod('osc', 'flute', { wave: 'square', level: 0.4 }), mod('osc', 'reed', { wave: 'saw', octave: 1, level: 0.25 }), mod('osc', 'bass', { wave: 'square', octave: -1, level: 0.2 }),
-      mod('lfo', 'vib', { rate: 6.5, depth: 1 }), mod('filter', 'tone', { slope: '12', cutoff: 3800, resonance: 1, keytrack: 0.5 }),
-      mod('amp', 'amp1', { attack: 0.003, decay: 0.1, sustain: 1, release: 0.03, velocity: 0 }), mod('reverb', 'room', { type: 'room', size: 1.2, mix: 0.18 })],
-    audio: [...into(['flute', 'reed', 'bass'], 'tone'), ...chain('tone', 'amp1', 'room', 'out')],
-    mod: ['flute', 'reed', 'bass'].map(id => ({ from: 'vib', to: `${id}.pitch`, amount: 14 })),
-  },
+  combo(),
   {
     // A church pipe organ: flue pipes at 8', 4', 2' and a 16' bourdon, speaking slowly into a big room.
     name: 'Church Organ', about: 'Pipes at 16\', 8\', 4\' and 2\' in a big room. Hold chords; it speaks slowly.', type: 'Organ', voices: 12, volume: 0.5,
