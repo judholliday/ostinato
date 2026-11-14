@@ -364,9 +364,11 @@ export const MODULES = {
   },
   resonance: {
     label: 'Pedal resonance', scope: 'global', audioIn: true, audioOut: true,
-    help: 'The rest of a piano\'s strings, which ring along when the sustain pedal lifts their dampers: the shimmering halo of a pedalled piano. Only heard while the sustain pedal (or Caps Lock) is down. Put it after the strings, before the Soundboard, or straight after a Piano module.',
+    help: 'The rest of a piano\'s strings, which ring along when the sustain pedal lifts their dampers: the shimmering halo of a pedalled piano. Only heard while the sustain pedal (or Caps Lock) is down, unless Strings ring is set to always. Put it after the strings, before the Soundboard, or straight after a Piano module.',
     params: [num('amount', 'Amount', 0, 1, 0.5, { help: 'How much the other strings pick up' }),
-      num('ring', 'Ring', 0.25, 3, 1, { curve: 'log', help: 'How long they ring (1 = a grand\'s strings)' })],
+      num('ring', 'Ring', 0.25, 3, 1, { curve: 'log', help: 'How long they ring (1 = a grand\'s strings)' }),
+      choice('open', 'Strings ring', ['with the pedal', 'always'], 'with the pedal', { help: 'Always: as if the sustain pedal were held down for good, so the other strings answer every note without it' }),
+      num('direct', 'Direct sound', 0, 1, 1, { help: 'How much of the sound itself passes through beside the strings\' ringing: 0 = only the strings you didn\'t play' })],
     targets: {},
   },
   reverb: {

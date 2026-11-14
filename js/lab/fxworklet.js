@@ -499,7 +499,7 @@ registerProcessor('ost-string', StringVoice);
 // so every note's own string rang along as a bright, harmonic copy). Stereo: bass to the left,
 // treble to the right, a little, as a piano is heard from the keyboard.
 class Resonance extends AudioWorkletProcessor {
-  static get parameterDescriptors() { return [{ name: 'amount', defaultValue: 0.5, automationRate: 'k-rate' }, { name: 'ring', defaultValue: 1, automationRate: 'k-rate' }, { name: 'pedal', defaultValue: 0, automationRate: 'k-rate' }, ...[0, 1, 2, 3].map(i => ({ name: 'held' + i, defaultValue: 0, automationRate: 'k-rate' }))]; }
+  static get parameterDescriptors() { return [{ name: 'amount', defaultValue: 0.5, automationRate: 'k-rate' }, { name: 'ring', defaultValue: 1, automationRate: 'k-rate' }, { name: 'pedal', defaultValue: 0, automationRate: 'k-rate' }, { name: 'open', defaultValue: 0, automationRate: 'k-rate' }, ...[0, 1, 2, 3].map(i => ({ name: 'held' + i, defaultValue: 0, automationRate: 'k-rate' }))]; }
   constructor() {
     super();
     this.pedal = false;
@@ -516,7 +516,7 @@ class Resonance extends AudioWorkletProcessor {
   process([inp], [out], p) {
     const L = out[0], R = out[1] || out[0], n = L.length, x0 = inp[0], x1 = inp[1] || inp[0];
     const amount = p.amount[0] * RES_FEED, ring = p.ring[0];
-    this.pedal = p.pedal[0] > 0.5;
+    this.pedal = p.pedal[0] > 0.5 || p.open[0] > 0.5; // 'open': the dampers are always up (Strings ring = always)
     const held = [p.held0[0], p.held1[0], p.held2[0], p.held3[0]];
     if (ring !== this.lastRing || this.pedal !== this.lastPedal) {
       for (const s of this.strings) {

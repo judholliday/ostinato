@@ -1373,6 +1373,15 @@ const NEWER = [
     mod: [{ from: 'drag', to: 'echo.time', amount: 0.01 }],
   },
   {
+    name: 'Ghost Piano', type: 'Keys', voices: 16, volume: 1,
+    about: 'A piano you can\'t hear, only the rest of its strings answering: every note sets the strings an octave, a fifth and more above it ringing, and those are all that sound: a hollow, organ-like piano with no hammer in it that hangs for a few seconds after you let go. Low chords answer most.',
+    // Pedal resonance with its dampers always up and no direct sound; a compressor used as plain
+    // gain (threshold 0, ratio 1) brings the halo up to a playing level.
+    modules: [mod('piano', 'piano1'), mod('resonance', 'pedal', { amount: 1, ring: 3, open: 'always', direct: 0 }),
+      mod('compressor', 'gain1', { threshold: 0, ratio: 1, gain: 6 }), mod('reverb', 'hall', { type: 'hall', size: 5, damping: 0.35, mix: 0.35 })],
+    audio: chain('piano1', 'pedal', 'gain1', 'hall', 'out'),
+  },
+  {
     name: 'Talking String', type: 'Pluck', voices: 8, volume: 0.6,
     about: 'A plucked string that says a word: each note opens through a Vowel filter from "ah" towards "oo", a jaw harp crossed with a sitar. Harder notes say more; the mod wheel changes the word.',
     modules: [mod('string', 'string1', { excite: 'pick', position: 0.08, brightness: 0.9, decay: 3.5, highs: 2.5, release: 0.25, velocity: 0.7, level: 1 }),
@@ -1419,7 +1428,7 @@ export const COLLECTIONS = [
   { title: 'Strange Things', about: 'Illusions and oddities: tones that rise for ever, a chord that gathers out of a cluster, a modem, clicks that sing, swarms round your head, a glass you can freeze, bells that turn into drones, a piano backwards.',
     sounds: ['Endless Riser', 'Endless Faller', 'Big Arrival', 'Dial-Up', 'Geiger Choir', 'Orbiting Bees', 'Singing Glass', 'Risset Bells', 'Backwards Piano', 'Computer Room', 'Bouncing Ball', 'Speech Shards', 'Broken Radio'] },
   { title: 'Struck, Stepped, Scattered', about: 'Sounds made with the Resonator (things that ring when struck: glasses, bars, bells, plates, a piano with bolts in it, a drum kit inside a bell), the Step sequence (melodies, rhythms and vowels that play themselves) and the Grain delay (notes that break into clouds).',
-    sounds: ['Glass Harp', 'Rosewood Bars', 'Tower Bell', 'Steel Plate', 'Bowed Plate', 'Bell Tower Kit', 'Prepared Piano', 'Pocket Sequencer', 'Five Against Eight', 'Robot Choir', 'Morse Pad', 'Dying Console', 'Piano Snowfall', 'Scattered Bells', 'Stair Echo', 'Held Cloud', 'Tape Left in the Sun', 'Talking String'] },
+    sounds: ['Glass Harp', 'Rosewood Bars', 'Tower Bell', 'Steel Plate', 'Bowed Plate', 'Bell Tower Kit', 'Prepared Piano', 'Pocket Sequencer', 'Five Against Eight', 'Robot Choir', 'Morse Pad', 'Dying Console', 'Piano Snowfall', 'Scattered Bells', 'Stair Echo', 'Held Cloud', 'Tape Left in the Sun', 'Ghost Piano', 'Talking String'] },
   { title: 'Grain Clouds', about: 'Recordings played as clouds of tiny grains: frozen pianos and choirs, slow-motion voices, a drum loop at any pitch, record crackle.',
     sounds: ['Frozen Piano', 'Bowed Cloud', 'Slow Motion Voice', 'Speech Shards', 'Beat Dust', 'Time Stretch Keys', 'Vinyl Dust', 'Grain Choir', 'Glass Cloud', 'Slow Music Box', 'Wind Grains', 'Crushed Grains', 'Shimmer Wash', 'Tape Choir'] },
 ].map(c => ({ ...c, factory: true, sounds: c.sounds.filter(n => FACTORY.some(p => p.name === n)).map(name => ({ name, mine: false })) }));

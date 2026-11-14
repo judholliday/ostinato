@@ -242,17 +242,18 @@ for (const [type, spec] of Object.entries(MODULES)) {
   // Pedal resonance: silent with the pedal up, ringing on after the input stops with it down.
   {
     const R = g['ost-resonance'];
-    const run = (pedal, held = 0) => {
+    const run = (pedal, held = 0, open = 0) => {
       const r = new R();
       const tone = Float32Array.from({ length: 128 }, (_, i) => Math.sin(2 * Math.PI * 261.6 * i / 44100) * 0.3), quiet = new Float32Array(128);
       const o0 = new Float32Array(128), o1 = new Float32Array(128); let after = 0;
-      const prm = { amount: [0.5], ring: [1], pedal: [pedal], held0: [held], held1: [held], held2: [held], held3: [held] };
+      const prm = { amount: [0.5], ring: [1], pedal: [pedal], open: [open], held0: [held], held1: [held], held2: [held], held3: [held] };
       for (let b = 0; b < 700; b++) { r.process([[b < 344 ? tone : quiet]], [[o0, o1]], prm); if (b > 400) after += o0.reduce((a, x) => a + x * x, 0); }
       return after;
     };
     assert.equal(run(0), 0, 'pedal up: the other strings are damped');
     assert.equal(run(1, 2 ** 22 - 1), 0, 'strings of notes that are sounding are left out (held bits)');
     assert.ok(run(1) > 0, 'pedal down: they ring on after the note');
+    assert.ok(run(0, 0, 1) > 0, 'Strings ring = always: they ring without the pedal');
   }
   assert.ok(coupled.early > loose.early + 2, `coupling makes the prompt sound fall faster (${coupled.early.toFixed(1)} vs ${loose.early.toFixed(1)} dB in 1 s)`);
   assert.ok(coupled.late > 2.5 && coupled.late < 9, `the aftersound decays near 60/13.5 = 4.4 dB/s (${coupled.late.toFixed(1)})`);

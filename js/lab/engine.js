@@ -1009,7 +1009,7 @@ export class LabSynth {
       if (!fxReady(ac)) { this.fxPending = true; mix(0, 1); return g; }
       const node = new AudioWorkletNode(ac, 'ost-resonance', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit' });
       const to = (key, v) => node.parameters.get(key)?.setValueAtTime(v, ac.currentTime);
-      to('amount', p.amount); to('ring', p.ring); to('pedal', this.pedals?.sustain ? 1 : 0);
+      to('amount', p.amount); to('ring', p.ring); to('pedal', this.pedals?.sustain ? 1 : 0); to('open', p.open === 'always' ? 1 : 0);
       g.pedal = node.parameters.get('pedal');
       g.held = [0, 1, 2, 3].map(i => node.parameters.get('held' + i));
       this.tellResonance(ac.currentTime);
@@ -1021,8 +1021,8 @@ export class LabSynth {
       drive.gain.value = fromPiano ? PIANO_HALO : 1;
       input.connect(drive).connect(node).connect(wet);
       g.nodes.push(node, drive);
-      g.set = { amount: v => to('amount', v), ring: v => to('ring', v) };
-      mix(1, 1); // added to the strings, not instead of them
+      g.set = { amount: v => to('amount', v), ring: v => to('ring', v), open: v => to('open', v === 'always' ? 1 : 0), direct: v => mix(1, v) };
+      mix(1, p.direct); // added to the strings, not instead of them (Direct sound 0: the ringing alone)
     } else if (m.type === 'grains') {
       // Grain delay (fxworklet.js 'ost-grains'); passes the sound through until the worklet has loaded.
       if (!fxReady(ac)) { this.fxPending = true; mix(0, 1); return g; }
