@@ -1390,6 +1390,113 @@ const NEWER = [
     audio: chain('string1', 'vowel1', 'reverb1', 'out'),
     mod: [{ from: 'mouth', to: 'vowel1.vowel', amount: -3.4 }, { from: 'wheel', to: 'vowel1.vowel', amount: -2 }],
   },
+  {
+    name: 'Acid Steps', type: 'Bass', voices: 1, volume: 0.6, play: 'legato',
+    about: 'Hold a low key: a squelching sixteen-step bass line with slides, in time with the song. One Step sequence is the tune (semitones), another is the accents: which notes bark and which mutter. Change key without letting go and the line carries on. The mod wheel opens the filter.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.6 }),
+      steps('line', '1/16', [0, 0, 12, 0, 0, 3, 0, 12, 0, -2, 0, 12, 7, 0, 10, 12], { glide: 0.25 }),
+      steps('accent', '1/16', [8, -8, -8, 4, -8, 8, -8, -8, 4, -8, -8, 8, -8, 4, -8, 12]), mod('lfo', 'pluck', { wave: 'rise', sync: '1/16' }),
+      mod('filter', 'filter1', { cutoff: 450, resonance: 15, keytrack: 0.3 }), mod('drive', 'drive1', { amount: 0.45 }),
+      mod('amp', 'amp1', { attack: 0.003, decay: 0.2, sustain: 1, release: 0.08, velocity: 0.3, level: 0.6 }),
+      mod('delay', 'delay1', { sync: '1/8.', feedback: 0.25, mix: 0.1 })],
+    audio: chain('osc1', 'filter1', 'drive1', 'amp1', 'delay1', 'out'),
+    mod: [{ from: 'line', to: 'osc1.pitch', amount: 1200 }, { from: 'accent', to: 'filter1.cutoff', amount: 1800 }, { from: 'accent', to: 'amp1.level', amount: 0.25 },
+      { from: 'pluck', to: 'filter1.cutoff', amount: -1800 }, { from: 'wheel', to: 'filter1.cutoff', amount: 3600 }],
+  },
+  (() => {
+    const kit = based('909 Kit');
+    // The lows go round the mouth (a low-pass beside the Vowel filter), or the kick loses its body.
+    kit.modules.splice(1, 0, mod('vowel', 'vowel1', { vowel: 2, resonance: 8, mix: 0.9 }), mod('filter', 'lows', { cutoff: 140, resonance: 0, keytrack: 0 }),
+      mod('gseq', 'words', { sync: '1/16', length: 8, glide: 0.3, s1: -6, s2: 3, s3: 0, s4: 6, s5: -3, s6: -6, s7: 6, s8: 0 }));
+    const next = kit.audio.filter(c => c.from === 'drums1').map(c => c.to);
+    return { ...kit, name: 'Talking Drums', volume: 0.5,
+      about: 'The 909 Kit with a mouth: every drum goes through a Vowel filter, and a Global step sequence changes the vowel each sixteenth, in time with the song (-6 = A, -3 = E, 0 = I, 3 = O, 6 = U), so the same hat says something different each time. Rewrite what it says with the steps; Mix on the Vowel filter is how much mouth. The kick\'s boom goes round the mouth, through the filter called lows.',
+      audio: [...kit.audio.filter(c => c.from !== 'drums1'), { from: 'drums1', to: 'vowel1' }, { from: 'drums1', to: 'lows' }, ...next.flatMap(to => [{ from: 'vowel1', to }, { from: 'lows', to }])],
+      mod: [...(kit.mod || []), { from: 'words', to: 'vowel1.vowel', amount: 4 }] };
+  })(),
+  {
+    name: 'Reverse Bloom', type: 'Keys', voices: 16, volume: 0.85,
+    about: 'The grand, and after each note its own echo played backwards: a Grain delay with every grain reversed, so the echoes swell up to where the hammer was, then a Shimmer reverb lifts them an octave. Play slowly; the bloom arrives about a second behind you (two beats at 120 bpm).',
+    modules: [mod('piano', 'piano1'), mod('grains', 'grains1', { time: 0.45, scatter: 0.12, size: 0.4, density: 7, pitch: 0, jitter: 4, reverse: 1, feedback: 0.3, width: 1, mix: 0.5 }),
+      mod('shimmer', 'shimmer1', { size: 5, shimmer: 0.45, tone: 5000, mix: 0.3 })],
+    audio: chain('piano1', 'grains1', 'shimmer1', 'out'),
+  },
+  {
+    name: 'Clockwork', type: 'Pluck', voices: 4, volume: 0.45,
+    about: 'Hold a key: a wooden mechanism ticks out a tune by itself, in time with the song. A seven-note Step sequence tunes a small bar (a Resonator) while a five-step one decides which sixteenths strike it (0 = strike, -12 = rest), so it takes 35 steps to come round again. Rewrite either with its sliders.',
+    modules: [mod('noise', 'noise1', { level: 0.5 }), mod('filter', 'filter1', { slope: '12', cutoff: 5000, resonance: 0.5, keytrack: 0.5 }),
+      mod('lfo', 'pluck', { wave: 'rise', sync: '1/16' }), steps('tune', '1/16', [0, 7, 4, 12, 9, 2, -3]), steps('rhythm', '1/16', [0, 0, -12, 0, -12]),
+      mod('amp', 'tick', { attack: 0.001, decay: 0.2, sustain: 1, release: 0.02, velocity: 0.5, level: 0.5 }),
+      mod('amp', 'gate', { attack: 0.001, decay: 0.2, sustain: 1, release: 0.02, velocity: 0, level: 0.8 }),
+      mod('resonator', 'res1', { shape: 'bar', strike: 0, decay: 0.3, damping: 0.5, bright: 0.7, position: 0.3, release: 0.3, width: 0.5, level: 1.6 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.25, mix: 0.12 }), mod('reverb', 'reverb1', { type: 'room', size: 1.4, mix: 0.2 })],
+    audio: chain('noise1', 'filter1', 'tick', 'gate', 'res1', 'delay1', 'reverb1', 'out'),
+    mod: [{ from: 'pluck', to: 'filter1.cutoff', amount: -4800 }, { from: 'pluck', to: 'tick.level', amount: -0.59 },
+      { from: 'rhythm', to: 'gate.level', amount: 0.8 }, { from: 'tune', to: 'res1.pitch', amount: 1200 }],
+  },
+  (() => {
+    const p = based('FM Bell');
+    return { ...p, name: 'Stuck Bells', volume: 0.6,
+      about: 'Bells on a record that skips: now and then a Stutter catches a slice of the ringing and repeats it before letting go. The mod wheel makes it stick more often; Size on the Stutter is how long the stuck piece is.',
+      modules: [...p.modules.filter(m => m.type === 'fmop'), mod('stutter', 'stutter1', { size: 0.11, chance: 0.3, repeats: 5, mix: 1 }), mod('reverb', 'reverb1', { size: 4, mix: 0.3 })],
+      audio: [{ from: 'op2', to: 'op1' }, ...chain('op1', 'stutter1', 'reverb1', 'out')],
+      mod: [{ from: 'wheel', to: 'stutter1.chance', amount: 0.6 }] };
+  })(),
+  (() => {
+    const p = based('B3 Jazz');
+    Object.assign(p.modules.find(m => m.id === 'leslie').params, { wheel: 'off', inertia: 0.3, drive: 0.35 });
+    return { ...p, name: 'Broken Leslie', type: 'Organ',
+      about: 'A drawbar organ through a rotary speaker whose motor has a loose wire: a Global step sequence kicks the rotors fast and lets them fall back, in time with the song (12 = fast, 0 = slow), so chords lurch and wobble. Redraw the fault with its steps; Inertia on the Rotary is how heavy the rotors are.',
+      modules: [...p.modules, mod('gseq', 'motor', { sync: '1/4', length: 8, s1: 0, s2: 0, s3: 12, s4: 12, s5: 0, s6: 12, s7: 0, s8: 0 })],
+      mod: [...(p.mod || []), { from: 'motor', to: 'leslie.speed', amount: 1 }] };
+  })(),
+  (() => {
+    const kit = based('909 Kit');
+    kit.modules.splice(1, 0, mod('space', 'space1', { distance: 1.2, orbit: 0.3, orbits: 'together' }));
+    const next = kit.audio.filter(c => c.from === 'drums1').map(c => c.to);
+    return { ...kit, name: 'Beat Orbit', volume: 0.9,
+      about: 'For headphones: the 909 Kit going round your head. Every drum lands wherever one slow circle has got to (3D space, Orbit starts: together), so the beat walks round you every three seconds or so, and long sounds (cymbals, toms) travel as they ring. Orbit is the speed.',
+      audio: [...kit.audio.filter(c => c.from !== 'drums1'), { from: 'drums1', to: 'space1' }, ...next.map(to => ({ from: 'space1', to }))] };
+  })(),
+  {
+    name: 'Three Against Four', type: 'Pluck', voices: 4, volume: 0.7,
+    about: 'Hold a key: two small voices play at once, one fitting three notes where the other fits four, in time with the song, so they meet only at the start of every half bar. Each has its own Step sequence for its notes (semitones).',
+    modules: [mod('osc', 'osc1', { wave: 'triangle', level: 0.6 }), mod('osc', 'osc2', { wave: 'triangle', octave: 1, level: 0.45 }),
+      steps('three', '1/4t', [0, 7, 3]), steps('four', '1/8', [0, 10, 7, 3]),
+      mod('lfo', 'pluck3', { wave: 'rise', sync: '1/4t' }), mod('lfo', 'pluck4', { wave: 'rise', sync: '1/8' }),
+      mod('amp', 'amp3', { attack: 0.002, decay: 0.2, sustain: 1, release: 0.15, velocity: 0.4, level: 0.5 }),
+      mod('amp', 'amp4', { attack: 0.002, decay: 0.2, sustain: 1, release: 0.15, velocity: 0.4, level: 0.5 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.3, mix: 0.15 }), mod('reverb', 'reverb1', { type: 'room', size: 1.6, mix: 0.2 })],
+    audio: [...chain('osc1', 'amp3', 'delay1', 'reverb1', 'out'), ...chain('osc2', 'amp4', 'delay1')],
+    mod: [{ from: 'three', to: 'osc1.pitch', amount: 1200 }, { from: 'four', to: 'osc2.pitch', amount: 1200 },
+      { from: 'pluck3', to: 'amp3.level', amount: -0.59 }, { from: 'pluck4', to: 'amp4.level', amount: -0.59 }],
+  },
+  {
+    name: 'Carousel', type: 'Organ', voices: 8, volume: 0.7,
+    about: 'A fairground organ that has seen better summers. Hold a chord and it plays a waltz by itself, in time with the song: a bass note on one, the chord on two and three, all of it wavering slightly out of tune. Best in 3/4.',
+    modules: [mod('organ', 'organ1', { bar1: 0, bar2: 0, bar3: 8, bar4: 8, bar5: 0, bar6: 5, bar7: 0, bar8: 6, bar9: 0, click: 0.5, level: 0.7 }),
+      mod('osc', 'bass', { wave: 'triangle', octave: -1, level: 0.7 }),
+      steps('pah', '1/4', [-12, 0, 0], { glide: 0.08 }), steps('oom', '1/4', [0, -12, -12], { glide: 0.08 }),
+      mod('lfo', 'bounce', { wave: 'rise', sync: '1/4' }), mod('lfo', 'wow', { wave: 'sine', rate: 0.7 }),
+      mod('amp', 'chord', { attack: 0.004, decay: 0.2, sustain: 1, release: 0.12, velocity: 0.2, level: 0.8 }),
+      mod('amp', 'puff', { attack: 0.004, decay: 0.2, sustain: 1, release: 0.12, velocity: 0, level: 0.5 }),
+      mod('amp', 'low', { attack: 0.004, decay: 0.2, sustain: 1, release: 0.12, velocity: 0.2, level: 0.8 }),
+      mod('chorus', 'chorus1', { rate: 0.9, depth: 0.6, mix: 0.35 }), mod('delay', 'tape', { mode: 'tape', time: 0.09, feedback: 0.1, wobble: 1, mix: 0.25 }),
+      mod('reverb', 'reverb1', { type: 'room', size: 1.8, mix: 0.22 })],
+    audio: [...chain('organ1', 'chord', 'puff', 'chorus1', 'tape', 'reverb1', 'out'), ...chain('bass', 'low', 'chorus1')],
+    mod: [{ from: 'pah', to: 'chord.level', amount: 0.8 }, { from: 'oom', to: 'low.level', amount: 0.8 }, { from: 'bounce', to: 'puff.level', amount: -0.45 },
+      { from: 'wow', to: 'organ1.pitch', amount: 14 }, { from: 'wow', to: 'bass.pitch', amount: 14 }],
+  },
+  {
+    name: 'Theremin Choir', type: 'Lead', voices: 1, volume: 0.6, play: 'legato', glide: 0.18,
+    about: 'One voice that slides between notes like a theremin and sings "ah" through a Vowel filter, with a vibrato that arrives after a moment. Play it legato; the mod wheel closes the mouth from "ah" to "oo".',
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.35 }), mod('osc', 'osc2', { wave: 'sine', level: 0.5 }),
+      mod('lfo', 'vib', { wave: 'sine', rate: 5.6, delay: 0.35 }),
+      mod('vowel', 'vowel1', { vowel: 0.3, resonance: 7, mix: 0.85 }), mod('amp', 'amp1', { attack: 0.12, decay: 0.3, sustain: 1, release: 0.4, velocity: 0.4 }),
+      mod('reverb', 'reverb1', { type: 'hall', size: 3.5, mix: 0.3 })],
+    audio: [{ from: 'osc1', to: 'vowel1' }, { from: 'osc2', to: 'vowel1' }, ...chain('vowel1', 'amp1', 'reverb1', 'out')],
+    mod: [{ from: 'vib', to: 'osc1.pitch', amount: 28 }, { from: 'vib', to: 'osc2.pitch', amount: 28 }, { from: 'wheel', to: 'vowel1.vowel', amount: 3.5 }],
+  },
 ].map(cleanPatch);
 
 export const FACTORY = [...STARTERS, ...MORE, ...KITS, ...ARPS, ...STRANGE, ...NEWER, ...KEYS.map(cleanPatch)];
@@ -1424,11 +1531,13 @@ export const COLLECTIONS = [
   { title: 'Hazy Nostalgia', about: 'Warped, slightly out-of-tune tape pads and leads, worn keys and dusty drums.',
     sounds: ['Warped Tape Pad', 'Nostalgic Lead', 'Lo-Fi Keys', 'Tape Choir', 'Dusty Kit', 'Elastic Bass', 'Environmental Marimba'] },
   { title: 'Self-Playing', about: 'Hold a key or a chord and they play a pattern by themselves, in time with the song: arpeggios, hopping basses, a stepped sequence, random computer bleeps, rippling chords, a chopped pad, a bouncing ball.',
-    sounds: ['Climbing Saws', 'Glass Rain', 'Chord Pulse', 'Rolling Bass', 'Thumb and Fingers', 'Saw Arp', 'Glass Arp', 'Blip Arp', 'Rubber Arp', 'Pocket Sequencer', 'Five Against Eight', 'Robot Choir', 'Morse Pad', 'Dying Console', 'Octave Hopper', 'Staircase Sequence', 'Computer Room', 'Polyrhythm Chord', 'Gate Pad', 'Bouncing Ball', 'Pump Pad', 'Berlin Sequence'] },
+    sounds: ['Climbing Saws', 'Glass Rain', 'Chord Pulse', 'Rolling Bass', 'Thumb and Fingers', 'Saw Arp', 'Glass Arp', 'Blip Arp', 'Rubber Arp', 'Pocket Sequencer', 'Five Against Eight', 'Robot Choir', 'Morse Pad', 'Dying Console', 'Acid Steps', 'Clockwork', 'Three Against Four', 'Carousel', 'Octave Hopper', 'Staircase Sequence', 'Computer Room', 'Polyrhythm Chord', 'Gate Pad', 'Bouncing Ball', 'Pump Pad', 'Berlin Sequence'] },
   { title: 'Strange Things', about: 'Illusions and oddities: tones that rise for ever, a chord that gathers out of a cluster, a modem, clicks that sing, swarms round your head, a glass you can freeze, bells that turn into drones, a piano backwards.',
     sounds: ['Endless Riser', 'Endless Faller', 'Big Arrival', 'Dial-Up', 'Geiger Choir', 'Orbiting Bees', 'Singing Glass', 'Risset Bells', 'Backwards Piano', 'Computer Room', 'Bouncing Ball', 'Speech Shards', 'Broken Radio'] },
   { title: 'Struck, Stepped, Scattered', about: 'Sounds made with the Resonator (things that ring when struck: glasses, bars, bells, plates, a piano with bolts in it, a drum kit inside a bell), the Step sequence (melodies, rhythms and vowels that play themselves) and the Grain delay (notes that break into clouds).',
-    sounds: ['Glass Harp', 'Rosewood Bars', 'Tower Bell', 'Steel Plate', 'Bowed Plate', 'Bell Tower Kit', 'Prepared Piano', 'Pocket Sequencer', 'Five Against Eight', 'Robot Choir', 'Morse Pad', 'Dying Console', 'Piano Snowfall', 'Scattered Bells', 'Stair Echo', 'Held Cloud', 'Tape Left in the Sun', 'Ghost Piano', 'Talking String'] },
+    sounds: ['Glass Harp', 'Rosewood Bars', 'Tower Bell', 'Steel Plate', 'Bowed Plate', 'Bell Tower Kit', 'Prepared Piano', 'Pocket Sequencer', 'Five Against Eight', 'Robot Choir', 'Morse Pad', 'Dying Console', 'Piano Snowfall', 'Scattered Bells', 'Stair Echo', 'Held Cloud', 'Tape Left in the Sun', 'Ghost Piano', 'Talking String', 'Acid Steps', 'Talking Drums', 'Reverse Bloom', 'Clockwork'] },
+  { title: 'Things Gone Wrong', about: 'Machines misbehaving and voices that shouldn\'t exist: bells on a skipping record, a rotary speaker with a loose wire, a drum machine walking round your head, a fairground organ past its best, a singing theremin, two players who only agree twice a bar.',
+    sounds: ['Stuck Bells', 'Broken Leslie', 'Beat Orbit', 'Three Against Four', 'Carousel', 'Theremin Choir', 'Talking Drums', 'Dying Console', 'Tape Left in the Sun', 'Ghost Piano', 'Broken Radio'] },
   { title: 'Grain Clouds', about: 'Recordings played as clouds of tiny grains: frozen pianos and choirs, slow-motion voices, a drum loop at any pitch, record crackle.',
     sounds: ['Frozen Piano', 'Bowed Cloud', 'Slow Motion Voice', 'Speech Shards', 'Beat Dust', 'Time Stretch Keys', 'Vinyl Dust', 'Grain Choir', 'Glass Cloud', 'Slow Music Box', 'Wind Grains', 'Crushed Grains', 'Shimmer Wash', 'Tape Choir'] },
 ].map(c => ({ ...c, factory: true, sounds: c.sounds.filter(n => FACTORY.some(p => p.name === n)).map(name => ({ name, mine: false })) }));

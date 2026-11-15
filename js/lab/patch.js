@@ -333,7 +333,8 @@ export const MODULES = {
     params: [num('azimuth', 'Direction', -180, 180, 0, { unit: '°', step: 1, help: '0 = in front, 90 = right, -90 = left, 180 = behind' }),
       num('elevation', 'Height', -60, 60, 0, { unit: '°', step: 1 }), num('distance', 'Distance', 0.5, 10, 1.5, { unit: 'm', curve: 'log' }),
       num('spread', 'Spread', 0, 180, 0, { unit: '°', step: 1, help: 'Each note goes somewhere at random within this many degrees of the direction' }),
-      num('orbit', 'Orbit', 0, 2, 0, { unit: 'Hz', help: 'Circling speed (0 = still); set before playing' })],
+      num('orbit', 'Orbit', 0, 2, 0, { unit: 'Hz', help: 'Circling speed (0 = still); set before playing' }),
+      choice('orbits', 'Orbit starts', ['with each note', 'together'], 'with each note', { showIf: p => p.orbit > 0, help: 'With each note: every note starts in front of you. Together: all notes share one circle, so each starts wherever the circle has got to (short notes, like drums, land all round you)' })],
     targets: { x: { unit: 'm', min: -10, max: 10 } },
   },
   chorus: {

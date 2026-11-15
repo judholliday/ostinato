@@ -1887,13 +1887,29 @@ export class LabSynth {
         if (p.orbit > 0) {
           const r = Math.cos(el) * d, orbiters = [];
           set[`${m.id}.orbit`] = v => orbiters.forEach(o => o.frequency.setTargetAtTime(Math.max(0.001, v), ac.currentTime, 0.05));
-          for (const [param, wave, sign] of [[pan.positionX, 'sine', 1], [pan.positionZ, 'cosine', -1]]) {
-            const o = src(ac.createOscillator()), g = keep(ac.createGain());
+          // Where on the circle the note starts: in front, or (Orbit starts: together) wherever one
+          // shared orbit is at that moment, so short notes land all round the head. A turn of the
+          // sine and cosine by that angle: x = r sin(wt + f), z = -r cos(wt + f).
+          const f = p.orbits === 'together' ? 2 * Math.PI * ((p.orbit * t0) % 1) : 0;
+          // The panner sits at the starting point until the note starts (set at the centre, it took
+          // some 50 ms to get out to the circle, and a hi-hat was over by then); a constant that
+          // starts with the oscillators takes that starting point off again.
+          pan.positionX.value = r * Math.sin(f); pan.positionZ.value = -r * Math.cos(f);
+          const back = src(ac.createConstantSource());
+          for (const [param, gain] of [[pan.positionX, -Math.sin(f)], [pan.positionZ, Math.cos(f)]]) {
+            const g = keep(ac.createGain());
+            g.gain.value = r * gain;
+            back.connect(g).connect(param);
+          }
+          for (const [wave, gx, gz] of [['sine', Math.cos(f), Math.sin(f)], ['cosine', Math.sin(f), -Math.cos(f)]]) {
+            const o = src(ac.createOscillator());
             if (wave === 'sine') o.type = 'sine'; else o.setPeriodicWave(a.cosine);
             o.frequency.value = p.orbit;
-            g.gain.value = r * sign;
-            param.value = 0;
-            o.connect(g).connect(param);
+            for (const [param, gain] of [[pan.positionX, gx], [pan.positionZ, gz]]) {
+              const g = keep(ac.createGain());
+              g.gain.value = r * gain;
+              o.connect(g).connect(param);
+            }
             orbiters.push(o);
           }
         }
@@ -1922,11 +1938,15 @@ export class LabSynth {
       exits.push(exit);
     }
     for (const c of patch.mod) {
-      const [tid, key] = c.to.split('.'), from = nodes[c.from], params = nodes[tid]?.targets[key];
+      // A Global LFO or Global step sequence can move a note's settings too: one movement shared by
+      // every note (a drum kit's hits can't each carry a pattern; they're over within a step).
+      const shared = !nodes[c.from] && this.globals.get(c.from)?.out;
+      const [tid, key] = c.to.split('.'), from = shared ? { out: shared } : nodes[c.from], params = nodes[tid]?.targets[key];
       if (!from || !params?.length) continue;
       const g = keep(ac.createGain()), k = modScale(key) * (nodes[tid].scales?.[key] ?? 1);
       g.gain.value = c.amount * k;
       from.out.connect(g);
+      if (shared) all.push({ disconnect: () => { try { shared.disconnect(g); } catch { /* gone */ } } });
       params.forEach(pm => g.connect(pm));
       set[`mod:${c.from}>${c.to}`] = v => g.gain.setTargetAtTime(v * k, ac.currentTime, 0.01);
     }
