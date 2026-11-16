@@ -183,6 +183,38 @@ for (const [type, spec] of Object.entries(MODULES)) {
   assert.ok(RACK_EFFECTS.includes('grains') && !RACK_EFFECTS.includes('gseq') && !RACK_EFFECTS.includes('resonator'));
 }
 {
+  // Feedback is the one module whose output may go back to an earlier effect; it can't go
+  // straight to the output or into a note's own modules, and no other connection may loop.
+  const raw = { modules: [{ id: 'o', type: 'osc' }, { id: 'g', type: 'lpg', params: { mode: 'sideways', decay: 99 } }, { id: 'e', type: 'eq' }, { id: 'd', type: 'delay' },
+    { id: 'sp', type: 'spectral', params: { state: 'melted' } }, { id: 'fb', type: 'feedback', params: { amount: 5 } }],
+    audio: [{ from: 'o', to: 'g' }, { from: 'g', to: 'e' }, { from: 'e', to: 'd' }, { from: 'd', to: 'sp' }, { from: 'sp', to: 'out' },
+      { from: 'd', to: 'e' }, { from: 'sp', to: 'fb' }, { from: 'fb', to: 'e' }, { from: 'fb', to: 'out' }, { from: 'fb', to: 'g' }, { from: 'fb', to: 'fb' }],
+    mod: [{ from: 'wheel', to: 'sp.frozen', amount: 1 }, { from: 'wheel', to: 'fb.amount', amount: 0.5 }, { from: 'vel', to: 'g.cutoff', amount: 1200 }] };
+  const { RACK_EFFECTS } = await import('../js/lab/patch.js');
+  const { patch, notes } = normalizePatch(raw);
+  assert.deepEqual(patch.audio.map(c => `${c.from}>${c.to}`), ['o>g', 'g>e', 'e>d', 'd>sp', 'sp>out', 'sp>fb', 'fb>e']);
+  assert.equal(notes.length, 4, 'the plain loop, feedback to the output, into a note\'s module and into itself are left out');
+  assert.equal(patch.mod.length, 3);
+  const by = Object.fromEntries(patch.modules.map(m => [m.id, m.params]));
+  assert.deepEqual([by.g.mode, by.g.decay, by.sp.state, by.fb.amount], ['both', 5, 'listen', 1.2]);
+  assert.ok(heardModules(patch).has('fb'), 'a Feedback module in a loop counts as heard');
+  assert.equal(normalizePatch(patch).notes.length, 0, 'a patch with a loop in it normalises again without complaint');
+  assert.ok(RACK_EFFECTS.includes('spectral') && !RACK_EFFECTS.includes('feedback') && !RACK_EFFECTS.includes('lpg'));
+}
+{
+  // Feedback's pitch settings and what can move it: global sources only (a Global envelope and
+  // LFO among them), on its amount, delay, tone and low cut.
+  const raw = { modules: [{ id: 'o', type: 'osc' }, { id: 'e', type: 'eq' }, { id: 'fb', type: 'feedback', params: { tune: 'by ear', interval: 40, time: 0.001 } },
+    { id: 'ge', type: 'genv', params: { decay: 99 } }, { id: 'gl', type: 'glfo', params: { phase: 2 } }, { id: 'en', type: 'env' }],
+    audio: [{ from: 'o', to: 'e' }, { from: 'e', to: 'out' }, { from: 'e', to: 'fb' }, { from: 'fb', to: 'e' }],
+    mod: [{ from: 'ge', to: 'fb.time', amount: 5 }, { from: 'gl', to: 'fb.tone', amount: 1200 }, { from: 'wheel', to: 'fb.lowcut', amount: 1200 }, { from: 'wheel', to: 'ge.depth', amount: 1 }, { from: 'en', to: 'fb.tone', amount: 100 }] };
+  const { patch, notes } = normalizePatch(raw);
+  const by = Object.fromEntries(patch.modules.map(m => [m.id, m.params]));
+  assert.deepEqual([by.fb.tune, by.fb.interval, by.fb.time, by.ge.decay, by.gl.phase], ['free', 24, 0.006, 20, 1]);
+  assert.deepEqual(patch.mod.map(m => `${m.from}>${m.to}:${m.amount}`), ['ge>fb.time:0.2', 'gl>fb.tone:1200', 'wheel>fb.lowcut:1200', 'wheel>ge.depth:1']);
+  assert.equal(notes.length, 1, 'a per-note envelope can\'t move the Feedback module');
+}
+{
   // The soundboard: finite, wide above 300 Hz, and its sides cancel in mono (left = mid + side,
   // right = mid − side).
   const { soundboardImpulse } = await import('../js/lab/engine.js');

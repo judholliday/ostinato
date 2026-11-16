@@ -1534,9 +1534,9 @@ $('#modules').addEventListener('change', e => routeChange(e.target));
 
 const PICKER_GROUPS = [
   ['Make sound', ['osc', 'string', 'piano', 'organ', 'sampler', 'granular', 'noise', 'fmop', 'drums']],
-  ['Shape it', ['filter', 'vowel', 'resonator', 'drive', 'ring', 'amp', 'space']],
-  ['Move things', ['env', 'lfo', 'seq', 'glfo', 'gseq']],
-  ['Effects', ['soundboard', 'resonance', 'reverb', 'shimmer', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'grains', 'scanner', 'rotary']],
+  ['Shape it', ['filter', 'vowel', 'resonator', 'drive', 'ring', 'amp', 'lpg', 'space']],
+  ['Move things', ['env', 'lfo', 'seq', 'glfo', 'genv', 'gseq']],
+  ['Effects', ['soundboard', 'resonance', 'reverb', 'shimmer', 'delay', 'chorus', 'phaser', 'flanger', 'tremolo', 'eq', 'compressor', 'shaper', 'crusher', 'stutter', 'freeze', 'spectral', 'grains', 'feedback', 'scanner', 'rotary']],
 ];
 const ICONS = {
   osc: 'M2 17 L8 7 V17 L14 7 V17 L20 7 V17',
@@ -1577,6 +1577,10 @@ const ICONS = {
   resonator: 'M3 8 H21 V12 H3 Z M7 12 V20 M12 12 V17 M17 12 V20 M9 3 L12 8 L15 3',
   seq: 'M2 16 H6 V8 H10 V12 H14 V5 H18 V14 H22',
   gseq: 'M2 14 H6 V6 H10 V10 H14 V3 H18 V12 H22 M2 21 H22',
+  genv: 'M2 17 L6 5 C9 12 13 16 20 17 M2 21 H22',
+  lpg: 'M3 19 V8 L5 5 C8 9 10 15 14 17 S19 18.5 21 19 M3 19 H21',
+  spectral: 'M3 6 H9 C13 6 14 7 21 7 M3 10 H7 C12 10 14 11.5 21 11.5 M3 14 H11 C15 14 16 15 21 15 M3 18 H6 C11 18 13 19 21 19',
+  feedback: 'M5 9 H16 a4 4 0 0 1 0 8 H8 M11 14 L8 17 L11 20',
   grains: 'M3 12 a2 2 0 1 0 .01 0 M9 7 a1.5 1.5 0 1 0 .01 0 M10 16 a2.5 2.5 0 1 0 .01 0 M15 11 a1.5 1.5 0 1 0 .01 0 M19 6 a1 1 0 1 0 .01 0 M20 16 a1.5 1.5 0 1 0 .01 0',
   rack: 'M3 5 H21 V19 H3 Z M3 10 H21 M3 14 H21 M6 7.5 h.01 M6 12 h.01 M6 16.5 h.01',
 };
@@ -1584,7 +1588,7 @@ const icon = type => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${ICO
 const BLURBS = {
   osc: 'A tone at the note\'s pitch', string: 'Plucked or struck strings', piano: 'A grand, from recordings', organ: 'Drawbars, percussion, click', rotary: 'Spinning speaker (Leslie)', scanner: 'Tonewheel organ\'s vibrato and chorus', glfo: 'Moves effects, one for all notes', sampler: 'Plays a recording', granular: 'Clouds from a recording', noise: 'Breath, wind, hiss', fmop: 'Bells, e-pianos, FM basses', drums: 'A synthesized kit',
   filter: 'Darker or brighter', vowel: 'Makes it talk (A E I O U)', drive: 'Warmth to distortion', ring: 'Metallic, robotic', amp: 'Loudness over time', space: 'Around your head',
-  env: 'A shape over each note', lfo: 'Swings a setting back and forth', seq: 'A pattern of steps, per note', gseq: 'A pattern of steps, for effects', resonator: 'Rings like a bar, bell, glass…', grains: 'Turns the sound into a cloud',
+  env: 'A shape over each note', lfo: 'Swings a setting back and forth', seq: 'A pattern of steps, per note', gseq: 'A pattern of steps, for effects', genv: 'Rises and falls on every note, for effects', resonator: 'Rings like a bar, bell, glass…', grains: 'Turns the sound into a cloud', lpg: 'A pluck that dulls as it fades', spectral: 'Smears notes into a wash; can freeze', feedback: 'Sends sound back round the chain',
   chorus: 'Wider, thicker', delay: 'Echoes, ping-pong, tape', soundboard: 'A piano\'s body, for strings', resonance: 'The pedal\'s halo of strings', reverb: 'Room, hall, plate, or a recording',
   phaser: 'Swirling sweep', shimmer: 'Reverb that blooms upward', flanger: 'Jet-plane sweep', tremolo: 'Pulsing or panning', eq: 'Bass, middle, treble', compressor: 'Evens out the level',
   shaper: 'Saturation, clipping, folding', crusher: 'Fewer bits, lower rate', stutter: 'Repeats slices, glitchy', freeze: 'Holds a moment as a drone',

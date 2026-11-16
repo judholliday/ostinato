@@ -241,6 +241,18 @@ export const MODULES = {
     params: [num('amount', 'Amount', 0, 1, 0.3)],
     targets: {},
   },
+  lpg: {
+    label: 'Low-pass gate', scope: 'voice', audioIn: true, audioOut: true,
+    help: 'A gate that gets duller as it closes, the way struck and plucked things do: each note opens it at once and it falls shut by itself, loudness and brightness together, fast at first and then with a soft tail. Use it instead of an Amp for woody, bongo-like plucks from any oscillator.',
+    params: [choice('mode', 'Mode', ['both', 'gate', 'filter'], 'both', { rebuild: true, help: 'Both: loudness and brightness close together. Gate: loudness only. Filter: brightness only (add an Amp to end the note)' }),
+      choice('trigger', 'Opens', ['struck', 'while held'], 'struck', { rebuild: true, help: 'Struck: each note is a ping that dies away by itself. While held: it stays open until the key is up, then closes' }),
+      num('decay', 'Decay', 0.03, 5, 0.35, { unit: 's', curve: 'log', help: 'How long it takes to close' }),
+      num('tail', 'Tail', 0, 1, 0.4, { help: 'How much of the slow last part there is: 0 = a short knock, 1 = a long soft ring-out' }),
+      num('open', 'Opens to', 200, 20000, 7000, { unit: 'Hz', curve: 'log', help: 'How bright it is when fully open (softer notes open less far)' }),
+      num('resonance', 'Resonance', 0, 15, 1), num('velocity', 'Velocity', 0, 1, 0.7, { help: 'How much harder playing is louder and brighter' }),
+      num('level', 'Level', 0, 1, 0.8)],
+    targets: { cutoff: { unit: 'cents', min: -9600, max: 9600 }, level: { min: -1, max: 1 } },
+  },
   amp: {
     label: 'Amp', scope: 'voice', audioIn: true, audioOut: true,
     help: 'The note\'s loudness over time (attack, decay, sustain, release).',
@@ -476,6 +488,28 @@ export const MODULES = {
       num('mix', 'Mix', 0, 1, 0.5)],
     targets: { time: { unit: 's', min: -2, max: 2 }, pitch: { unit: 'st', min: -24, max: 24 }, density: { unit: '/s', min: -80, max: 80 }, feedback: { min: -0.9, max: 0.9 }, hold: { min: 0, max: 1 }, mix: { min: -1, max: 1 } },
   },
+  spectral: {
+    label: 'Spectral blur', scope: 'global', audioIn: true, audioOut: true,
+    help: 'Takes the sound apart into its frequencies and lets each one fade slowly, so notes smear into a wash that keeps their pitches but loses their edges. Frozen holds the wash as it is, as a steady drone with no loop in it, for as long as you like.',
+    params: [choice('state', 'State', ['listen', 'frozen'], 'listen', { help: 'Frozen: stops listening and holds what it has' }),
+      num('blur', 'Blur', 0.05, 30, 2, { unit: 's', curve: 'log', help: 'How long each frequency takes to fade away' }),
+      num('soften', 'Soften attacks', 0, 1, 0.3, { help: '0 = new sounds appear at once; higher = they swell in, and short sounds (drum hits) hardly register' }),
+      num('mix', 'Mix', 0, 1, 0.6)],
+    targets: { frozen: { min: 0, max: 1 }, blur: { unit: 's', min: -30, max: 30 }, mix: { min: -1, max: 1 } },
+  },
+  feedback: {
+    label: 'Feedback', scope: 'global', audioIn: true, audioOut: true,
+    help: 'Sends sound backwards: connect a later effect into it, and connect it to an earlier effect, and what comes out of the chain goes round again (through every effect in between, each time). It is the one module allowed to make a loop. Low amounts thicken and lengthen; near 1 and above, the loop can sing by itself and carry on after you stop, until you turn Amount down or press Silence.',
+    params: [num('amount', 'Amount', 0, 1.2, 0.4, { help: 'How much goes round again. What the loop does also depends on the effects in it: a reverb or resonant filter adds its own gain' }),
+      choice('tune', 'Pitch', ['free', 'follows keys', 'fixed note'], 'free', { rebuild: true, help: 'Free: the loop sings wherever the effects in it happen to ring. Follows keys: it is tuned to the last note played, so the feedback sings that note. Fixed note: always the same one' }),
+      num('note', 'Note', 24, 96, 57, { step: 1, showIf: p => p.tune === 'fixed note', help: 'As a key number: 60 = middle C, 57 = the A below' }),
+      num('interval', 'Interval', -24, 24, 0, { unit: 'st', step: 1, showIf: p => p.tune !== 'free', help: 'The feedback sings this far above or below the note: 12 = an octave up, 7 = a fifth, 19 = an octave and a fifth (what a guitar amp tends to do)' }),
+      num('focus', 'Focus', 0, 1, 0.7, { showIf: p => p.tune !== 'free', help: 'How firmly the loop is held to that pitch: low = it may jump to another harmonic; high = one pure note' }),
+      sync('the delay', { showIf: p => p.tune === 'free' }), num('time', 'Delay', 0.006, 1, 0.006, { unit: 's', curve: 'log', showIf: p => p.tune === 'free' && unsynced(p), help: 'How long before it comes round: very short = a ringing, metallic tone (6 ms rings at 167 Hz and its multiples; it can\'t be shorter); longer = repeats' }),
+      num('tone', 'Tone', 200, 16000, 6000, { unit: 'Hz', curve: 'log', help: 'A low-pass in the loop: each pass is a little duller' }),
+      num('lowcut', 'Low cut', 20, 2000, 60, { unit: 'Hz', curve: 'log', help: 'A high-pass in the loop: stops the lows building up' })],
+    targets: { amount: { min: -1.2, max: 1.2 }, time: { unit: 's', min: -0.2, max: 0.2 }, tone: { unit: 'cents', min: -4800, max: 4800 }, lowcut: { unit: 'cents', min: -4800, max: 4800 } },
+  },
   scanner: {
     label: 'Organ vibrato', scope: 'global', audioIn: true, audioOut: true,
     help: 'The tonewheel organ\'s scanner vibrato and chorus: a short delay line swept up and back about seven times a second. V1–V3 = vibrato, more each step; C1–C3 = the same mixed with the dry sound (the chorus jazz players leave on). Put it straight after the Drawbar organ, before the Rotary.',
@@ -494,8 +528,15 @@ export const MODULES = {
   glfo: {
     label: 'Global LFO', scope: 'global', modOut: true,
     help: 'One LFO for the whole sound (not one per note), for moving effects: sweep a delay\'s mix, a phaser\'s rate, a bitcrusher\'s bits… Drag from its dot to an effect\'s setting.',
-    params: [choice('wave', 'Wave', ['sine', 'triangle', 'square', 'saw'], 'sine'), sync('each cycle'), num('rate', 'Rate', 0.02, 20, 0.5, { unit: 'Hz', curve: 'log', showIf: unsynced }), num('depth', 'Depth', 0, 1, 1)],
+    params: [choice('wave', 'Wave', ['sine', 'triangle', 'square', 'saw'], 'sine'), sync('each cycle'), num('rate', 'Rate', 0.02, 20, 0.5, { unit: 'Hz', curve: 'log', showIf: unsynced }), num('depth', 'Depth', 0, 1, 1),
+      num('phase', 'Start at', 0, 1, 0, { rebuild: true, help: 'Where in its cycle it starts (0.5 = halfway). Global LFOs all start together, so two at the same rate with different starts stay that far apart: three at 0, 0.33 and 0.67 take turns' })],
     targets: { rate: { unit: 'Hz', min: -10, max: 10 }, depth: { min: -1, max: 1 } },
+  },
+  genv: {
+    label: 'Global envelope', scope: 'global', modOut: true,
+    help: 'One envelope for the whole sound, for moving effects: it rises and falls again every time a note is played (any note). Drag from its dot to an effect\'s setting; give several different times and they move out of step.',
+    params: [num('attack', 'Attack', 0.001, 10, 0.01, { unit: 's', curve: 'log' }), num('decay', 'Decay', 0.01, 20, 0.6, { unit: 's', curve: 'log', help: 'How long it takes to fall back' }), num('depth', 'Depth', 0, 1, 1)],
+    targets: { depth: { min: -1, max: 1 } },
   },
   gseq: {
     label: 'Global step sequence', scope: 'global', modOut: true,
@@ -510,8 +551,8 @@ export const MODULES = {
     targets: {},
   },
 };
-// The effects a rack can hold: every global effect but a rack.
-export const RACK_EFFECTS = Object.keys(MODULES).filter(t => MODULES[t].scope === 'global' && t !== 'rack' && !MODULES[t].modOut);
+// The effects a rack can hold: every global effect but a rack and Feedback (which needs the diagram's connections).
+export const RACK_EFFECTS = Object.keys(MODULES).filter(t => MODULES[t].scope === 'global' && t !== 'rack' && t !== 'feedback' && !MODULES[t].modOut);
 export const MAX_RACK = 8;
 // A rack's contents: { name, modules: [{ type, params, off? }] } (effects in signal order).
 export function cleanRack(raw) {
@@ -539,7 +580,7 @@ export const SOURCES = { vel: { label: 'Velocity', scope: 'voice' }, wheel: { la
 export const paramOf = (type, key) => MODULES[type]?.params.find(p => p.key === key) || null;
 
 // The setting a modulation dropped on a module most likely means (marked in the patch diagram).
-const DEFAULT_TARGET = { sampler: 'pitch', osc: 'pitch', noise: 'level', filter: 'cutoff', amp: 'level', lfo: 'depth', fmop: 'fm', ring: 'mix', space: 'x', resonator: 'pitch', grains: 'mix' };
+const DEFAULT_TARGET = { sampler: 'pitch', osc: 'pitch', noise: 'level', filter: 'cutoff', amp: 'level', lfo: 'depth', fmop: 'fm', ring: 'mix', space: 'x', resonator: 'pitch', grains: 'mix', lpg: 'cutoff', spectral: 'mix', feedback: 'amount' };
 export const defaultTarget = type => (MODULES[type]?.targets[DEFAULT_TARGET[type]] ? DEFAULT_TARGET[type] : Object.keys(MODULES[type]?.targets || {})[0] || null);
 // What a bypassed module does: effects and shapers pass the sound through; sources and
 // modulators go quiet.
@@ -605,12 +646,16 @@ export function normalizePatch(raw, { nested = false } = {}) {
   // Audio: from a module with an output to one with an input (or 'out'); voice -> global is fine,
   // global -> voice isn't; no loops (Web Audio can't run them without a delay inside).
   const audio = [];
-  const reaches = (from, to) => from === to || audio.some(c => c.from === from && reaches(c.to, to));
+  // A Feedback module's own output is the exception: it goes back to an earlier effect (it has a
+  // delay inside), so its connections aren't followed when looking for loops.
+  const loops = id => byId.get(id)?.type === 'feedback';
+  const reaches = (from, to) => from === to || audio.some(c => c.from === from && !loops(c.from) && reaches(c.to, to));
   for (const c of Array.isArray(raw.audio) ? raw.audio : []) {
     const a = byId.get(c?.from), b = c?.to === 'out' ? 'out' : byId.get(c?.to);
     const ok = a && b && MODULES[a.type].audioOut && (b === 'out' || (MODULES[b.type].audioIn && b !== a
       && !(MODULES[a.type].scope === 'global' && MODULES[b.type].scope === 'voice')));
-    if (!ok || audio.some(x => x.from === c.from && x.to === c.to) || (b !== 'out' && reaches(b.id, a.id))) {
+    const back = a?.type === 'feedback'; // goes to an effect only (never straight to the output), loop or not
+    if (!ok || (back && b === 'out') || audio.some(x => x.from === c.from && x.to === c.to) || (b !== 'out' && !back && reaches(b.id, a.id))) {
       notes.push(`Audio connection ${c?.from} → ${c?.to} left out.`);
       continue;
     }

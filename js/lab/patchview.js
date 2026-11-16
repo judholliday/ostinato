@@ -70,13 +70,18 @@ export function shapePath(m) {
     let t = x;
     const Y = v => y + h - v * h;
     pts.push([t, Y(0)], [t += a * k, Y(1)], [t += d * k, Y(p.sustain)], [t += hold * k, Y(p.sustain)], [t + r * k, Y(0)]);
-  } else if (m.type === 'lfo') {
+  } else if (m.type === 'genv') {
+    const len = t => Math.log10(1 + t * 40), a = len(p.attack), d = len(p.decay) * 1.6, k = w / (a + d);
+    const Y = v => y + h - v * p.depth * h;
+    pts.push([x, Y(0)], [x + a * k, Y(1)]);
+    for (let i = 1; i <= 24; i++) pts.push([x + (a + d * i / 24) * k, Y(Math.exp(-4 * i / 24))]);
+  } else if (m.type === 'lfo' || m.type === 'glfo') {
     const steps = [0.3, -0.8, 0.9, -0.2, 0.6, -0.5, 0.1, -0.9];
     const wave = ph => ({ sine: Math.sin(2 * Math.PI * ph), triangle: 1 - 4 * Math.abs(((ph + 0.25) % 1) - 0.5), square: ph % 1 < 0.5 ? 1 : -1,
       saw: 1 - 2 * (ph % 1), random: steps[Math.floor(ph * 4) % steps.length] }[p.wave] ?? 0);
     for (let i = 0; i <= 120; i++) {
       const ph = i / 60, fade = p.delay > 0 ? Math.min(1, ph / Math.min(2, p.delay * 2)) : 1;
-      pts.push([x + (i / 120) * w, y + h / 2 - wave(ph) * fade * p.depth * (h / 2)]);
+      pts.push([x + (i / 120) * w, y + h / 2 - wave(ph + (p.phase || 0)) * fade * p.depth * (h / 2)]);
     }
   } else if (m.type === 'seq' || m.type === 'gseq') {
     // One cycle of the steps.

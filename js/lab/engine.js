@@ -285,7 +285,8 @@ export function fileBuffer(ac, file) {
 // real piano): loaded once, then the strikes as AudioBuffers per context. A key plays the nearest
 // fitted note, moved by at most a semitone and a half, at the piano's own tuning there.
 const pianoFiles = new Map(), pianoBuffers = new WeakMap();
-const PIANO_GAIN = 3;   // the recordings' own level is low: a loud middle C then peaks about where the String pianos' does
+const PIANO_GAIN = 6.6; // the recordings' own level is low. 3 until Nov 2026, when the user found every piano much quieter than the other
+// sounds: on the same phrase they averaged -23 dB and peaked near 0.4, the other keys, bells and organs -10 to -18 dB and about 1
 const PIANO_HALO = 80;  // see the Pedal resonance effect
 export function loadPiano(ac, name = 'steinway-b') {
   if (!pianoFiles.has(name)) {
@@ -403,6 +404,7 @@ function envOn(param, t0, p, peak = 1, k = { attack: 1, decay: 1 }) {
 // How an envelope's times change with the note: Key → time shortens them up the keyboard (1 =
 // half as long each octave above C4, twice as long each octave below), Velocity → time makes
 // harder notes ring longer and attack faster (or, below 0, the reverse), up to twice / half.
+const LPG_SHUT = 40; // Hz: the lowest a Low-pass gate's cutoff closes to
 function envTimes(p, note, vel) {
   const key = 2 ** (-(note - 60) / 12 * (p.keytrack || 0)), v = 2 ** ((p.veltime || 0) * (vel - 64) / 63);
   return { attack: key / v, decay: key * v, release: key * v };
@@ -734,7 +736,7 @@ export class LabSynth {
     for (const m of this.patch.modules) {
       if (MODULES[m.type].scope !== 'global') continue;
       const now = () => this.patch.modules.find(x => x.id === m.id)?.params || m.params; // its settings as they are now
-      this.globals.set(m.id, m.type === 'glfo' ? this.buildGlobalLfo(m) : m.type === 'gseq' ? this.buildGlobalSeq(m) : m.type === 'rack' ? this.buildRack(m) : this.buildEffect(m, now));
+      this.globals.set(m.id, m.type === 'glfo' ? this.buildGlobalLfo(m) : m.type === 'genv' ? this.buildGlobalEnv(m) : m.type === 'gseq' ? this.buildGlobalSeq(m) : m.type === 'rack' ? this.buildRack(m) : this.buildEffect(m, now));
     }
     // Modulation of effects: from the mod wheel or a Global LFO (global sources only; patch.js).
     this.globalMods = new Map();
@@ -760,7 +762,8 @@ export class LabSynth {
   // A Global LFO: one for the whole sound, for modulating effects. Its `out` feeds modulations.
   buildGlobalLfo(m) {
     const ac = this.ac, p = m.params, osc = ac.createOscillator(), depth = ac.createGain();
-    osc.type = { sine: 'sine', triangle: 'triangle', square: 'square', saw: 'sawtooth' }[p.wave] || 'sine';
+    if (p.phase > 0) osc.setPeriodicWave(lfoWave(ac, assets(ac), p.wave, p.phase)); // Start at: the wave turned by that much
+    else osc.type = { sine: 'sine', triangle: 'triangle', square: 'square', saw: 'sawtooth' }[p.wave] || 'sine';
     osc.frequency.value = this.rateOf(p);
     depth.gain.value = p.depth;
     osc.connect(depth);
@@ -769,6 +772,23 @@ export class LabSynth {
     const rerate = () => osc.frequency.setTargetAtTime(this.rateOf(now()), ac.currentTime, 0.05);
     return { out: depth, nodes: [osc, depth], set: { rate: rerate, sync: rerate, _tempo: rerate, depth: v => depth.gain.setTargetAtTime(v, ac.currentTime, 0.05) },
       targets: { rate: [osc.frequency], depth: [depth.gain] } };
+  }
+
+  // A Global envelope: one for the whole sound, up and back down each time a note starts (tellKey).
+  buildGlobalEnv(m) {
+    const ac = this.ac, c = ac.createConstantSource(), depth = ac.createGain();
+    const now = () => this.patch.modules.find(x => x.id === m.id)?.params || m.params;
+    c.offset.value = 0;
+    depth.gain.value = m.params.depth;
+    c.connect(depth);
+    c.start();
+    const key = (note, at) => {
+      const q = now(), t = Math.max(at, ac.currentTime);
+      if (c.offset.cancelAndHoldAtTime) c.offset.cancelAndHoldAtTime(t); else c.offset.cancelScheduledValues(t);
+      c.offset.linearRampToValueAtTime(1, t + q.attack);
+      c.offset.setTargetAtTime(0, t + q.attack, q.decay / 4);
+    };
+    return { out: depth, nodes: [c, depth], set: { depth: v => depth.gain.setTargetAtTime(v, ac.currentTime, 0.05) }, targets: { depth: [depth.gain] }, ...(m.off ? {} : { key }) };
   }
 
   // A Global step sequence: one for the whole sound, running from when the effects were built.
@@ -784,8 +804,8 @@ export class LabSynth {
   buildEffect(m, now) {
     const ac = this.ac, t = ac.currentTime;
     const p = m.params, input = ac.createGain(), output = ac.createGain(), dry = ac.createGain(), wet = ac.createGain();
-    if (m.off) { // bypassed: straight through
-      input.connect(output);
+    if (m.off) { // bypassed: straight through (a Feedback module: nothing goes back)
+      if (m.type !== 'feedback') input.connect(output);
       return { input, output, nodes: [input, output], set: {} };
     }
     input.connect(dry).connect(output);
@@ -1037,6 +1057,68 @@ export class LabSynth {
       g.nodes.push(node);
       g.targets = { ...Object.fromEntries(['time', 'pitch', 'density', 'feedback', 'hold'].map(k => [k, [node.parameters.get(k)]])), mix: [wet.gain] };
       mix(p.mix);
+    } else if (m.type === 'spectral') {
+      // Spectral blur (fxworklet.js 'ost-spectral'); passes the sound through until the worklet has loaded.
+      if (!fxReady(ac)) { this.fxPending = true; mix(0, 1); return g; }
+      const node = new AudioWorkletNode(ac, 'ost-spectral', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit' });
+      const to = (key, v) => node.parameters.get(key)?.setValueAtTime(v, ac.currentTime);
+      to('blur', p.blur); to('soften', p.soften); to('frozen', p.state === 'frozen' ? 1 : 0);
+      g.set = { blur: v => to('blur', v), soften: v => to('soften', v), state: v => to('frozen', v === 'frozen' ? 1 : 0), mix: v => mix(v) };
+      input.connect(node).connect(wet);
+      g.nodes.push(node);
+      g.targets = { frozen: [node.parameters.get('frozen')], blur: [node.parameters.get('blur')], mix: [wet.gain] };
+      mix(p.mix);
+    } else if (m.type === 'feedback') {
+      // The way back: what comes in is delayed (a loop needs at least one block of delay),
+      // filtered, turned down by Amount and soft-clipped (so a loop that feeds itself levels off
+      // instead of growing without end), and sent on to an earlier effect. No dry sound.
+      const delay = ac.createDelay(1.1), tone = ac.createBiquadFilter(), low = ac.createBiquadFilter(), amount = ac.createGain(), clip = ac.createWaveShaper();
+      // Tuned (Pitch: follows keys / fixed note): the delay is a whole number of the note's periods,
+      // less what the two filters below turn the phase by, so the loop comes round in step exactly
+      // at that note; and a band-pass at the note is blended in (Focus), so every other pitch
+      // comes back weaker and the loop sings there and nowhere else.
+      // A loop comes round one render block (128 samples, 2.9 ms) later than its DelayNode says
+      // (measured in Chrome: a 5 ms delay rang at multiples of 126.4 Hz, a 7.9 ms loop), so the node is
+      // set that much short, and the shortest loop there can be is two blocks, 5.8 ms.
+      const block = 128 / ac.sampleRate, least = 2 * block + 0.0002, tuned = p.tune !== 'free';
+      const focus = ac.createBiquadFilter(), wide = ac.createGain(), narrow = ac.createGain();
+      focus.type = 'bandpass';
+      const lag = (f, fc) => Math.atan2(Math.SQRT2 * f / fc, 1 - (f / fc) ** 2); // a 12 dB Butterworth low-pass's phase lag
+      let key = this.lastKey ?? 57;
+      const hz = () => { const q = now(); return 440 * 2 ** (((q.tune === 'fixed note' ? q.note : key) + q.interval - 69) / 12); };
+      const time = () => {
+        if (!tuned) return Math.max(least, this.timeOf(now()));
+        const q = now(), f = hz(), turn = (Math.PI - lag(f, q.lowcut) - lag(f, q.tone)) / (2 * Math.PI); // the high-pass leads, the low-pass lags
+        let n = turn > 0 ? 0 : 1; // -2*pi*f*delay + lead = -2*pi*n
+        while ((n + turn) / f < least) n++;
+        return (n + turn) / f;
+      };
+      const refocus = at => {
+        const q = now(), f = Math.min(ac.sampleRate * 0.45, hz()), amt = tuned ? q.focus : 0;
+        focus.frequency.setTargetAtTime(f, at, 0.01);
+        focus.Q.setTargetAtTime(4 + 26 * amt, at, 0.01);
+        narrow.gain.setTargetAtTime(amt, at, 0.01); wide.gain.setTargetAtTime(1 - amt, at, 0.01);
+      };
+      delay.delayTime.value = time() - block;
+      refocus(ac.currentTime);
+      tone.type = 'lowpass'; tone.frequency.value = p.tone; tone.Q.value = -3.01;
+      low.type = 'highpass'; low.frequency.value = p.lowcut; low.Q.value = -3.01;
+      amount.gain.value = p.amount;
+      const as = assets(ac);
+      clip.curve = as.softclip || (as.softclip = Float32Array.from({ length: 2049 }, (_, i) => Math.tanh((i - 1024) / 1024 * 3)));
+      const pre = ac.createGain(), post = ac.createGain();
+      pre.gain.value = 1 / 3; post.gain.value = 1; // the curve spans ±3: tanh(x) for |x| up to 3
+      input.connect(delay).connect(tone).connect(low);
+      low.connect(wide).connect(amount); low.connect(focus).connect(narrow).connect(amount);
+      amount.connect(pre).connect(clip).connect(post).connect(wet);
+      const retime = (at = ac.currentTime) => { delay.delayTime.setTargetAtTime(time() - block, at, 0.02); refocus(at); };
+      g.set = { amount: v => amount.gain.setTargetAtTime(v, ac.currentTime, 0.02), time: () => retime(), sync: () => retime(), _tempo: () => retime(),
+        note: () => retime(), interval: () => retime(), focus: () => retime(),
+        tone: v => { tone.frequency.setTargetAtTime(v, ac.currentTime, 0.02); retime(); }, lowcut: v => { low.frequency.setTargetAtTime(v, ac.currentTime, 0.02); retime(); } };
+      if (p.tune === 'follows keys') g.key = (note, at) => { key = note; retime(Math.max(at, ac.currentTime)); };
+      g.nodes.push(delay, tone, low, focus, wide, narrow, amount, pre, clip, post);
+      g.targets = { amount: [amount.gain], time: [delay.delayTime], tone: [tone.detune], lowcut: [low.detune] };
+      mix(1, 0);
     } else if (WORKLET_FX.includes(m.type)) {
       // Bitcrusher, Stutter, Freeze (fxworklet.js). Until the worklet has loaded they pass the
       // sound through; loadSamples() rebuilds the effects once it has.
@@ -1340,8 +1422,11 @@ export class LabSynth {
     this.voices = this.voices.filter(x => x.end === Infinity || x.end > this.ac.currentTime - 0.1);
     v.t0 = t0;
     this.tellResonance(t0);
+    this.tellKey(note, t0);
     return v;
   }
+  // The note just played, for effects tuned to the keys (a Feedback module that follows them).
+  tellKey(note, t) { this.lastKey = note; for (const g of this.globals.values()) g.key?.(note, t); }
   stopNote(note, t = this.ac.currentTime) {
     if (this.patch?.play === 'mono' || this.patch?.play === 'legato') { this.monoOff(note, t); return; }
     for (const v of this.voices) if (v.note === note && !v.released) this.release(v, t);
@@ -1389,6 +1474,7 @@ export class LabSynth {
     else { this.held.pop(); this.monoOn(back.note, back.vel, t); }
   }
   glideTo(v, note, t) {
+    this.tellKey(note, t);
     const cents = (note - v.base) * 100, g = this.patch.glide || 0;
     v.glide.cancelScheduledValues(t);
     if (g > 0) v.glide.setTargetAtTime(cents, t, g / 3); else v.glide.setValueAtTime(cents, t);
@@ -1722,6 +1808,36 @@ export class LabSynth {
         tail = Math.max(tail, p.release * k.release * 1.6);
         set[`${m.id}.level`] = v => level.gain.setTargetAtTime(v, ac.currentTime, 0.01);
         nodes[m.id] = { in: env, out: level, targets: { level: [level.gain] } };
+      } else if (m.type === 'lpg') {
+        // Low-pass gate: one control opens a gain and a low-pass together at the note's start and
+        // lets them fall shut the way a vactrol does: fast at first, then a slower tail. The
+        // cutoff moves in cents (so evenly in pitch) between the note's own pitch (shut: the
+        // fundamental is left for the gain to fade; closing further made every note a click) and "Opens to".
+        const useF = p.mode !== 'gate', useG = p.mode !== 'filter', held = p.trigger === 'while held';
+        const f = keep(ac.createBiquadFilter()), g = keep(ac.createGain()), level = keep(ac.createGain());
+        const v = 1 - p.velocity + p.velocity * (vel / 127) ** 1.5;
+        const shut = Math.max(LPG_SHUT, 440 * 2 ** ((note - 69) / 12));
+        f.type = 'lowpass'; f.Q.value = p.resonance; f.frequency.value = useF ? shut : 20000;
+        level.gain.value = p.level;
+        f.connect(g).connect(level);
+        const moved = [];
+        const shape = (param, top) => {
+          param.setValueAtTime(0, t0);
+          param.linearRampToValueAtTime(top, t0 + 0.002);
+          if (held) param.setTargetAtTime(top * 0.8, t0 + 0.002, p.decay / 4);
+          else { param.setTargetAtTime(top * 0.3 * p.tail, t0 + 0.002, p.decay / 8); param.setTargetAtTime(0, t0 + 0.002 + p.decay * 0.4, p.decay / 4); }
+          moved.push(param);
+        };
+        if (useG) shape(g.gain, v);
+        if (useF) shape(f.detune, 1200 * Math.log2(Math.max(shut * 2, p.open) / shut) * (0.6 + 0.4 * v));
+        if (held) {
+          offs.push(t => moved.forEach(pm => envOff(pm, t, m.params.decay * 0.8)));
+          relParams.push(...moved);
+        }
+        if (useG) { gated = true; tail = Math.max(tail, p.decay * (held ? 1.6 : 1.2 + 1.8 * p.tail)); }
+        set[`${m.id}.level`] = x => level.gain.setTargetAtTime(x, ac.currentTime, 0.01);
+        set[`${m.id}.resonance`] = x => f.Q.setTargetAtTime(x, ac.currentTime, 0.01);
+        nodes[m.id] = { in: f, out: level, targets: { cutoff: [f.detune], level: [level.gain] } };
       } else if (m.type === 'env') {
         const c = src(ac.createConstantSource()), k = envTimes(p, note, vel);
         envOn(c.offset, t0, p, 1 - (p.velocity || 0) + (p.velocity || 0) * (vel / 127) ** 1.5, k);
@@ -1953,7 +2069,7 @@ export class LabSynth {
     // A Resonator fed by something that never ends by itself (a bare oscillator or noise) stops
     // listening at release, so only its ringing is left; fed by an Amp, a drum, a string… it keeps
     // listening, since those end the note themselves (a drum hit outlasts its key).
-    const ENDS = ['amp', 'fmop', 'string', 'piano', 'drums', 'organ', 'resonator'];
+    const ENDS = ['amp', 'lpg', 'fmop', 'string', 'piano', 'drums', 'organ', 'resonator'];
     for (const [id, gate] of resonators) {
       const shaped = (to, seen = new Set()) => patch.audio.some(c => c.to === to && !seen.has(c.from) && (seen.add(c.from),
         ENDS.includes(patch.modules.find(x => x.id === c.from)?.type) || shaped(c.from, seen)));

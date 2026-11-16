@@ -9,7 +9,7 @@
 .card .tag { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .card button.x { padding: 0 6px; font-size: 11px; line-height: 18px; }
 .mod-osc header b, .mod-noise header b { color: var(--accent); }
-.mod-env header b, .mod-lfo header b, .mod-seq header b, .mod-gseq header b { color: #6aa9ff; }
+.mod-env header b, .mod-lfo header b, .mod-seq header b, .mod-gseq header b, .mod-genv header b { color: #6aa9ff; }
 
 .prms { display: flex; flex-direction: column; gap: 3px; }
 .prm { display: grid; grid-template-columns: 82px 1fr 62px auto; align-items: center; gap: 6px; font-size: 12px; border-radius: 5px; padding: 1px 2px; }
@@ -124,7 +124,7 @@
 .pick b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pick span { white-space: normal; min-width: 0; font-size: 11px; color: var(--muted); line-height: 1.25; }
 .pick:hover, .pick:focus-visible { border-color: var(--accent); background: var(--accent-soft); outline: none; }
-.pick.mod-env svg, .pick.mod-lfo svg, .pick.mod-seq svg, .pick.mod-gseq svg { stroke: #6aa9ff; }
+.pick.mod-env svg, .pick.mod-lfo svg, .pick.mod-seq svg, .pick.mod-gseq svg, .pick.mod-genv svg { stroke: #6aa9ff; }
 .pick.mod-chorus svg, .pick.mod-delay svg, .pick.mod-reverb svg { stroke: var(--muted); }
 .add-picker .hint { margin: 10px 0 0; }
 

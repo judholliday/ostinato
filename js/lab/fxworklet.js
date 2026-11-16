@@ -809,9 +809,91 @@ class Grains extends AudioWorkletProcessor {
   }
 }
 registerProcessor('ost-grains', Grains);
+
+// Spectral blur: the sound's spectrum, each frequency fading at its own pace (Blur), played back
+// with random phases so nothing repeats; frozen, the spectrum is simply kept. Frames of 4096
+// samples, a quarter apart (Hann in, Hann out), each channel by itself.
+const SPEC_N = 4096, SPEC_H = 1024, SPEC_GAIN = 1;
+class Spectral extends AudioWorkletProcessor {
+  static get parameterDescriptors() {
+    return [['blur', 2], ['soften', 0.3], ['frozen', 0]].map(([name, defaultValue]) => ({ name, defaultValue, automationRate: 'k-rate' }));
+  }
+  constructor() {
+    super();
+    const N = SPEC_N;
+    this.win = new Float32Array(N);
+    for (let i = 0; i < N; i++) this.win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / N);
+    this.inb = [new Float32Array(N), new Float32Array(N)];
+    this.out = [new Float32Array(N), new Float32Array(N)];
+    this.mag = [new Float32Array(N / 2), new Float32Array(N / 2)];
+    this.re = new Float32Array(N); this.im = new Float32Array(N);
+    this.cos = new Float32Array(N / 2); this.sin = new Float32Array(N / 2);
+    for (let i = 0; i < N / 2; i++) { this.cos[i] = Math.cos(2 * Math.PI * i / N); this.sin[i] = Math.sin(2 * Math.PI * i / N); }
+    this.rev = new Uint16Array(N);
+    for (let i = 0, bits = Math.log2(N); i < N; i++) { let r = 0; for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b); this.rev[i] = r; }
+    this.w = 0; this.count = 0; this.live = 0; this.heard = 0;
+  }
+  // In place, forward (re, im in bit-reversed order on entry is handled here).
+  fft(re, im) {
+    const N = SPEC_N, rev = this.rev, cos = this.cos, sin = this.sin;
+    for (let i = 0; i < N; i++) { const j = rev[i]; if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let size = 2; size <= N; size <<= 1) {
+      const half = size >> 1, step = N / size;
+      for (let s = 0; s < N; s += size) {
+        for (let k = 0, t = 0; k < half; k++, t += step) {
+          const a = s + k, b = a + half, c = cos[t], d = -sin[t];
+          const xr = re[b] * c - im[b] * d, xi = re[b] * d + im[b] * c;
+          re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+        }
+      }
+    }
+  }
+  frame(p) {
+    const N = SPEC_N, re = this.re, im = this.im, win = this.win, frozen = p.frozen[0] > 0.5;
+    const blur = Math.max(0.02, p.blur[0]), down = Math.exp(-6.91 * SPEC_H / (sampleRate * blur));
+    const rise = p.soften[0] ** 2, up = rise > 0 ? Math.exp(-SPEC_H / (sampleRate * rise)) : 0;
+    let most = 0;
+    for (let c = 0; c < 2; c++) {
+      const x = this.inb[c], M = this.mag[c], o = this.out[c];
+      if (!frozen) {
+        for (let n = 0, j = this.w; n < N; n++) { re[n] = x[j] * win[n]; im[n] = 0; j = j + 1 === N ? 0 : j + 1; }
+        this.fft(re, im);
+        for (let k = 1; k < N / 2; k++) { const m = Math.hypot(re[k], im[k]); M[k] = m + (M[k] - m) * (m > M[k] ? up : down); }
+      }
+      re[0] = im[0] = re[N / 2] = im[N / 2] = 0;
+      for (let k = 1; k < N / 2; k++) {
+        const m = M[k], a = Math.random() * 6.2831853;
+        if (m > most) most = m;
+        // the inverse transform by the forward one: real and imaginary parts swapped
+        im[k] = m * Math.cos(a); re[k] = m * Math.sin(a); im[N - k] = im[k]; re[N - k] = -re[k];
+      }
+      if (most < 1e-4) continue;
+      this.fft(re, im);
+      const g = SPEC_GAIN / N;
+      for (let n = 0, j = this.w; n < N; n++) { o[j] += im[n] * win[n] * g; j = j + 1 === N ? 0 : j + 1; }
+    }
+    if (most >= 1e-4) this.live = SPEC_N + SPEC_H;
+  }
+  process(inputs, outputs, p) {
+    const a = inputs[0][0], b = inputs[0][1] || a, L = outputs[0][0], R = outputs[0][1] || L, N = L.length;
+    if (a) for (let i = 0; i < N; i++) if (a[i] > 1e-5 || a[i] < -1e-5 || b[i] > 1e-5 || b[i] < -1e-5) { this.heard = SPEC_N + SPEC_H; break; }
+    if (this.heard <= 0 && this.live <= 0) return true; // nothing coming in and nothing left ringing
+    const i0 = this.inb[0], i1 = this.inb[1], o0 = this.out[0], o1 = this.out[1];
+    for (let i = 0; i < N; i++) {
+      i0[this.w] = a ? a[i] : 0; i1[this.w] = a ? b[i] : 0;
+      L[i] = o0[this.w]; if (R !== L) R[i] = o1[this.w];
+      o0[this.w] = 0; o1[this.w] = 0;
+      this.w = this.w + 1 === SPEC_N ? 0 : this.w + 1;
+      if (++this.count === SPEC_H) { this.count = 0; this.frame(p); }
+    }
+    this.heard -= N; this.live -= N;
+    return true;
+  }
+}
+registerProcessor('ost-spectral', Spectral);
 `;
 
-export const WORKLET_FX = ['crusher', 'stutter', 'freeze', 'resonance', 'grains'];
+export const WORKLET_FX = ['crusher', 'stutter', 'freeze', 'resonance', 'grains', 'spectral'];
 export const WORKLET_VOICES = ['string', 'piano', 'resonator']; // voice modules that need the worklet
 export const WORKLET_HELPED = ['rotary']; // effects that work without it, better with it (rebuilt once it has loaded)
 const loaded = new WeakMap(); // AudioContext -> Promise, then true once ready

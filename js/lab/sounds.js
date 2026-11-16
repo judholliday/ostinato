@@ -1269,7 +1269,7 @@ const NEWER = [
       audio: [...kit.audio.filter(c => c.from !== 'drums1'), { from: 'drums1', to: 'res1' }, ...next.map(to => ({ from: 'res1', to }))] };
   })(),
   {
-    name: 'Prepared Piano', type: 'Keys', voices: 12, volume: 0.5,
+    name: 'Prepared Piano', type: 'Keys', voices: 12, volume: 0.42,
     about: 'The grand with bolts and rubber between its strings: each note also rings a short, clanging bar a fifth above it. Mix on the Resonator is how much hardware; its Semitones and Spacing change what\'s been put in the strings.',
     modules: [mod('piano', 'piano1', { release: 0.8 }), mod('resonator', 'res1', { shape: 'bar', strike: 0, semi: 7, decay: 0.7, damping: 0.2, bright: 0.9, position: 0.13, spacing: 0.8, release: 0.3, width: 0.5, mix: 0.5, level: 2 }),
       mod('reverb', 'reverb1', { type: 'room', size: 1.4, mix: 0.2 })],
@@ -1366,7 +1366,7 @@ const NEWER = [
     name: 'Tape Left in the Sun', type: 'Keys', voices: 16, volume: 0.7,
     about: 'A piano on a cassette that spent a summer on a dashboard: out of tune, dull, and its echo wavers in pitch as the tape drags. Slow chords suit it.',
     modules: [mod('piano', 'piano1', { hardness: 0.5, strike: 0.6, detune: 9, release: 1.2 }), mod('filter', 'dull', { slope: '12', cutoff: 3200, resonance: 0.4, keytrack: 0.3 }),
-      mod('shaper', 'tape', { curve: 'tube', drive: 1.6, tone: 5000, mix: 0.6, level: 0.8 }),
+      mod('shaper', 'tape', { curve: 'tube', drive: 1, tone: 5000, mix: 0.6, level: 0.8 }),
       mod('delay', 'echo', { mode: 'tape', time: 0.31, feedback: 0.35, tone: 2200, wobble: 1, mix: 0.3 }),
       mod('glfo', 'drag', { wave: 'sine', rate: 0.37 }), mod('reverb', 'room', { type: 'room', size: 1.8, damping: 0.8, mix: 0.2 })],
     audio: chain('piano1', 'dull', 'tape', 'echo', 'room', 'out'),
@@ -1378,7 +1378,7 @@ const NEWER = [
     // Pedal resonance with its dampers always up and no direct sound; a compressor used as plain
     // gain (threshold 0, ratio 1) brings the halo up to a playing level.
     modules: [mod('piano', 'piano1'), mod('resonance', 'pedal', { amount: 1, ring: 3, open: 'always', direct: 0 }),
-      mod('compressor', 'gain1', { threshold: 0, ratio: 1, gain: 6 }), mod('reverb', 'hall', { type: 'hall', size: 5, damping: 0.35, mix: 0.35 })],
+      mod('compressor', 'gain1', { threshold: 0, ratio: 1, gain: 4 }), mod('reverb', 'hall', { type: 'hall', size: 5, damping: 0.35, mix: 0.35 })],
     audio: chain('piano1', 'pedal', 'gain1', 'hall', 'out'),
   },
   {
@@ -1497,6 +1497,157 @@ const NEWER = [
     audio: [{ from: 'osc1', to: 'vowel1' }, { from: 'osc2', to: 'vowel1' }, ...chain('vowel1', 'amp1', 'reverb1', 'out')],
     mod: [{ from: 'vib', to: 'osc1.pitch', amount: 28 }, { from: 'vib', to: 'osc2.pitch', amount: 28 }, { from: 'wheel', to: 'vowel1.vowel', amount: 3.5 }],
   },
+  // ---- Low-pass gate, Spectral blur, Feedback (Nov 2026) ----
+  {
+    name: 'Bongo Synth', type: 'Pluck', voices: 8, volume: 0.65,
+    about: 'The woody, hollow knock of a 1960s West Coast synthesizer: a triangle wave through a Low-pass gate, which shuts its loudness and its brightness together. Harder notes open it further, so they are brighter as well as louder. Low keys are drums, high keys are blocks.',
+    modules: [mod('osc', 'osc1', { wave: 'triangle', level: 0.7 }), mod('osc', 'osc2', { wave: 'pulse', pw: 0.5, level: 0.25 }),
+      mod('env', 'thump', { attack: 0.001, decay: 0.03, sustain: 0, release: 0.03 }),
+      mod('lpg', 'lpg1', { decay: 0.28, tail: 0.5, open: 5000, resonance: 2, velocity: 0.8, level: 1 }), mod('reverb', 'reverb1', { type: 'room', size: 1, mix: 0.12 })],
+    audio: [{ from: 'osc1', to: 'lpg1' }, { from: 'osc2', to: 'lpg1' }, ...chain('lpg1', 'reverb1', 'out')],
+    mod: [{ from: 'thump', to: 'osc1.pitch', amount: 500 }, { from: 'thump', to: 'osc2.pitch', amount: 500 }],
+  },
+  {
+    name: 'Wood Pluck', type: 'Pluck', voices: 8, volume: 0.65,
+    about: 'A plucked sound with no envelope and no filter sweep in it, only a Low-pass gate closing: bright for an instant, then round, then gone, like a thumb on a wooden tine. Tail on the gate is how long the soft part lasts.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', level: 0.5 }), mod('osc', 'osc2', { wave: 'pulse', pw: 0.3, fine: 5, level: 0.3 }),
+      mod('lpg', 'lpg1', { decay: 0.6, tail: 0.8, open: 9000, resonance: 3, velocity: 0.7, level: 1 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.25, mix: 0.12 }), mod('reverb', 'reverb1', { type: 'room', size: 1.5, mix: 0.18 })],
+    audio: [{ from: 'osc1', to: 'lpg1' }, { from: 'osc2', to: 'lpg1' }, ...chain('lpg1', 'delay1', 'reverb1', 'out')],
+  },
+  {
+    name: 'West Coast Bells', type: 'Bell', voices: 8, volume: 0.55,
+    about: 'Clangorous FM tones pinged through a Low-pass gate: the metal is there for a moment, then the gate closes over it and leaves a soft, almost pure ring. Play harder for more clang.',
+    modules: [mod('fmop', 'op1', { ratio: 1, fm: 3.5, attack: 0.001, decay: 0.2, sustain: 1, release: 2, velocity: 0, level: 0.8 }),
+      mod('fmop', 'op2', { ratio: 2.76, attack: 0.001, decay: 0.2, sustain: 1, release: 2, velocity: 0.9, level: 0.8 }),
+      mod('lpg', 'lpg1', { decay: 1.6, tail: 1, open: 12000, resonance: 1, velocity: 0.7, level: 1 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/4', feedback: 0.3, mix: 0.15 }), mod('reverb', 'reverb1', { type: 'hall', size: 3, mix: 0.25 })],
+    audio: [{ from: 'op2', to: 'op1' }, ...chain('op1', 'lpg1', 'delay1', 'reverb1', 'out')],
+  },
+  {
+    name: 'Bongo Arp', type: 'Pluck', voices: 8, volume: 0.9,
+    arp: { mode: 'random', rate: '1/16', octaves: 2, gate: 0.5 },
+    about: 'Hold a chord: its notes knock at random over two octaves on every sixteenth, each one a Low-pass gate ping with an echo behind it. The arpeggiator (beside Play) sets the order and speed.',
+    modules: [mod('osc', 'osc1', { wave: 'triangle', level: 0.7 }), mod('osc', 'osc2', { wave: 'saw', octave: 1, level: 0.15 }),
+      mod('lpg', 'lpg1', { decay: 0.22, tail: 0.6, open: 6000, resonance: 4, velocity: 0.6, level: 1 }),
+      mod('delay', 'delay1', { mode: 'ping-pong', sync: '1/8.', feedback: 0.4, mix: 0.22 }), mod('reverb', 'reverb1', { type: 'room', size: 1.4, mix: 0.15 })],
+    audio: [{ from: 'osc1', to: 'lpg1' }, { from: 'osc2', to: 'lpg1' }, ...chain('lpg1', 'delay1', 'reverb1', 'out')],
+  },
+  {
+    name: 'Melted Piano', type: 'Pad', voices: 16, volume: 1,
+    about: 'A piano with its hammers taken away: a Spectral blur keeps each note\'s pitches and lets them swell in and hang for seconds, so chords run into each other like wet paint. Mix on the blur brings the real piano back underneath.',
+    modules: [mod('piano', 'piano1'), mod('spectral', 'blur1', { blur: 5, soften: 0.55, mix: 0.92 }), mod('reverb', 'hall', { type: 'hall', size: 4, damping: 0.4, mix: 0.3 })],
+    audio: chain('piano1', 'blur1', 'hall', 'out'),
+  },
+  {
+    name: 'Hold That Chord', type: 'Pad', voices: 10, volume: 0.8,
+    about: 'A string pad with a way to stop time: play a chord, push the mod wheel up, and a Spectral blur holds it as a steady drone, with no loop to hear, while you play something else over it. Wheel down and it listens again.',
+    modules: [mod('osc', 'osc1', { wave: 'saw', unison: 3, spread: 14, level: 0.45 }), mod('osc', 'osc2', { wave: 'saw', octave: 1, fine: -6, level: 0.2 }),
+      mod('filter', 'filter1', { cutoff: 2200, resonance: 1, keytrack: 0.5 }), mod('amp', 'amp1', { attack: 0.15, decay: 0.5, sustain: 0.9, release: 0.6, velocity: 0.3 }),
+      mod('spectral', 'blur1', { blur: 1.2, soften: 0.3, mix: 0.5 }), mod('reverb', 'reverb1', { type: 'hall', size: 3.5, mix: 0.3 })],
+    audio: [{ from: 'osc1', to: 'filter1' }, { from: 'osc2', to: 'filter1' }, ...chain('filter1', 'amp1', 'blur1', 'reverb1', 'out')],
+    mod: [{ from: 'wheel', to: 'blur1.frozen', amount: 1 }],
+  },
+  (() => {
+    const kit = based('808 Kit');
+    kit.modules.splice(1, 0, mod('spectral', 'blur1', { blur: 1.5, soften: 0, mix: 0.35 }));
+    const next = kit.audio.filter(c => c.from === 'drums1').map(c => c.to);
+    return { ...kit, name: 'Drum Mist', volume: 1,
+      about: 'The 808 Kit in fog: every hit plays as it is, and a Spectral blur leaves its colour hanging behind it for a second or two, so the beat trails a mist of its own hats, snares and kicks. Blur is how long the mist lasts; Mix is how thick.',
+      audio: [...kit.audio.filter(c => c.from !== 'drums1'), { from: 'drums1', to: 'blur1' }, ...next.map(to => ({ from: 'blur1', to }))] };
+  })(),
+  struck('Glass Smear', 'Pad', 'Tapped wine glasses whose ringing never quite ends: a Spectral blur stretches each note to ten seconds and a Shimmer lifts it an octave. Tap a few notes, wait, tap a few more.',
+    { shape: 'glass', strike: 0.7, decay: 5, damping: 0.12, bright: 0.45, position: 0.37, release: 2.5, width: 0.6, level: 1.6 },
+    { volume: 0.8, fx: [mod('spectral', 'blur1', { blur: 10, soften: 0.2, mix: 0.75 }), mod('shimmer', 'shimmer1', { size: 5, shimmer: 0.4, tone: 5000, mix: 0.3 })] }),
+  {
+    name: 'Howling Hall', type: 'FX', voices: 8, volume: 1,
+    about: 'A plucked string that says "wow", in a hall with a microphone left open. With the mod wheel down it is only the string and the reverb. Push the wheel up and a Feedback module sends the hall back into itself, tuned to the last note you played: that note rings on, then sings, then howls. Play another note and the howl moves to it. Wheel down and it dies away.',
+    modules: [mod('string', 'string1', { excite: 'pick', position: 0.1, brightness: 0.9, decay: 3, highs: 2, release: 0.3, velocity: 0.7, level: 1 }),
+      mod('env', 'mouth', { attack: 0.001, decay: 0.3, sustain: 0, release: 0.2, velocity: 0.5 }), mod('vowel', 'vowel1', { vowel: 3.6, resonance: 8, mix: 0.85 }),
+      mod('reverb', 'hall', { type: 'hall', size: 3, damping: 0.5, mix: 0.4 }),
+      mod('feedback', 'mic', { amount: 0.2, tune: 'follows keys', interval: 0, focus: 0.6, tone: 5000, lowcut: 30 }), LIMIT()],
+    audio: [...chain('string1', 'vowel1', 'hall', 'limit1', 'out'), { from: 'hall', to: 'mic' }, { from: 'mic', to: 'hall' }],
+    mod: [{ from: 'mouth', to: 'vowel1.vowel', amount: -3.4 }, { from: 'wheel', to: 'mic.amount', amount: 0.95 }],
+  },
+  {
+    name: 'Feedback Guitar', type: 'Lead', voices: 6, volume: 0.8,
+    about: 'An overdriven guitar next to its amplifier. Play a note and push the mod wheel up: the note blooms into feedback an octave above it and holds for as long as the wheel is up, the way a guitar sings when you lean it towards the speaker. A new note takes the feedback with it. Interval on the Feedback picks which harmonic sings (12 = the octave, 19 = an octave and a fifth, 0 = the note itself).',
+    modules: [mod('string', 'string1', { excite: 'pick', position: 0.14, brightness: 0.8, decay: 5, highs: 2.5, release: 0.25, velocity: 0.6, level: 1 }),
+      mod('eq', 'pickup', { low: 0, mid: 0, high: 0 }),
+      mod('shaper', 'amp', { curve: 'tube', drive: 9, tone: 4200, mix: 1, level: 0.5 }),
+      mod('feedback', 'speaker', { amount: 0, tune: 'follows keys', interval: 12, focus: 0.8, tone: 5000, lowcut: 30 }),
+      mod('reverb', 'room', { type: 'room', size: 1.6, mix: 0.18 })],
+    audio: [...chain('string1', 'pickup', 'amp', 'room', 'out'), { from: 'pickup', to: 'speaker' }, { from: 'speaker', to: 'pickup' }],
+    mod: [{ from: 'wheel', to: 'speaker.amount', amount: 1.12 }],
+  },
+  (bowl => ({ ...bowl, modules: [...bowl.modules, mod('feedback', 'rub', { amount: 0.25, tune: 'follows keys', focus: 0.9, tone: 6000, lowcut: 30 })],
+    audio: [...bowl.audio, { from: 'rim', to: 'rub' }, { from: 'rub', to: 'rim' }], mod: [{ from: 'wheel', to: 'rub.amount', amount: 0.85 }] }))(struck('Singing Bowl', 'Bell', 'A metal bowl: strike it and it rings; push the mod wheel up and it is rubbed round the rim, so the note you last struck sings steadily for as long as the wheel is up (a Feedback module tuned to the keys). Strike other notes over the top.',
+    { shape: 'bell', strike: 0.55, decay: 7, damping: 0.25, bright: 0.5, position: 0.3, release: 4, width: 0.6, level: 1.5 },
+    { volume: 0.6, fx: [mod('eq', 'rim', { low: 0, mid: 0, high: 0 }), mod('reverb', 'hall', { type: 'hall', size: 3.5, mix: 0.28 })] })),
+  {
+    name: 'Restless Loop', type: 'Keys', voices: 8, volume: 0.42,
+    about: 'A soft electric-piano note falling into a loop that will not sit still: three Global LFOs, a third of a turn apart, move the Feedback\'s delay, tone and low cut, so the ringing changes pitch and colour as it fades. The mod wheel sets how far they pull it: down, it barely moves; up, it swoops.',
+    modules: [mod('fmop', 'op1', { ratio: 1, fm: 1.6, attack: 0.002, decay: 0.9, sustain: 0, release: 0.4, velocity: 0.5, level: 0.8 }),
+      mod('fmop', 'op2', { ratio: 1, fine: 3, attack: 0.001, decay: 0.2, sustain: 0.1, release: 0.2, velocity: 1, level: 0.7 }),
+      mod('eq', 'desk', { low: 0, mid: 0, high: 0 }), mod('feedback', 'loop', { amount: 0.985, time: 0.021, tone: 3200, lowcut: 90 }),
+      mod('glfo', 'a', { rate: 0.4, depth: 0.12, phase: 0 }), mod('glfo', 'b', { rate: 0.4, depth: 0.12, phase: 0.33 }), mod('glfo', 'c', { rate: 0.4, depth: 0.12, phase: 0.67 }),
+      mod('reverb', 'reverb1', { type: 'hall', size: 3, mix: 0.25 })],
+    audio: [{ from: 'op2', to: 'op1' }, ...chain('op1', 'desk', 'reverb1', 'out'), { from: 'desk', to: 'loop' }, { from: 'loop', to: 'desk' }],
+    mod: [{ from: 'a', to: 'loop.time', amount: 0.012 }, { from: 'b', to: 'loop.tone', amount: 2400 }, { from: 'c', to: 'loop.lowcut', amount: 2400 },
+      { from: 'wheel', to: 'a.depth', amount: 0.88 }, { from: 'wheel', to: 'b.depth', amount: 0.88 }, { from: 'wheel', to: 'c.depth', amount: 0.88 }],
+  },
+  (() => {
+    const kit = based('808 Kit');
+    kit.modules.splice(1, 0, mod('eq', 'pipe', { low: 0, mid: 0, high: 0 }), mod('feedback', 'ring', { amount: 0.95, time: 0.011, tone: 2500, lowcut: 60 }),
+      mod('genv', 'dive', { attack: 0.002, decay: 0.25, depth: 0.3 }), mod('genv', 'open', { attack: 0.03, decay: 0.7, depth: 0.3 }), mod('genv', 'thin', { attack: 0.12, decay: 1.4, depth: 0.3 }));
+    const next = kit.audio.filter(c => c.from === 'drums1').map(c => c.to);
+    return { ...kit, name: 'Laser Pipe Kit', volume: 0.6,
+      about: 'The 808 Kit down a pipe that flinches: every hit kicks three Global envelopes, one fast, one slower, one slowest, which bend the Feedback\'s delay, tone and low cut, so each drum\'s ring dives, brightens and thins on its own schedule. The mod wheel is how hard the pipe flinches.',
+      audio: [...kit.audio.filter(c => c.from !== 'drums1'), { from: 'drums1', to: 'pipe' }, ...next.map(to => ({ from: 'pipe', to })), { from: 'pipe', to: 'ring' }, { from: 'ring', to: 'pipe' }],
+      mod: [...(kit.mod || []), { from: 'dive', to: 'ring.time', amount: 0.02 }, { from: 'open', to: 'ring.tone', amount: 3000 }, { from: 'thin', to: 'ring.lowcut', amount: 3600 },
+        { from: 'wheel', to: 'dive.depth', amount: 0.7 }, { from: 'wheel', to: 'open.depth', amount: 0.7 }, { from: 'wheel', to: 'thin.depth', amount: 0.7 }] };
+  })(),
+  {
+    name: 'Feedback Flute', type: 'Lead', voices: 4, volume: 1,
+    about: 'A flute with no flute in it: breath (noise) blown into a Feedback loop tuned to the keys. The loop is held just short of singing, so it turns the breath into a soft, airy note that fades over a few seconds when you stop. Play one note at a time; harder is breathier. The mod wheel tips it over, and the note carries on by itself.',
+    modules: [mod('noise', 'breath', { level: 0.5 }), mod('filter', 'filter1', { type: 'bandpass', slope: '12', cutoff: 261.63, resonance: 6, keytrack: 1 }),
+      mod('amp', 'amp1', { attack: 0.04, decay: 0.2, sustain: 0.8, release: 0.12, velocity: 0.7, level: 1 }),
+      mod('eq', 'bore', { low: 0, mid: 0, high: 0 }), mod('feedback', 'pipe', { amount: 0.993, tune: 'follows keys', focus: 0.5, tone: 6000, lowcut: 30 }),
+      mod('lfo', 'vib', { wave: 'sine', rate: 5, delay: 0.4 }), mod('reverb', 'hall', { type: 'hall', size: 2.5, mix: 0.22 })],
+    audio: [...chain('breath', 'filter1', 'amp1', 'bore', 'hall', 'out'), { from: 'bore', to: 'pipe' }, { from: 'pipe', to: 'bore' }],
+    mod: [{ from: 'vib', to: 'amp1.level', amount: 0.2 }, { from: 'wheel', to: 'pipe.amount', amount: 0.08 }],
+  },
+  (() => {
+    const kit = based('808 Kit');
+    kit.modules.splice(1, 0, mod('eq', 'can', { low: 0, mid: 0, high: 0 }), mod('feedback', 'ring', { amount: 0.985, time: 0.0074, tone: 7000, lowcut: 40 }));
+    const next = kit.audio.filter(c => c.from === 'drums1').map(c => c.to);
+    return { ...kit, name: 'Tin Can Kit', volume: 0.6,
+      about: 'The 808 Kit played down a pipe: a Feedback module sends every drum round a very short loop, so each hit rings at one metallic pitch. Delay on the Feedback tunes the pipe (shorter = higher); Amount is how long it rings.',
+      audio: [...kit.audio.filter(c => c.from !== 'drums1'), { from: 'drums1', to: 'can' }, ...next.map(to => ({ from: 'can', to })), { from: 'can', to: 'ring' }, { from: 'ring', to: 'can' }] };
+  })(),
+  {
+    name: 'Dub Chamber', type: 'Keys', voices: 8, volume: 0.45,
+    about: 'An electric-piano stab, barking when hit hard, whose echoes go round through a tape machine and a fuzz box each time, so every repeat is duller and dirtier than the last, with a phaser over all of it. A Feedback module makes the loop; its Amount is how many times round. The mod wheel sends it over the top.',
+    modules: [mod('fmop', 'op1', { ratio: 1, fm: 2.2, attack: 0.002, decay: 0.45, sustain: 0, release: 0.2, velocity: 0.5, level: 0.8 }),
+      mod('fmop', 'op2', { ratio: 1, fine: 4, attack: 0.001, decay: 0.12, sustain: 0.1, release: 0.15, velocity: 1, level: 0.8 }),
+      mod('fmop', 'tine', { ratio: 7, attack: 0.001, decay: 0.05, sustain: 0, release: 0.05, velocity: 0.9, level: 0.12 }),
+      mod('eq', 'desk', { low: 0, mid: 0, high: 0 }),
+      mod('delay', 'tape', { mode: 'tape', sync: '1/8.', feedback: 0, tone: 3500, wobble: 0.6, mix: 1 }),
+      mod('phaser', 'phaser1', { rate: 0.3, depth: 0.8, feedback: 0.4, mix: 0.4 }), mod('shaper', 'fuzz', { curve: 'tube', drive: 2.5, tone: 4000, mix: 0.6, level: 0.42 }),
+      mod('feedback', 'send', { amount: 0.7, time: 0.006, tone: 5000, lowcut: 200 }), mod('reverb', 'reverb1', { type: 'plate', size: 2, mix: 0.2 })],
+    audio: [{ from: 'op2', to: 'op1' }, { from: 'tine', to: 'desk' }, ...chain('op1', 'desk', 'phaser1', 'reverb1', 'out'),
+      ...chain('desk', 'tape', 'fuzz', 'send', 'desk')],
+    mod: [{ from: 'wheel', to: 'send.amount', amount: 0.5 }],
+  },
+  {
+    name: 'Slow Avalanche', type: 'Pad', voices: 8, volume: 0.8,
+    about: 'A soft pad whose blurred copy is fed back into the blur, a quarter note later, again and again: what you play piles up behind you and takes a quarter of a minute to settle. Play a little and listen. Amount on the Feedback is how much piles up.',
+    modules: [mod('osc', 'osc1', { wave: 'triangle', unison: 3, spread: 10, level: 0.5 }), mod('osc', 'osc2', { wave: 'sine', octave: 1, level: 0.2 }),
+      mod('amp', 'amp1', { attack: 0.2, decay: 0.5, sustain: 0.8, release: 0.8, velocity: 0.4 }),
+      mod('spectral', 'blur1', { blur: 3, soften: 0.4, mix: 0.7 }), mod('feedback', 'pile', { amount: 0.92, sync: '1/4', tone: 4000, lowcut: 120 }),
+      mod('reverb', 'reverb1', { type: 'hall', size: 4, mix: 0.3 })],
+    audio: [{ from: 'osc1', to: 'amp1' }, { from: 'osc2', to: 'amp1' }, ...chain('amp1', 'blur1', 'reverb1', 'out'), { from: 'blur1', to: 'pile' }, { from: 'pile', to: 'blur1' }],
+  },
 ].map(cleanPatch);
 
 export const FACTORY = [...STARTERS, ...MORE, ...KITS, ...ARPS, ...STRANGE, ...NEWER, ...KEYS.map(cleanPatch)];
@@ -1536,6 +1687,8 @@ export const COLLECTIONS = [
     sounds: ['Endless Riser', 'Endless Faller', 'Big Arrival', 'Dial-Up', 'Geiger Choir', 'Orbiting Bees', 'Singing Glass', 'Risset Bells', 'Backwards Piano', 'Computer Room', 'Bouncing Ball', 'Speech Shards', 'Broken Radio'] },
   { title: 'Struck, Stepped, Scattered', about: 'Sounds made with the Resonator (things that ring when struck: glasses, bars, bells, plates, a piano with bolts in it, a drum kit inside a bell), the Step sequence (melodies, rhythms and vowels that play themselves) and the Grain delay (notes that break into clouds).',
     sounds: ['Glass Harp', 'Rosewood Bars', 'Tower Bell', 'Steel Plate', 'Bowed Plate', 'Bell Tower Kit', 'Prepared Piano', 'Pocket Sequencer', 'Five Against Eight', 'Robot Choir', 'Morse Pad', 'Dying Console', 'Piano Snowfall', 'Scattered Bells', 'Stair Echo', 'Held Cloud', 'Tape Left in the Sun', 'Ghost Piano', 'Talking String', 'Acid Steps', 'Talking Drums', 'Reverse Bloom', 'Clockwork'] },
+  { title: 'Gates, Smears and Loops', about: 'Sounds made with the Low-pass gate (woody knocks and plucks that dull as they fade), the Spectral blur (pianos, pads and drums smeared into washes, and chords held still) and Feedback (a hall that howls, drums down a pipe, echoes that get dirtier each time round).',
+    sounds: ['Bongo Synth', 'Wood Pluck', 'West Coast Bells', 'Bongo Arp', 'Melted Piano', 'Hold That Chord', 'Drum Mist', 'Glass Smear', 'Howling Hall', 'Feedback Guitar', 'Singing Bowl', 'Feedback Flute', 'Restless Loop', 'Laser Pipe Kit', 'Tin Can Kit', 'Dub Chamber', 'Slow Avalanche'] },
   { title: 'Things Gone Wrong', about: 'Machines misbehaving and voices that shouldn\'t exist: bells on a skipping record, a rotary speaker with a loose wire, a drum machine walking round your head, a fairground organ past its best, a singing theremin, two players who only agree twice a bar.',
     sounds: ['Stuck Bells', 'Broken Leslie', 'Beat Orbit', 'Three Against Four', 'Carousel', 'Theremin Choir', 'Talking Drums', 'Dying Console', 'Tape Left in the Sun', 'Ghost Piano', 'Broken Radio'] },
   { title: 'Grain Clouds', about: 'Recordings played as clouds of tiny grains: frozen pianos and choirs, slow-motion voices, a drum loop at any pitch, record crackle.',

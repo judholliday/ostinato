@@ -130,7 +130,7 @@ export const KEYS = [
   {
     // A honky-tonk piano: the Piano module with each note's three strings out of tune with each
     // other (differently on every key), a little thinner, in a small bright room.
-    name: 'Honky-Tonk', about: 'The piano with its strings out of tune with each other: saloon and ragtime.', type: 'Keys', voices: 20, volume: 0.72,
+    name: 'Honky-Tonk', about: 'The piano with its strings out of tune with each other: saloon and ragtime.', type: 'Keys', voices: 20, volume: 0.6,
     modules: [mod('piano', 'piano1', { detune: 14 }), mod('eq', 'thin', { low: -3, mid: 2, midfreq: 1800, high: 2 }),
       mod('reverb', 'room', { type: 'room', size: 1, damping: 0.4, mix: 0.18 })],
     audio: chain('piano1', 'thin', 'room', 'out'),
