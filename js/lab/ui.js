@@ -280,7 +280,8 @@ function renderCollections() {
   bar.hidden = !c;
   if (!c) return;
   bar.innerHTML = `${c.about ? `<p class="hint" title="${esc(c.about)}">${esc(c.about)}</p>` : ''}<div class="coll-acts">
-    <button class="small" data-coll-act="song" title="Start a new song in the Sequencer with a track for each of these sounds (up to 8), each in the role that suits it">♪ New song</button>
+    <button class="small" data-coll-act="song" title="Start a new song in the Sequencer from these sounds (up to 8), with a first part written for each: a beat for a kit, a line for a bass, held chords for a pad, one held key for a sound that plays itself… all in one key over one set of chords. Every part can be changed afterwards">♪ New song</button>
+    <button class="ghost small" data-coll-act="song-empty" title="Start a new song with a track for each of these sounds (up to 8) and nothing written on them">Empty tracks</button>
     ${c.factory ? `<button class="ghost small" data-coll-act="copy" title="Make your own copy to change">Copy as mine</button>`
       : `<button class="ghost small" data-coll-act="rename">Rename</button><button class="ghost small" data-coll-act="delete" title="${STATIC ? 'Delete it' : 'Move it to data/instruments/deleted/'} (the sounds stay)">Delete</button>`}</div>`;
 }
@@ -294,11 +295,11 @@ async function collectionAction(act) {
   const c = currentColl();
   if (!c) return;
   try {
-    if (act === 'song') {
+    if (act === 'song' || act === 'song-empty') {
       const sounds = c.sounds.map(s => libraryEntries().find(e => e.name === s.name && e.mine === !!s.mine)).filter(Boolean)
         .map(e => ({ name: e.name, type: e.type, patch: normalizePatch(e.patch).patch }));
       if (!sounds.length) { toast('This collection has no sounds yet.'); return; }
-      channel?.postMessage({ type: 'new-song-from-sounds', title: c.title, sounds });
+      channel?.postMessage({ type: 'new-song-from-sounds', title: c.title, sounds, parts: act === 'song' });
     } else if (act === 'copy') {
       const title = (prompt('Name your copy:', `${c.title} (mine)`) || '').trim();
       if (!title) return;

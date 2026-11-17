@@ -941,4 +941,42 @@ function run(song, { ms, mode = 'loop', pool = () => [] } = {}) {
   assert.equal(PerfPad.prototype.gridBack('filter', 0.5, 0.5, 10, 10, 0.01), null);
 }
 
+
+{
+  // The song starter (New song on a Sound Lab collection): what each sound is, and a song where
+  // every sound has a part, in one key, with nobody left out and same-kind sounds taking turns.
+  const { starterSong, soundTraits } = await import('../js/seq/starter.js');
+  const { FACTORY, COLLECTIONS } = await import('../js/lab/sounds.js');
+  const { SCALES } = await import('../js/seq/model.js');
+  const traits = name => { const p = FACTORY.find(x => x.name === name); return soundTraits(p, p.type); };
+  assert.equal(traits('808 Kit').role, 'drums');
+  assert.equal(traits('Saw Arp').self, 'chord', 'an arpeggiated sound wants a held chord');
+  assert.equal(traits('Pocket Sequencer').self, 'note', 'a step-sequenced sound wants one held key');
+  assert.equal(traits('Talk Box Bass').octave, -1, 'it sounds an octave below the key played');
+  assert.ok(traits('Slow Swell Drone').slow && traits('Glass Harp').tail && !traits('Nylon Pluck').tail && traits('Glide Mono Lead').mono);
+  for (const c of COLLECTIONS) for (const seed of [1, 2, 3]) {
+    const sounds = c.sounds.map(s => FACTORY.find(p => p.name === s.name)).filter(Boolean).map(p => ({ name: p.name, type: p.type, patch: p }));
+    const { song, notes, left } = starterSong({ title: c.title, sounds, seed });
+    const where = `${c.title} (seed ${seed})`;
+    assert.equal(song.tracks.length, Math.min(8, sounds.length), where);
+    assert.equal(left.length, sounds.length - song.tracks.length);
+    assert.equal(notes.length, song.tracks.length);
+    assert.deepEqual(normalizeSong(song), song, `${where}: already clean`);
+    assert.ok(song.chords && song.scale && song.song.length === 5, where);
+    const inKey = n => SCALES[song.scale.type].includes(((n - song.scale.root) % 12 + 12) % 12);
+    song.tracks.forEach((t, ti) => {
+      assert.ok(t.patterns.A.steps.length, `${where}: ${t.name} has a part`);
+      assert.ok(song.song.some(sec => sec.play[ti]), `${where}: ${t.name} plays somewhere`);
+      assert.ok(t.inst?.patch, `${where}: ${t.name} has its sound`);
+      if (t.role !== 'drums') for (const p of [t.patterns.A, t.patterns.B]) for (const s of p.steps) assert.ok(s.notes.every(inKey), `${where}: ${t.name} is in ${song.scale.type}`);
+    });
+    // No more than three sounds with the same job in a section (they take turns).
+    for (const sec of song.song) for (const role of ['pad', 'chords', 'arp', 'lead', 'bass']) {
+      assert.ok(song.tracks.filter((t, ti) => t.role === role && sec.play[ti]).length <= 4, `${where}: ${sec.name} isn't crowded with ${role}`);
+    }
+    assert.ok(song.tracks.filter(t => t.sidechain).length <= 1);
+  }
+  const same = seed => JSON.stringify(starterSong({ title: 'x', sounds: [{ name: 'Sub Bass', type: 'Bass', patch: FACTORY.find(p => p.name === 'Sub Bass') }], seed }).song);
+  assert.equal(same(4), same(4), 'the same seed gives the same song');
+}
 console.log('ok — sequencer model and engine');

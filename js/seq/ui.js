@@ -6,6 +6,7 @@ import { Engine, LOOKAHEAD_MS } from './engine.js';
 import * as synth from './testsynth.js';
 import { demoSong } from './demo.js';
 import { randomIdea } from './generate.js';
+import { starterSong } from './starter.js';
 import { FACTORY } from '../lab/sounds.js';
 import { STYLES, styleById } from './styles.js';
 import { mutate, cross } from './breed.js';
@@ -2697,9 +2698,18 @@ function takeToTrack({ items, fromBar = 0, bpm, synced, ti = sel.t, newRole = nu
 // to MAX_TRACKS), each on the computer with that sound, in the role its type suggests. Refused while
 // this song has unsaved changes.
 const ROLE_OF_TYPE = { Drums: 'drums', Bass: 'bass', Pad: 'pad', Strings: 'pad', Keys: 'chords', Organ: 'chords', Brass: 'chords' };
-function songFromSounds({ title, sounds = [] }) {
+function songFromSounds({ title, sounds = [], parts = false }) {
   const reply = (text, ok = false) => soundChannel?.postMessage({ type: 'song-made', text, ok });
   if (dirty) { reply(`The Sequencer has unsaved changes to "${song.name}". Save them first, then try again.`); return; }
+  if (parts) { // with a first part for every sound (seq/starter.js)
+    if (!sounds.length) { reply('No sounds to make tracks from.'); return; }
+    const made = starterSong({ title, sounds });
+    load(made.song, null, true);
+    prefs.mode = 'song'; savePrefs(); engine.setMode('song'); renderTop(); paintSong(); // so Play runs the sections
+    parent.postMessage({ type: 'switch-view', view: 'sequencer' }, location.origin);
+    reply(`Started "${made.song.name}" with a first part on each of its ${made.song.tracks.length} tracks: ${made.song.bpm} bpm, ${made.key}, chords ${made.chords}.${made.left.length ? ` Left out (a song has ${M.MAX_TRACKS} tracks): ${made.left.join(', ')}.` : ''} Every part is yours to change: each track's Ideas offers others.`, true);
+    return;
+  }
   const s = M.newSong();
   s.name = String(title || 'Untitled').slice(0, 60);
   s.tracks = [];
